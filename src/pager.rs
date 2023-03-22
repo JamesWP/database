@@ -2,7 +2,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, Write, BufReader},
     os::unix::prelude::MetadataExt,
-    path::Path,
+    path::Path, collections::{HashMap, hash_map::Entry::{Occupied, Vacant}},
 };
 
 use serde::{Serialize, Deserialize};
@@ -23,7 +23,16 @@ pub struct ZeroPage {
     // Contains metadata usefull to the pager
 
     // TODO: make this the head of a linked list to ensure it is a fixed size when encoding ZeroPage
-    free_page_list: Vec<u32>
+    free_page_list: Vec<u32>,
+
+    // contains the root pages for the given entities
+    root_pages: HashMap<String, u32>,
+}
+
+impl Default for ZeroPage {
+    fn default() -> Self {
+        Self { free_page_list: Default::default(), root_pages: Default::default() }
+    }
 }
 
 impl From<&Page> for ZeroPage {
@@ -133,15 +142,14 @@ impl Pager {
             self.set_file_size_pages(2);
 
             // Write out new zero page
-            let zero = ZeroPage{ free_page_list: Default::default() };
+            let zero = ZeroPage::default();
             self.set_zero_page(zero);
             // New page is the first page
             1
         } else {
             // We need to find the page allocation table in the first page and get a page from its free list
-            let page = self.get(0);
-            let mut zero = ZeroPage::from(&page);
 
+            let mut zero = self.get_zero_page();
             let page_no = zero.free_page_list.pop();
 
             self.set_zero_page(zero);
@@ -170,6 +178,20 @@ impl Pager {
         }
 
         zero.free_page_list.push(idx);
+
+        self.set_zero_page(zero);
+    }
+
+    pub fn get_root_page(&self, root_name: &str) -> Option<u32> {
+        let zero = self.get_zero_page();
+
+        zero.root_pages.get(&root_name.to_string()).copied()
+    }
+
+    pub fn set_root_page(&mut self, root_name: &str, idx: u32) {
+        let mut zero = self.get_zero_page();
+
+        zero.root_pages.insert(root_name.to_string(), idx);
 
         self.set_zero_page(zero);
     }
