@@ -1,11 +1,15 @@
 use std::{
+    collections::{
+        hash_map::Entry::{Occupied, Vacant},
+        HashMap,
+    },
     fs::{File, OpenOptions},
-    io::{Read, Seek, Write, BufReader},
+    io::{BufReader, Read, Seek, Write},
     os::unix::prelude::MetadataExt,
-    path::Path, collections::{HashMap, hash_map::Entry::{Occupied, Vacant}},
+    path::Path,
 };
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 pub struct Page {
     // TODO: maybe share an existing open page
@@ -14,7 +18,9 @@ pub struct Page {
 
 impl Default for Page {
     fn default() -> Self {
-        Self { content: [0;PAGE_SIZE as usize] }
+        Self {
+            content: [0; PAGE_SIZE as usize],
+        }
     }
 }
 
@@ -31,7 +37,10 @@ pub struct ZeroPage {
 
 impl Default for ZeroPage {
     fn default() -> Self {
-        Self { free_page_list: Default::default(), root_pages: Default::default() }
+        Self {
+            free_page_list: Default::default(),
+            root_pages: Default::default(),
+        }
     }
 }
 
@@ -75,19 +84,22 @@ impl Pager {
             .open(path)
             .unwrap();
 
-        file.set_len(PAGE_SIZE as u64 *num_pages as u64).unwrap();
+        file.set_len(PAGE_SIZE as u64 * num_pages as u64).unwrap();
     }
 
-    fn get_zero_page(&self) -> ZeroPage {
-        let page = self.get(0);
-        ZeroPage::from(&page)
+    fn get_zero_page(&self) -> Option<ZeroPage> {
+        if self.get_file_size_pages() < 1 {
+            None
+        } else {
+            let page = self.get(0);
+            Some(ZeroPage::from(&page))
+        }
     }
 
     fn set_zero_page(&mut self, zero: ZeroPage) {
-
         let mut zero_page = Page::default();
         serde_json::to_writer(zero_page.content.as_mut_slice(), &zero).unwrap();
-        
+
         self.set(0, &zero_page);
     }
 
@@ -98,8 +110,9 @@ impl Pager {
             .write(false)
             .open(path)
             .unwrap();
-        file.seek(std::io::SeekFrom::Start((PAGE_SIZE * idx) as u64))
-            .unwrap();
+        let seek = PAGE_SIZE * idx;
+        println!("Seeking to {seek} offset");
+        file.seek(std::io::SeekFrom::Start(seek as u64)).unwrap();
 
         file
     }
@@ -111,8 +124,9 @@ impl Pager {
             .write(true)
             .open(path)
             .unwrap();
-        file.seek(std::io::SeekFrom::Start((PAGE_SIZE * idx) as u64))
-            .unwrap();
+        let seek = PAGE_SIZE * idx;
+        println!("Seeking to {seek} offset");
+        file.seek(std::io::SeekFrom::Start(seek as u64)).unwrap();
 
         file
     }
@@ -130,7 +144,7 @@ impl Pager {
 
     pub fn set(&mut self, idx: u32, page: &Page) {
         let mut file = self.file_at_page_write(idx);
-        file.write_all(&page.content).unwrap(); 
+        file.write_all(&page.content).unwrap();
     }
 
     pub fn allocate(&mut self) -> u32 {
@@ -149,7 +163,7 @@ impl Pager {
         } else {
             // We need to find the page allocation table in the first page and get a page from its free list
 
-            let mut zero = self.get_zero_page();
+            let mut zero = self.get_zero_page().unwrap();
             let page_no = zero.free_page_list.pop();
 
             self.set_zero_page(zero);
@@ -171,7 +185,7 @@ impl Pager {
             panic!("Cant dealloc page zero");
         }
 
-        let mut zero = self.get_zero_page();
+        let mut zero = self.get_zero_page().unwrap();
 
         if zero.free_page_list.contains(&idx) {
             panic!("Free list already contains this page!");
@@ -183,20 +197,19 @@ impl Pager {
     }
 
     pub fn get_root_page(&self, root_name: &str) -> Option<u32> {
-        let zero = self.get_zero_page();
+        let zero = self.get_zero_page()?;
 
         zero.root_pages.get(&root_name.to_string()).copied()
     }
 
     pub fn set_root_page(&mut self, root_name: &str, idx: u32) {
-        let mut zero = self.get_zero_page();
+        let mut zero = self.get_zero_page().unwrap();
 
         zero.root_pages.insert(root_name.to_string(), idx);
 
         self.set_zero_page(zero);
     }
 }
-
 
 #[cfg(test)]
 mod test {
@@ -272,7 +285,7 @@ mod test {
         pager.dealocate(c);
         pager.dealocate(e);
         pager.dealocate(f);
-        
+
         // no shrinking of underlying file
         assert_eq!(max_size, pager.get_file_size_pages());
 
@@ -284,10 +297,10 @@ mod test {
         // no further allocation needed, dealocated pages reused
         assert_eq!(max_size, pager.get_file_size_pages());
 
-        // allocate one more page 
+        // allocate one more page
         let g = pager.allocate();
 
         // more pages allocated
-        assert_eq!(max_size+1, pager.get_file_size_pages());
+        assert_eq!(max_size + 1, pager.get_file_size_pages());
     }
 }
