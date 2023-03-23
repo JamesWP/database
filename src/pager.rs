@@ -1,6 +1,5 @@
 use std::{
     collections::{
-        hash_map::Entry::{Occupied, Vacant},
         HashMap,
     },
     fs::{File, OpenOptions},
@@ -273,9 +272,9 @@ mod test {
         let mut pager = Pager::new(path);
 
         let a = pager.allocate();
-        let b = pager.allocate();
+        let _b = pager.allocate();
         let c = pager.allocate();
-        let d = pager.allocate();
+        let _d = pager.allocate();
         let e = pager.allocate();
         let f = pager.allocate();
 
@@ -289,16 +288,16 @@ mod test {
         // no shrinking of underlying file
         assert_eq!(max_size, pager.get_file_size_pages());
 
-        let a2 = pager.allocate();
-        let c2 = pager.allocate();
-        let e2 = pager.allocate();
-        let f2 = pager.allocate();
+        let _a2 = pager.allocate();
+        let _c2 = pager.allocate();
+        let _e2 = pager.allocate();
+        let _f2 = pager.allocate();
 
         // no further allocation needed, dealocated pages reused
         assert_eq!(max_size, pager.get_file_size_pages());
 
         // allocate one more page
-        let g = pager.allocate();
+        let _g = pager.allocate();
 
         // more pages allocated
         assert_eq!(max_size + 1, pager.get_file_size_pages());
