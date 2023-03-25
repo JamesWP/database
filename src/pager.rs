@@ -4,7 +4,7 @@ use std::{
     },
     fs::{File, OpenOptions},
     io::{BufReader, Read, Seek, Write},
-    os::{unix::prelude::MetadataExt, fd::AsRawFd},
+    os::{unix::prelude::MetadataExt},
     path::Path, borrow::Borrow,
 };
 

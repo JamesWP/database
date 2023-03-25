@@ -1,28 +1,30 @@
+use std::ops::{Deref, DerefMut};
+
 use crate::pager::{self, Pager};
 
-struct CursorState {
+pub struct Cursor<PagerRef> {
+    pager: PagerRef,
     root_page: u32,
 
     /// key for the item pointed to by the cursor
     key: Option<u64>,
 }
 
-impl CursorState {
-    fn new(root_page: u32) -> Self {
-        Self {
-            root_page,
-            key: Default::default(),
-        }
+/// Mutable cursor implementation
+impl<PagerRef> Cursor<PagerRef>
+where
+    PagerRef: DerefMut<Target = Pager>,
+{
+    fn insert(&mut self, key: u64, value: Vec<serde_json::Value>) {
+        todo!()
     }
 }
 
-pub struct ReadonlyCursor<'a> {
-    btree: &'a BTree,
-
-    state: CursorState,
-}
-
-impl<'a> ReadonlyCursor<'a> {
+/// Imutable cursor implementation
+impl<PagerRef> Cursor<PagerRef>
+where
+    PagerRef: Deref<Target = Pager>,
+{
     /// Move the cursor to point at the first row in the btree
     /// This may result in the cursor not pointing to a row if there is no
     /// first row to point to
@@ -61,49 +63,34 @@ impl<'a> ReadonlyCursor<'a> {
     }
 }
 
-pub struct ReadwriteCursor<'a> {
-    btree: &'a mut BTree,
-
-    state: CursorState,
-}
-
-impl<'a> ReadwriteCursor<'a> {
-    fn insert(&mut self, key: u64, value: Vec<serde_json::Value>) {
-        todo!()
-    }
-
-    fn reader<'b>(&'b self) -> ReadonlyCursor<'b> {
-        ReadonlyCursor {
-            btree: self.btree,
-            state: CursorState::new(self.state.root_page),
-        }
-    }
-}
-
 pub struct BTree {
     pager: pager::Pager,
 }
 
 impl BTree {
     fn new(path: &str) -> BTree {
-        BTree { pager: Pager::new(path) }
+        BTree {
+            pager: Pager::new(path),
+        }
     }
 
-    fn open_readonly<'a>(&'a self, tree_name: &str) -> Option<ReadonlyCursor<'a>> {
+    fn open_readonly<'a>(&'a self, tree_name: &str) -> Option<Cursor<&'a Pager>> {
         let idx = self.pager.get_root_page(tree_name)?;
 
-        Some(ReadonlyCursor {
-            btree: self,
-            state: CursorState::new(idx),
+        Some(Cursor {
+            pager: &self.pager,
+            key: Default::default(),
+            root_page: idx,
         })
     }
 
-    fn open_readwrite<'a>(&'a mut self, tree_name: &str) -> Option<ReadwriteCursor<'a>> {
+    fn open_readwrite<'a>(&'a mut self, tree_name: &str) -> Option<Cursor<&'a mut Pager>> {
         let idx = self.pager.get_root_page(tree_name)?;
 
-        Some(ReadwriteCursor {
-            btree: self,
-            state: CursorState::new(idx),
+        Some(Cursor {
+            pager: &mut self.pager,
+            key: Default::default(),
+            root_page: idx,
         })
     }
 
@@ -122,35 +109,77 @@ mod test {
 
     use super::BTree;
 
+    struct TestDb {
+        btree: BTree,
+        _file: NamedTempFile,
+    }
+
+    impl Default for TestDb {
+        fn default() -> Self {
+            let file = NamedTempFile::new().unwrap();
+            let path = file.path().to_str().unwrap();
+            Self {
+                btree: BTree::new(path),
+                _file: file,
+            }
+        }
+    }
+
     #[test]
-    fn test_create_add_read() {
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-        let mut btree = BTree::new(path);
+    fn test_create_blank() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
 
         assert!(btree.open_readonly("testing").is_none());
 
         btree.create_tree("testing");
 
-        let mut cursor1 = btree.open_readonly("testing").unwrap();
-        let _cursor2 = btree.open_readonly("testing").unwrap();
+        // Test we can take two readonly cursors at the same time
+        {
+            let mut _cursor1 = btree.open_readonly("testing").unwrap();
+            let mut _cursor2 = btree.open_readonly("testing").unwrap();
+        }
 
-        cursor1.first();
+        // Test the new table is empty, when using a readonly cursor
+        {
+            let mut cursor = btree.open_readonly("testing").unwrap();
+            cursor.first();
 
-        assert!(cursor1.column(0).is_none());
+            assert!(cursor.column(0).is_none());
+        }
 
-        let mut cursor3 = btree.open_readwrite("testing").unwrap();
+        // Test the new table is empty, when using a readwrite cursor
+        {
+            let mut cursor = btree.open_readwrite("testing").unwrap();
 
-        let mut cursor4 = cursor3.reader();
+            cursor.first();
+            assert!(cursor.column(0).is_none());
+        }
+    }
 
-        cursor4.first();
-        assert!(cursor4.column(0).is_none());
 
-        cursor3.insert(42, vec![json!(1337), json!(42), json!(386), json!(64)]);
+    #[test]
+    fn test_create_and_insert() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
 
-        let mut cursor5 = cursor3.reader();
+        assert!(btree.open_readonly("testing").is_none());
 
-        cursor5.first();
-        assert_eq!(cursor5.column(0), Some(json!(1337)));
+        btree.create_tree("testing");
+
+        // Test we can insert a value
+        {
+            let mut cursor = btree.open_readwrite("testing").unwrap();
+
+            cursor.insert(42, vec![json!(1337), json!(42), json!(386), json!(64)]);
+        }
+
+        // Test we can read out the new value
+        {
+            let mut cursor = btree.open_readonly("testing").unwrap();
+
+            cursor.first();
+            assert_eq!(cursor.column(0), Some(json!(1337)));
+        }
     }
 }
