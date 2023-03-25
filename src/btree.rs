@@ -10,13 +10,12 @@ use self::stack::PushResult::{Done, Grew};
 type Tuple = std::vec::Vec<serde_json::Value>;
 
 mod stack {
-    use std::default;
-
-    use crate::{node, pager};
+    use crate::{node::{self}, pager};
 
     use super::Tuple;
 
     type NodePage = node::NodePage<u64, Tuple>;
+    type LeafNodePage = node::LeafNodePage<u64, Tuple>;
 
     /// a pair of the page number and the index in that page 
     type StackItem = (u32, usize); 
@@ -71,7 +70,19 @@ mod stack {
 
     impl SearchStack<'_> {
         pub fn insert(self, key: u64, value: Tuple) {
-            todo!()
+            // Insert value into the leaf(node) at the top of the stack
+
+            let (page_idx, item_idx) = self.top;
+            let mut page: LeafNodePage = self.pager.get_and_decode(page_idx);
+
+            page.insert_item_at_index(item_idx, key, value);
+
+            // TODO: handle encode faling due to lack of space
+            self.pager.encode_and_set(page_idx, page);
+
+            // loop until all splits are resolved
+            // if we have no split -> return
+            // if we have a split (key, value, )
         }
     }
 }

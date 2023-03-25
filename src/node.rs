@@ -17,13 +17,13 @@ impl<K, V> NodePage<K, V> {
 
 #[derive(Serialize, Deserialize)]
 pub struct LeafNodePage<K, V> {
-    keys: Vec<(K, V)>,
+    cells: Vec<(K, V)>,
 }
 
 impl<K, V> Default for LeafNodePage<K, V> {
     fn default() -> Self {
         Self {
-            keys: Default::default(),
+            cells: Default::default(),
         }
     }
 }
@@ -37,6 +37,16 @@ pub enum SearchResult<K, V> {
     GoDown(u32),
 }
 
+pub enum InsertionResult<K, V> {
+    /// The insertion is done, and there was space enough to fit the item in the page
+    Fit,
+
+    /// The insertion was not possible, it resulted in the node splitting.
+    /// The split resulted in two nodes, this one (self) and another in this result.
+    /// The smallest key in the other node is also returned.
+    Split(K, NodePage<K, V>)
+}
+
 impl<K, V> LeafNodePage<K, V> {
     pub fn search(self, k: &K) -> SearchResult<K, V> {
         todo!()
@@ -44,6 +54,18 @@ impl<K, V> LeafNodePage<K, V> {
 
     pub fn set_item_at_index(&mut self, index: usize, value: V) {
         todo!()
+    }
+
+    pub fn insert_item_at_index(&mut self, index: usize, key: K, value: V) -> InsertionResult<K, V> {
+        // put item into leaf at given index.
+
+        self.cells.insert(index, (key, value));
+
+        InsertionResult::Fit
+
+        // Check if this page is overfull..
+        // We might have to check about the insertion in the caller...
+        // TODO: handle splitting if full.
     }
 }
 
