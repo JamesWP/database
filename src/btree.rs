@@ -1,6 +1,23 @@
 use std::ops::{Deref, DerefMut};
 
-use crate::pager::{self, Pager};
+use crate::{pager::{self, Pager}, node};
+
+type Tuple = std::vec::Vec<serde_json::Value>;
+
+mod stack {
+    use crate::pager;
+
+    pub struct PartialSearchStack<'a> {
+        pager: &'a mut pager::Pager,
+        stack: Vec<u32>,
+    }
+
+    impl PartialSearchStack<'_> {
+        pub fn new<'a>(pager: &'a mut pager::Pager, root_page_number: u32) -> PartialSearchStack {
+            PartialSearchStack { pager, stack: vec![root_page_number] }
+        }
+    }
+}
 
 pub struct Cursor<PagerRef> {
     pager: PagerRef,
@@ -15,8 +32,34 @@ impl<PagerRef> Cursor<PagerRef>
 where
     PagerRef: DerefMut<Target = Pager>,
 {
-    fn insert(&mut self, key: u64, value: Vec<serde_json::Value>) {
-        todo!()
+    fn insert(&mut self, key: u64, value: Tuple) {
+        // we maintain a stack of the nodes we decended through in case of needing to split them.
+        // Starting at the root, we search to find:
+        //   an empty place to put the new value
+        //   en existing value to replace
+        let mut stack = stack::PartialSearchStack::new(&mut self.btree.pager, self.state.root_page);
+
+        loop {
+            match stack.top().search(key) {
+                Found(insertion_index) => {
+                    // We found the index in the node where an existing value for this key exists
+                    // we need to replace it with our value
+
+                    // TODO: return! we inserted the value
+                },
+                GoDown(child_index) => {
+                    // The node does not contain the value, instead we found the index of a child of this node where the value should be inserted instead
+                    // we need to go deeper.
+
+                    // When going deeper, we either:
+                    // - find no child to recurse with and instead insert the value in this node
+                    //   TODO: insert && return!
+                    // - or push the child we found onto the stack and recurse
+                    //   TODO: continue
+                }
+            }
+
+        }
     }
 }
 
@@ -99,6 +142,8 @@ impl BTree {
         assert!(self.pager.get_root_page(tree_name).is_none());
         let idx = self.pager.allocate();
         self.pager.set_root_page(tree_name, idx);
+        let _empty_root_node = node::LeafNodePage::<u64, Tuple>::default();
+        // Encode and set the empty_root_node in the pager 
     }
 }
 
