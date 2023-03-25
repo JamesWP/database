@@ -1,20 +1,77 @@
 use std::ops::{Deref, DerefMut};
 
-use crate::{pager::{self, Pager}, node};
+use crate::{
+    node::{self, SearchResult},
+    pager::{self, Pager},
+};
+
+use self::stack::PushResult::{Done, Grew};
 
 type Tuple = std::vec::Vec<serde_json::Value>;
 
 mod stack {
-    use crate::pager;
+    use std::default;
+
+    use crate::{node, pager};
+
+    use super::Tuple;
+
+    type NodePage = node::NodePage<u64, Tuple>;
+
+    /// a pair of the page number and the index in that page 
+    type StackItem = (u32, usize); 
+    type Stack = Vec<StackItem>;
 
     pub struct PartialSearchStack<'a> {
         pager: &'a mut pager::Pager,
-        stack: Vec<u32>,
+        stack: Stack,
+
+        // the "top" of the stack
+        next: u32
     }
 
-    impl PartialSearchStack<'_> {
-        pub fn new<'a>(pager: &'a mut pager::Pager, root_page_number: u32) -> PartialSearchStack {
-            PartialSearchStack { pager, stack: vec![root_page_number] }
+    pub struct SearchStack<'a> {
+        pager: &'a mut pager::Pager,
+        stack: Stack,
+
+        /// The location in the node pointed to by the stack which we were looking for
+        top: StackItem,
+    }
+
+    pub enum PushResult<'a> {
+        /// The push resulted in finding a new child node and is now also pointing to that
+        Grew(PartialSearchStack<'a>),
+
+        /// The push resulted in finding the location we were searching for, we now have the entire
+        /// path to the node we were looking for
+        Done(SearchStack<'a>)
+    }
+
+    impl<'a> PartialSearchStack<'a> {
+        pub fn new(pager: &'a mut pager::Pager, root_page_number: u32) -> PartialSearchStack {
+            PartialSearchStack {
+                pager,
+                stack: Default::default(),
+                next: root_page_number,
+            }
+        }
+
+        pub fn top(&self) -> NodePage {
+            self.pager.get_and_decode(self.top_page_idx())
+        }
+
+        pub fn top_page_idx(&self) -> u32 {
+            self.next
+        }
+
+        pub fn push(self, idx: u32) -> PushResult<'a> {
+            todo!()
+        }
+    }
+
+    impl SearchStack<'_> {
+        pub fn insert(self, key: u64, value: Tuple) {
+            todo!()
         }
     }
 }
@@ -37,28 +94,39 @@ where
         // Starting at the root, we search to find:
         //   an empty place to put the new value
         //   en existing value to replace
-        let mut stack = stack::PartialSearchStack::new(&mut self.btree.pager, self.state.root_page);
+        let mut stack = stack::PartialSearchStack::new(&mut self.pager, self.root_page);
 
         loop {
-            match stack.top().search(key) {
-                Found(insertion_index) => {
+            match stack.top().search(&key) {
+                SearchResult::Found(mut leaf, insertion_index) => {
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
+                    let page_idx = stack.top_page_idx();
 
-                    // TODO: return! we inserted the value
-                },
-                GoDown(child_index) => {
+                    leaf.set_item_at_index(insertion_index, value);
+
+                    // TODO: there is going to be a panic if the new value does not fit on this page...
+                    self.pager.encode_and_set(page_idx, leaf);
+
+                    return;
+                }
+                SearchResult::GoDown(child_index) => {
                     // The node does not contain the value, instead we found the index of a child of this node where the value should be inserted instead
                     // we need to go deeper.
 
-                    // When going deeper, we either:
-                    // - find no child to recurse with and instead insert the value in this node
-                    //   TODO: insert && return!
-                    // - or push the child we found onto the stack and recurse
-                    //   TODO: continue
+                    stack = match stack.push(child_index) {
+                        Done(stack) => { 
+                            // We reached a leaf node where we need to insert this as a new value
+                            stack.insert(key, value);
+                            return;
+                        },
+                        Grew(stack) => { 
+                            // We found an existing child at this location, continue the search there
+                            stack
+                        },
+                    };
                 }
             }
-
         }
     }
 }
@@ -143,7 +211,7 @@ impl BTree {
         let idx = self.pager.allocate();
         self.pager.set_root_page(tree_name, idx);
         let _empty_root_node = node::LeafNodePage::<u64, Tuple>::default();
-        // Encode and set the empty_root_node in the pager 
+        // Encode and set the empty_root_node in the pager
     }
 }
 
@@ -201,7 +269,6 @@ mod test {
             assert!(cursor.column(0).is_none());
         }
     }
-
 
     #[test]
     fn test_create_and_insert() {
