@@ -4,11 +4,11 @@ use std::{
     },
     fs::{File, OpenOptions},
     io::{BufReader, Read, Seek, Write},
-    os::unix::prelude::MetadataExt,
-    path::Path,
+    os::{unix::prelude::MetadataExt, fd::AsRawFd},
+    path::Path, borrow::Borrow,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub struct Page {
     // TODO: maybe share an existing open page
@@ -40,14 +40,6 @@ impl Default for ZeroPage {
             free_page_list: Default::default(),
             root_pages: Default::default(),
         }
-    }
-}
-
-impl From<&Page> for ZeroPage {
-    fn from(value: &Page) -> Self {
-        let reader = BufReader::new(value.content.as_slice());
-        let mut deserializer = serde_json::Deserializer::from_reader(reader);
-        ZeroPage::deserialize(&mut deserializer).unwrap()
     }
 }
 
@@ -90,16 +82,12 @@ impl Pager {
         if self.get_file_size_pages() < 1 {
             None
         } else {
-            let page = self.get(0);
-            Some(ZeroPage::from(&page))
+            Some(self.get_and_decode(0))
         }
     }
 
     fn set_zero_page(&mut self, zero: ZeroPage) {
-        let mut zero_page = Page::default();
-        serde_json::to_writer(zero_page.content.as_mut_slice(), &zero).unwrap();
-
-        self.set(0, &zero_page);
+        self.encode_and_set(0, zero);
     }
 
     fn file_at_page_readonly(&self, idx: u32) -> File {
@@ -140,10 +128,23 @@ impl Pager {
 
         p
     }
+    
+    pub fn get_and_decode<P:Borrow<P> + DeserializeOwned>(&self, idx: u32) -> P { 
+        let p = self.get(idx);
+        let reader = BufReader::new(p.borrow().content.as_slice());
+        let mut deserializer = serde_json::Deserializer::from_reader(reader);
+        P::deserialize(&mut deserializer).unwrap()
+    }
 
-    pub fn set(&mut self, idx: u32, page: &Page) {
+    pub fn set<P:Borrow<Page>>(&mut self, idx: u32, page: P) {
         let mut file = self.file_at_page_write(idx);
-        file.write_all(&page.content).unwrap();
+        file.write_all(&page.borrow().content).unwrap();
+    }
+
+    pub fn encode_and_set<P:Borrow<P> + Serialize>(&mut self, idx: u32, v: P) {
+        let mut page = Page::default();
+        serde_json::to_writer(page.content.as_mut_slice(), v.borrow()).unwrap();
+        self.set(idx, page);
     }
 
     pub fn allocate(&mut self) -> u32 {
