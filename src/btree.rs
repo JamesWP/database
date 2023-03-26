@@ -8,92 +8,27 @@ use crate::{
 use self::stack::PushResult::{Done, Grew};
 
 type Tuple = std::vec::Vec<serde_json::Value>;
+type NodePage = node::NodePage<u64, Tuple>;
+type LeafNodePage = node::LeafNodePage<u64, Tuple>;
 
-mod stack {
-    use crate::{node::{self}, pager};
-
-    use super::Tuple;
-
-    type NodePage = node::NodePage<u64, Tuple>;
-    type LeafNodePage = node::LeafNodePage<u64, Tuple>;
-
-    /// a pair of the page number and the index in that page 
-    type StackItem = (u32, usize); 
-    type Stack = Vec<StackItem>;
-
-    pub struct PartialSearchStack<'a> {
-        pager: &'a mut pager::Pager,
-        stack: Stack,
-
-        // the "top" of the stack
-        next: u32
-    }
-
-    pub struct SearchStack<'a> {
-        pager: &'a mut pager::Pager,
-        stack: Stack,
-
-        /// The location in the node pointed to by the stack which we were looking for
-        top: StackItem,
-    }
-
-    pub enum PushResult<'a> {
-        /// The push resulted in finding a new child node and is now also pointing to that
-        Grew(PartialSearchStack<'a>),
-
-        /// The push resulted in finding the location we were searching for, we now have the entire
-        /// path to the node we were looking for
-        Done(SearchStack<'a>)
-    }
-
-    impl<'a> PartialSearchStack<'a> {
-        pub fn new(pager: &'a mut pager::Pager, root_page_number: u32) -> PartialSearchStack {
-            PartialSearchStack {
-                pager,
-                stack: Default::default(),
-                next: root_page_number,
-            }
-        }
-
-        pub fn top(&self) -> NodePage {
-            self.pager.get_and_decode(self.top_page_idx())
-        }
-
-        pub fn top_page_idx(&self) -> u32 {
-            self.next
-        }
-
-        pub fn push(self, idx: u32) -> PushResult<'a> {
-            todo!()
-        }
-    }
-
-    impl SearchStack<'_> {
-        pub fn insert(self, key: u64, value: Tuple) {
-            // Insert value into the leaf(node) at the top of the stack
-
-            let (page_idx, item_idx) = self.top;
-            let mut page: LeafNodePage = self.pager.get_and_decode(page_idx);
-
-            page.insert_item_at_index(item_idx, key, value);
-
-            // TODO: handle encode faling due to lack of space
-            self.pager.encode_and_set(page_idx, page);
-
-            // loop until all splits are resolved
-            // if we have no split -> return
-            // if we have a split (key, value, )
-        }
-    }
-}
+mod stack;
 
 pub struct Cursor<PagerRef> {
     pager: PagerRef,
     root_page: u32,
 
     /// key for the item pointed to by the cursor
-    key: Option<u64>,
+    stack: Vec<InteriorNodeIterator>,
+    leaf_iterator: Option<LeafNodeIterator>,
 }
+
+/// identifies the page index of the interior node and the index of the child curently selected
+type InteriorNodeIterator = (u32, usize);
+
+/// identifies the page index of the leaf node and the index of the entry curently selected
+type LeafNodeIterator = (u32, usize);
+
+const NULL: serde_json::Value = serde_json::Value::Null;
 
 /// Mutable cursor implementation
 impl<PagerRef> Cursor<PagerRef>
@@ -109,15 +44,15 @@ where
 
         loop {
             match stack.top().search(&key) {
-                SearchResult::Found(mut leaf, insertion_index) => {
+                SearchResult::Found(page_idx, insertion_index) => {
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
-                    let page_idx = stack.top_page_idx();
+                    let mut page = stack.top();
 
-                    leaf.set_item_at_index(insertion_index, value);
+                    page.set_item_at_index(insertion_index, value);
 
                     // TODO: there is going to be a panic if the new value does not fit on this page...
-                    self.pager.encode_and_set(page_idx, leaf);
+                    self.pager.encode_and_set(page_idx, page);
 
                     return;
                 }
@@ -126,15 +61,15 @@ where
                     // we need to go deeper.
 
                     stack = match stack.push(child_index) {
-                        Done(stack) => { 
+                        Done(stack) => {
                             // We reached a leaf node where we need to insert this as a new value
                             stack.insert(key, value);
                             return;
-                        },
-                        Grew(stack) => { 
+                        }
+                        Grew(stack) => {
                             // We found an existing child at this location, continue the search there
                             stack
-                        },
+                        }
                     };
                 }
             }
@@ -151,7 +86,23 @@ where
     /// This may result in the cursor not pointing to a row if there is no
     /// first row to point to
     fn first(&mut self) {
-        todo!()
+        // Take the tree identified by the root page number, and find its left most node and
+        // find its smallest entry
+        let root_page: NodePage = self.pager.get_and_decode(self.root_page);
+
+        let mut page = root_page;
+        let mut page_idx = self.root_page;
+        loop {
+            match page {
+                node::NodePage::Leaf(l) => {
+                    // We found the first leaf in the tree.
+                    // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
+                    self.leaf_iterator = Some((page_idx, 0));
+                    return;
+                },
+                node::NodePage::Interior(i) => todo!(),
+            }
+        }
     }
 
     /// Move the cursor to point at the last row in the btree
@@ -170,8 +121,19 @@ where
 
     /// get the value at the specified column index from the row pointed to by the cursor,
     /// or None if the cursor is not pointing to a row
-    fn column(&self, col_idx: u32) -> Option<serde_json::Value> {
-        todo!()
+    fn column(&self, col_idx: usize) -> Option<serde_json::Value> {
+        let (leaf_page_number, entry_index) = self.leaf_iterator?;
+
+        let page: NodePage = self.pager.get_and_decode(leaf_page_number);
+
+        match page {
+            node::NodePage::Leaf(l) => {
+                let (_key, value) = l.get_item_at_index(entry_index)?;
+                let value = value.get(col_idx).unwrap_or(&NULL);
+                Some(value.to_owned())
+            },
+            node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
+        }
     }
 
     /// Move the cursor to point at the next item in the btree
@@ -201,8 +163,9 @@ impl BTree {
 
         Some(Cursor {
             pager: &self.pager,
-            key: Default::default(),
             root_page: idx,
+            stack: vec![],
+            leaf_iterator: None,
         })
     }
 
@@ -211,8 +174,9 @@ impl BTree {
 
         Some(Cursor {
             pager: &mut self.pager,
-            key: Default::default(),
             root_page: idx,
+            stack: vec![],
+            leaf_iterator: None,
         })
     }
 
@@ -221,8 +185,10 @@ impl BTree {
         assert!(self.pager.get_root_page(tree_name).is_none());
         let idx = self.pager.allocate();
         self.pager.set_root_page(tree_name, idx);
-        let _empty_root_node = node::LeafNodePage::<u64, Tuple>::default();
+        let empty_leaf_node = node::LeafNodePage::<u64, Tuple>::default();
+        let empty_root_node = node::NodePage::Leaf(empty_leaf_node);
         // Encode and set the empty_root_node in the pager
+        self.pager.encode_and_set(idx, empty_root_node);
     }
 }
 

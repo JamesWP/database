@@ -98,7 +98,6 @@ impl Pager {
             .open(path)
             .unwrap();
         let seek = PAGE_SIZE * idx;
-        println!("Seeking to {seek} offset");
         file.seek(std::io::SeekFrom::Start(seek as u64)).unwrap();
 
         file
@@ -112,13 +111,13 @@ impl Pager {
             .open(path)
             .unwrap();
         let seek = PAGE_SIZE * idx;
-        println!("Seeking to {seek} offset");
         file.seek(std::io::SeekFrom::Start(seek as u64)).unwrap();
 
         file
     }
 
     pub fn get(&self, idx: u32) -> Page {
+        println!("Reading page {idx}");
         let mut p = Page::default();
 
         let content = p.content.as_mut_slice();
@@ -137,6 +136,7 @@ impl Pager {
     }
 
     pub fn set<P:Borrow<Page>>(&mut self, idx: u32, page: P) {
+        println!("Writing page {idx}");
         let mut file = self.file_at_page_write(idx);
         file.write_all(&page.borrow().content).unwrap();
     }
