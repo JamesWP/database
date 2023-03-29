@@ -44,14 +44,25 @@ where
 
         loop {
             match stack.top().search(&key) {
-                SearchResult::Found(page_idx, insertion_index) => {
+                SearchResult::Found(insertion_index) => {
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
                     let mut page = stack.top();
+                    let page_idx = stack.top_page_idx();
 
                     page.set_item_at_index(insertion_index, value);
 
                     // TODO: there is going to be a panic if the new value does not fit on this page...
+                    self.pager.encode_and_set(page_idx, page);
+
+                    return;
+                }
+                SearchResult::NotPresent(item_idx) => {
+                    let mut page = stack.top();
+                    let page_idx = stack.top_page_idx();
+
+                    page.insert_item_at_index(item_idx, key, value);
+
                     self.pager.encode_and_set(page_idx, page);
 
                     return;
@@ -190,6 +201,10 @@ impl BTree {
         // Encode and set the empty_root_node in the pager
         self.pager.encode_and_set(idx, empty_root_node);
     }
+
+    fn debug(&self) {
+        self.pager.debug()
+    }
 }
 
 #[cfg(test)]
@@ -270,5 +285,7 @@ mod test {
             cursor.first();
             assert_eq!(cursor.column(0), Some(json!(1337)));
         }
+
+        btree.debug();
     }
 }

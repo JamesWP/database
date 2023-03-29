@@ -8,7 +8,7 @@ use std::{
     path::Path, borrow::Borrow,
 };
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned, __private::de};
 
 pub struct Page {
     // TODO: maybe share an existing open page
@@ -208,6 +208,14 @@ impl Pager {
         zero.root_pages.insert(root_name.to_string(), idx);
 
         self.set_zero_page(zero);
+    }
+
+    pub fn debug(&self) {
+        for i in 0..self.get_file_size_pages() {
+            let page: serde_json::Value = self.get_and_decode(i);
+
+            println!("Page {i} : {page}");
+        }
     }
 }
 

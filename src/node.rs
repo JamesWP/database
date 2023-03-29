@@ -1,3 +1,5 @@
+use std::cmp::Ordering::{Equal, Greater, Less};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -6,7 +8,9 @@ pub enum NodePage<K, V> {
     Interior(InteriorNodePage<K>),
 }
 
-impl<K, V> NodePage<K, V> {
+impl<K, V> NodePage<K, V> 
+where K: Ord
+{
     pub fn search(self, k: &K) -> SearchResult {
         match self {
             NodePage::Leaf(l) => l.search(k),
@@ -48,8 +52,9 @@ impl<K, V> Default for LeafNodePage<K, V> {
 
 pub enum SearchResult {
     /// The value was found at the given index of the given leaf node
-    Found(u32, usize),
-
+    Found(usize),
+    /// The value is not present in the leaf node, but if it were it should be at this index
+    NotPresent(usize),
     /// The element wasn't found, but if it is anywhere
     /// then it must be in the child node identified by the given page number
     GoDown(u32),
@@ -65,9 +70,21 @@ pub enum InsertionResult<K, V> {
     Split(K, NodePage<K, V>),
 }
 
-impl<K, V> LeafNodePage<K, V> {
-    pub fn search(self, k: &K) -> SearchResult {
-        todo!()
+impl<K, V> LeafNodePage<K, V>
+where
+    K: Ord,
+{
+    pub fn search(self, search_key: &K) -> SearchResult {
+        // Simple linear search through the page.
+        for (index, (key, _value)) in self.cells.iter().enumerate() {
+            match key.cmp(search_key) {
+                Less => { return SearchResult::NotPresent(index)},
+                Equal => { return SearchResult::Found(index) },
+                Greater => {}, // Continue the search
+            }
+        }
+        
+        SearchResult::NotPresent(self.cells.len())
     }
 
     pub fn set_item_at_index(&mut self, index: usize, value: V) {
