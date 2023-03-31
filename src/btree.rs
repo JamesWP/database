@@ -127,7 +127,21 @@ where
     /// This may result in the cursor not pointing to a row if there is no
     /// row found with that key to point to
     fn find(&mut self, key: u64) {
-        todo!()
+        let root_page: NodePage = self.pager.get_and_decode(self.root_page);
+
+        let mut page = root_page;
+        let page_idx = self.root_page;
+
+        loop {
+            match page.search(&key) {
+                SearchResult::Found(index) => {
+                    self.leaf_iterator = Some((page_idx, index));
+                    return;
+                },
+                SearchResult::NotPresent(_) => self.leaf_iterator = None,
+                SearchResult::GoDown(_) => todo!(),
+            }
+        }
     }
 
     /// get the value at the specified column index from the row pointed to by the cursor,
@@ -149,7 +163,24 @@ where
 
     /// Move the cursor to point at the next item in the btree
     fn next(&mut self) {
-        todo!()
+        if self.leaf_iterator.is_none() {
+            return;
+        }
+
+        let (leaf_page_number, entry_index) = self.leaf_iterator.unwrap();
+        
+        let page: NodePage = self.pager.get_and_decode(leaf_page_number);
+
+        match page {
+            node::NodePage::Leaf(l) => {
+                if entry_index +1 < l.num_items() {
+                    self.leaf_iterator = Some((leaf_page_number, entry_index+1));
+                } else {
+                    // We ran out of items on this page, find the next leaf page
+                }
+            },
+            node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
+        }
     }
 
     /// Move the cursor to point at the next item in the btree
@@ -284,6 +315,71 @@ mod test {
 
             cursor.first();
             assert_eq!(cursor.column(0), Some(json!(1337)));
+        }
+
+        btree.debug();
+    }
+
+    #[test]
+    fn test_insert_many() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        assert!(btree.open_readonly("testing").is_none());
+
+        btree.create_tree("testing");
+
+        // Test we can insert a value
+        {
+            let mut cursor = btree.open_readwrite("testing").unwrap();
+
+            for i in 1..10 {
+                cursor.insert(i, vec![json!(i)]);
+            }
+        }
+
+        // Test we can read out the new value
+        {
+            let mut cursor = btree.open_readonly("testing").unwrap();
+
+            cursor.first();
+            for i in 1..10 {
+                assert_eq!(cursor.column(0), Some(json!(i)));
+                cursor.next();
+            }
+        }
+
+        btree.debug();
+    }
+
+    #[test]
+    fn test_search_many() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        assert!(btree.open_readonly("testing").is_none());
+
+        btree.create_tree("testing");
+
+        // Test we can insert a value
+        {
+            let mut cursor = btree.open_readwrite("testing").unwrap();
+
+            for i in 1..10 {
+                cursor.insert(i, vec![json!(i)]);
+            }
+        }
+
+        // Test we can read out the new value
+        {
+            let mut cursor = btree.open_readonly("testing").unwrap();
+
+            cursor.find(7);
+
+            for i in 7..10 {
+                assert_eq!(cursor.column(0), Some(json!(i)));
+                cursor.next();
+            }
         }
 
         btree.debug();

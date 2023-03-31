@@ -8,7 +8,7 @@ use std::{
     path::Path, borrow::Borrow,
 };
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned, __private::de};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub struct Page {
     // TODO: maybe share an existing open page
