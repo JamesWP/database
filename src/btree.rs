@@ -5,13 +5,9 @@ use crate::{
     pager::{self, Pager},
 };
 
-use self::stack::PushResult::{Done, Grew};
-
 type Tuple = std::vec::Vec<serde_json::Value>;
 type NodePage = node::NodePage<u64, Tuple>;
 type LeafNodePage = node::LeafNodePage<u64, Tuple>;
-
-mod stack;
 
 pub struct Cursor<PagerRef> {
     pager: PagerRef,
@@ -40,48 +36,38 @@ where
         // Starting at the root, we search to find:
         //   an empty place to put the new value
         //   en existing value to replace
-        let mut stack = stack::PartialSearchStack::new(&mut self.pager, self.root_page);
+        let mut stack = Vec::new();
+
+        stack.push(self.root_page);
 
         loop {
-            match stack.top().search(&key) {
+            let top_page_idx = stack.last().unwrap();
+            let mut top_page: NodePage = self.pager.get_and_decode(top_page_idx);
+            match top_page.search(&key) {
                 SearchResult::Found(insertion_index) => {
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
-                    let mut page = stack.top();
-                    let page_idx = stack.top_page_idx();
 
-                    page.set_item_at_index(insertion_index, value);
+                    top_page.set_item_at_index(insertion_index, value);
 
                     // TODO: there is going to be a panic if the new value does not fit on this page...
-                    self.pager.encode_and_set(page_idx, page);
+                    self.pager.encode_and_set(top_page_idx, top_page);
 
                     return;
                 }
                 SearchResult::NotPresent(item_idx) => {
-                    let mut page = stack.top();
-                    let page_idx = stack.top_page_idx();
 
-                    page.insert_item_at_index(item_idx, key, value);
+                    top_page.insert_item_at_index(item_idx, key, value);
 
-                    self.pager.encode_and_set(page_idx, page);
+                    self.pager.encode_and_set(top_page_idx, top_page);
 
                     return;
                 }
-                SearchResult::GoDown(child_index) => {
+                SearchResult::GoDown(_child_index) => {
                     // The node does not contain the value, instead we found the index of a child of this node where the value should be inserted instead
                     // we need to go deeper.
 
-                    stack = match stack.push(child_index) {
-                        Done(stack) => {
-                            // We reached a leaf node where we need to insert this as a new value
-                            stack.insert(key, value);
-                            return;
-                        }
-                        Grew(stack) => {
-                            // We found an existing child at this location, continue the search there
-                            stack
-                        }
-                    };
+                    todo!()
                 }
             }
         }

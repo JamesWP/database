@@ -116,32 +116,32 @@ impl Pager {
         file
     }
 
-    pub fn get(&self, idx: u32) -> Page {
-        println!("Reading page {idx}");
+    pub fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
+        println!("Reading page {}", idx.borrow());
         let mut p = Page::default();
 
         let content = p.content.as_mut_slice();
 
-        let mut file = self.file_at_page_readonly(idx);
+        let mut file = self.file_at_page_readonly(idx.borrow().clone());
         file.read_exact(content).unwrap();
 
         p
     }
     
-    pub fn get_and_decode<P:Borrow<P> + DeserializeOwned>(&self, idx: u32) -> P { 
+    pub fn get_and_decode<P:Borrow<P> + DeserializeOwned, PageNo: Borrow<u32>>(&self, idx: PageNo) -> P { 
         let p = self.get(idx);
         let reader = BufReader::new(p.borrow().content.as_slice());
         let mut deserializer = serde_json::Deserializer::from_reader(reader);
         P::deserialize(&mut deserializer).unwrap()
     }
 
-    pub fn set<P:Borrow<Page>>(&mut self, idx: u32, page: P) {
-        println!("Writing page {idx}");
-        let mut file = self.file_at_page_write(idx);
+    pub fn set<P:Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
+        println!("Writing page {}", idx.borrow());
+        let mut file = self.file_at_page_write(idx.borrow().clone());
         file.write_all(&page.borrow().content).unwrap();
     }
 
-    pub fn encode_and_set<P:Borrow<P> + Serialize>(&mut self, idx: u32, v: P) {
+    pub fn encode_and_set<P:Borrow<P> + Serialize, PageNo: Borrow<u32>>(&mut self, idx: PageNo, v: P) {
         let mut page = Page::default();
         serde_json::to_writer(page.content.as_mut_slice(), v.borrow()).unwrap();
         self.set(idx, page);
