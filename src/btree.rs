@@ -106,7 +106,23 @@ where
     /// This may result in the cursor not pointing to a row if there is no
     /// last row to point to
     fn last(&mut self) {
-        todo!()
+        // Take the tree identified by the root page number, and find its right most node and
+        // find its largest entry
+        let root_page: NodePage = self.pager.get_and_decode(self.root_page);
+
+        let mut page = root_page;
+        let mut page_idx = self.root_page;
+        loop {
+            match page {
+                node::NodePage::Leaf(l) => {
+                    // We found the first leaf in the tree.
+                    // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
+                    self.leaf_iterator = Some((page_idx, l.num_items()-1));
+                    return;
+                },
+                node::NodePage::Interior(_i) => todo!(),
+            }
+        }
     }
 
     /// Move the cursor to point at the row in the btree identified by the given key
@@ -171,7 +187,24 @@ where
 
     /// Move the cursor to point at the next item in the btree
     fn prev(&mut self) {
-        todo!()
+        if self.leaf_iterator.is_none() {
+            return;
+        }
+
+        let (leaf_page_number, entry_index) = self.leaf_iterator.unwrap();
+        
+        let page: NodePage = self.pager.get_and_decode(leaf_page_number);
+
+        match page {
+            node::NodePage::Leaf(l) => {
+                if entry_index > 0 {
+                    self.leaf_iterator = Some((leaf_page_number, entry_index-1));
+                } else {
+                    // We ran out of items on this page, find the previous leaf page
+                }
+            },
+            node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
+        }
     }
 }
 
