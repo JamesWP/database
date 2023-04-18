@@ -433,6 +433,7 @@ mod test {
                 let my_value = cursor.column(0).unwrap();
 
                 assert_eq!(json![actual_value], my_value);
+                cursor.next();
             }
         }
     }
