@@ -403,4 +403,35 @@ mod test {
 
         btree.debug();
     }
+
+    use proptest::prelude::*;
+    
+    proptest! {
+        #[test]
+        fn test_ordering(elements in prop::collection::vec(&(1..100u64, 1..100u64), 1..5usize)) {
+            println!("Test: {elements:?}");
+
+            let mut rust_btree = BTreeMap::new();
+
+            let test = TestDb::default();
+            let mut my_btree = test.btree;
+
+            my_btree.create_tree("testing");
+
+            let mut cursor = my_btree.open_readwrite("testing").unwrap();
+
+            for (k,v) in elements {
+                rust_btree.insert(k, v);
+                cursor.insert(k, vec![json![v]]);
+            }
+
+            cursor.first();
+
+            for (_key, actual_value) in rust_btree.iter() {
+                let my_value = cursor.column(0).unwrap();
+
+                assert_eq!(json![actual_value], my_value);
+            }
+        }
+    }
 }
