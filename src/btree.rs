@@ -48,7 +48,7 @@ where
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
 
-                    top_page.set_item_at_index(insertion_index, value);
+                    top_page.set_item_at_index(insertion_index, key, value);
 
                     // TODO: there is going to be a panic if the new value does not fit on this page...
                     self.pager.encode_and_set(top_page_idx, top_page);
@@ -259,6 +259,8 @@ impl BTree {
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeMap;
+
     use serde_json::json;
     use tempfile::NamedTempFile;
 

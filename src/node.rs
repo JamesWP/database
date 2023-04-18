@@ -27,10 +27,10 @@ where K: Ord
         };
     }
 
-    pub fn set_item_at_index(&mut self, item_idx: usize, value: V) {
+    pub fn set_item_at_index(&mut self, item_idx: usize, key: K, value: V) {
         match self {
             NodePage::Leaf(l) => {
-                l.set_item_at_index(item_idx, value);
+                l.set_item_at_index(item_idx, key, value);
             }
             NodePage::Interior(_) => todo!(),
         };
@@ -87,8 +87,8 @@ where
         SearchResult::NotPresent(self.cells.len())
     }
 
-    pub fn set_item_at_index(&mut self, index: usize, value: V) {
-        todo!()
+    pub fn set_item_at_index(&mut self, index: usize, key: K, value: V) {
+        self.cells[index] = (key, value);
     }
 
     pub fn insert_item_at_index(
