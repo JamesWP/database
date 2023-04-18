@@ -60,16 +60,6 @@ pub enum SearchResult {
     GoDown(u32),
 }
 
-pub enum InsertionResult<K, V> {
-    /// The insertion is done, and there was space enough to fit the item in the page
-    Fit,
-
-    /// The insertion was not possible, it resulted in the node splitting.
-    /// The split resulted in two nodes, this one (self) and another in this result.
-    /// The smallest key in the other node is also returned.
-    Split(K, NodePage<K, V>),
-}
-
 impl<K, V> LeafNodePage<K, V>
 where
     K: Ord,
@@ -96,16 +86,10 @@ where
         index: usize,
         key: K,
         value: V,
-    ) -> InsertionResult<K, V> {
+    ) {
         // put item into leaf at given index.
 
         self.cells.insert(index, (key, value));
-
-        InsertionResult::Fit
-
-        // Check if this page is overfull..
-        // We might have to check about the insertion in the caller...
-        // TODO: handle splitting if full.
     }
 
     pub fn get_item_at_index(&self, entry_index: usize) -> Option<&(K, V)> {

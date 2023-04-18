@@ -51,7 +51,7 @@ where
                     top_page.set_item_at_index(insertion_index, key, value);
 
                     // TODO: there is going to be a panic if the new value does not fit on this page...
-                    self.pager.encode_and_set(top_page_idx, top_page);
+                    self.pager.encode_and_set(top_page_idx, top_page).unwrap();
 
                     return;
                 }
@@ -59,7 +59,7 @@ where
 
                     top_page.insert_item_at_index(item_idx, key, value);
 
-                    self.pager.encode_and_set(top_page_idx, top_page);
+                    self.pager.encode_and_set(top_page_idx, top_page).unwrap();
 
                     return;
                 }
@@ -249,7 +249,7 @@ impl BTree {
         let empty_leaf_node = node::LeafNodePage::<u64, Tuple>::default();
         let empty_root_node = node::NodePage::Leaf(empty_leaf_node);
         // Encode and set the empty_root_node in the pager
-        self.pager.encode_and_set(idx, empty_root_node);
+        self.pager.encode_and_set(idx, empty_root_node).unwrap();
     }
 
     fn debug(&self) {
@@ -406,11 +406,11 @@ mod test {
         btree.debug();
     }
 
-    use proptest::prelude::*;
+    use proptest::{prelude::*, char::any};
     
     proptest! {
         #[test]
-        fn test_ordering(elements in prop::collection::vec(&(1..100u64, 1..100u64), 1..5usize)) {
+        fn test_ordering(elements in prop::collection::vec(&(1..100u64, &(any(), 1..1000usize)), 1..200usize)) {
             println!("Test: {elements:?}");
 
             let mut rust_btree = BTreeMap::new();
@@ -422,16 +422,17 @@ mod test {
 
             let mut cursor = my_btree.open_readwrite("testing").unwrap();
 
-            for (k,v) in elements {
-                rust_btree.insert(k, v);
-                cursor.insert(k, vec![json![v]]);
+            for (k, (v, len)) in elements {
+                let value = v.to_string().repeat(len);
+
+                rust_btree.insert(k, value.clone());
+                cursor.insert(k, vec![serde_json::Value::String(value.clone())]);
             }
 
             cursor.first();
 
             for (_key, actual_value) in rust_btree.iter() {
                 let my_value = cursor.column(0).unwrap();
-
                 assert_eq!(json![actual_value], my_value);
                 cursor.next();
             }

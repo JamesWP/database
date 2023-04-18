@@ -4,4 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 7c13d2c781b3c77a08279c1fc9a1197ebdcab20049d0b64f4e9577cea15c51e3 # shrinks to elements = [(1, 1), (1, 1)]
+cc 054d5c46c28ba24af08eb9d151eabd8c07df8b983c9ceed0373c49991092036b # shrinks to elements = [(1, ('𐀀', 874)), (38, ('𐀀', 43)), (10, ('0', 185)), (11, ('0', 185))]

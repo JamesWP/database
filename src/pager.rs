@@ -49,6 +49,11 @@ pub struct Pager {
 
 const PAGE_SIZE: u32 = 2 << 11;
 
+#[derive(Debug)]
+pub enum EncodingError {
+    NotEnoughSpaceInPage
+}
+
 impl Pager {
     pub fn new(path: &str) -> Pager {
         Pager {
@@ -87,7 +92,7 @@ impl Pager {
     }
 
     fn set_zero_page(&mut self, zero: ZeroPage) {
-        self.encode_and_set(0, zero);
+        self.encode_and_set(0, zero).unwrap();
     }
 
     fn file_at_page_readonly(&self, idx: u32) -> File {
@@ -141,10 +146,25 @@ impl Pager {
         file.write_all(&page.borrow().content).unwrap();
     }
 
-    pub fn encode_and_set<P:Borrow<P> + Serialize, PageNo: Borrow<u32>>(&mut self, idx: PageNo, v: P) {
+    pub fn encode_and_set<P:Borrow<P> + Serialize, PageNo: Borrow<u32>>(&mut self, idx: PageNo, v: P) -> Result<(), EncodingError> {
         let mut page = Page::default();
-        serde_json::to_writer(page.content.as_mut_slice(), v.borrow()).unwrap();
+        let result = serde_json::to_writer(page.content.as_mut_slice(), v.borrow());
+
+        match result {
+            Err(e) => match e.classify() {
+                serde_json::error::Category::Io => {
+                    return Err(EncodingError::NotEnoughSpaceInPage);
+                },
+                serde_json::error::Category::Syntax => todo!(),
+                serde_json::error::Category::Data => todo!(),
+                serde_json::error::Category::Eof => todo!(),
+            },
+            _ => {}
+        };
+
         self.set(idx, page);
+
+        Ok(())
     }
 
     pub fn allocate(&mut self) -> u32 {
