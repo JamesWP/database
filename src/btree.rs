@@ -50,8 +50,29 @@ where
 
                     top_page.set_item_at_index(insertion_index, key, value);
 
-                    // TODO: there is going to be a panic if the new value does not fit on this page...
-                    self.pager.encode_and_set(top_page_idx, top_page).unwrap();
+                    let result = self.pager.encode_and_set(top_page_idx, &top_page);
+
+                    match result {
+                        Ok(_) => {},
+                        Err(pager::EncodingError::NotEnoughSpaceInPage) => {
+                            let (top_page, extra_page) = top_page.split();
+                            let extra_page_idx = self.pager.allocate();
+
+                            self.pager.encode_and_set(top_page_idx, top_page).expect("After split, parts are smaller");
+                            self.pager.encode_and_set(extra_page_idx, extra_page).expect("After split, parts are smaller");
+
+                            if stack.len() != 0 {
+                                // We must update the parent node
+                                // A reference to the new extra_page must be inserted into the parent node
+                                // Our reference in our parent might need updating???
+                                todo!();
+                            } else {
+                                // We have just split the root node...
+                                // We must now create the first interior node and insert two new child pages
+                                todo!();
+                            }
+                        },
+                    }
 
                     return;
                 }

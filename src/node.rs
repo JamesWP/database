@@ -9,7 +9,7 @@ pub enum NodePage<K, V> {
 }
 
 impl<K, V> NodePage<K, V> 
-where K: Ord
+where K: Ord, K: Clone, V: Clone
 {
     pub fn search(&self, k: &K) -> SearchResult {
         match self {
@@ -34,6 +34,16 @@ where K: Ord
             }
             NodePage::Interior(_) => todo!(),
         };
+    }
+
+    pub fn split(self) -> (Self, Self) {
+        match self {
+            NodePage::Leaf(l) => {
+                let (left, right) = l.split();
+                (Self::Leaf(left), Self::Leaf(right))
+            }
+            NodePage::Interior(_) => todo!(),
+        }
     }
 }
 
@@ -114,6 +124,21 @@ where
 
         Ok(())
     }
+
+    fn split(&self) -> (LeafNodePage<K, V>, LeafNodePage<K, V>) where K: Clone, V: Clone {
+        let midpoint = self.cells.len() / 2;
+        let (left, right) = self.cells.split_at(midpoint);
+
+        let left = Self {
+            cells: left.to_vec()
+        };
+
+        let right = Self {
+            cells: right.to_vec()
+        };
+
+        (left, right)
+    }
 }
 
 pub enum VerifyError {
@@ -169,5 +194,10 @@ mod test {
         assert_eq!(1, found_index(page.search(&2)));
         assert_eq!(2, found_index(page.search(&3)));
     
+    }
+
+    #[test] 
+    fn test_split() {
+        todo!();
     }
 }
