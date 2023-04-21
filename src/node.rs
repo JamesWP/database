@@ -99,8 +99,26 @@ where
     pub fn num_items(&self) -> usize{
         self.cells.len()
     }
+
+    pub fn verify_key_ordering(&self) -> Result<(), VerifyError> {
+        let keys = || self.cells.iter().map(|(k,_v)| k);
+
+        for (left, right) in keys().zip(keys()) {
+            match left.cmp(right) {
+                Less | Equal => { /* GOOD! */},
+                Greater => {
+                    return Err(VerifyError::KeyOutOfOrder);
+                },
+            }
+        }
+
+        Ok(())
+    }
 }
 
+pub enum VerifyError {
+    KeyOutOfOrder
+}
 #[derive(Serialize, Deserialize)]
 pub struct InteriorNodePage<K> {
     keys: Vec<K>,

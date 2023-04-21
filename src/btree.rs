@@ -206,6 +206,44 @@ where
             node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
         }
     }
+
+    fn verify(&mut self) -> Result<(), VerifyError>{
+        let root_page: NodePage = self.pager.get_and_decode(self.root_page);
+
+        let verify_leaf = |leaf: LeafNodePage, level| {
+            // Check each leaf page has keys (unless its a root node)
+            if level != 0 {
+                assert!(leaf.num_items() > 0);
+            }
+
+            // Check the keys in each leaf page are in order
+            leaf.verify_key_ordering()?;
+
+            Ok(())
+        };
+
+        match root_page {
+            node::NodePage::Leaf(l) => verify_leaf(l, 0),
+            node::NodePage::Interior(_) => todo!(),
+        }
+        // Check the leaf pages are all at the same level
+        // Check all interior nodes are half full of entries ???
+        // Check all interior node's keys are in order
+        // Check all interior node's child page's keys are within bounds 
+    }
+}
+
+#[derive(Debug)]
+pub enum VerifyError {
+    KeyOutOfOrder
+}
+
+impl From<node::VerifyError> for VerifyError {
+    fn from(value: node::VerifyError) -> Self {
+        match value {
+            node::VerifyError::KeyOutOfOrder => { Self::KeyOutOfOrder },
+        }
+    }
 }
 
 pub struct BTree {
@@ -436,6 +474,8 @@ mod test {
                 assert_eq!(json![actual_value], my_value);
                 cursor.next();
             }
+
+            cursor.verify().unwrap();
         }
     }
 }
