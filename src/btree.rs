@@ -1,5 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
+use proptest::result;
+
 use crate::{
     node::{self, SearchResult},
     pager::{self, Pager},
@@ -8,10 +10,12 @@ use crate::{
 type Tuple = std::vec::Vec<serde_json::Value>;
 type NodePage = node::NodePage<u64, Tuple>;
 type LeafNodePage = node::LeafNodePage<u64, Tuple>;
+type InteriorNodePage = node::InteriorNodePage<u64>;
 
 pub struct Cursor<PagerRef> {
     pager: PagerRef,
     root_page: u32,
+    tree_name: String,
 
     /// key for the item pointed to by the cursor
     stack: Vec<InteriorNodeIterator>,
@@ -41,7 +45,7 @@ where
         stack.push(self.root_page);
 
         loop {
-            let top_page_idx = stack.last().unwrap();
+            let top_page_idx = *stack.last().unwrap();
             let mut top_page: NodePage = self.pager.get_and_decode(top_page_idx);
             match top_page.search(&key) {
                 SearchResult::Found(insertion_index) => {
@@ -50,39 +54,16 @@ where
 
                     top_page.set_item_at_index(insertion_index, key, value);
 
-                    let result = self.pager.encode_and_set(top_page_idx, &top_page);
+                    self.update_page(top_page, top_page_idx, stack);
 
-                    match result {
-                        Ok(_) => {},
-                        Err(pager::EncodingError::NotEnoughSpaceInPage) => {
-                            let (top_page, extra_page) = top_page.split();
-                            let extra_page_idx = self.pager.allocate();
-
-                            self.pager.encode_and_set(top_page_idx, top_page).expect("After split, parts are smaller");
-                            self.pager.encode_and_set(extra_page_idx, extra_page).expect("After split, parts are smaller");
-
-                            if stack.len() != 0 {
-                                // We must update the parent node
-                                // A reference to the new extra_page must be inserted into the parent node
-                                // Our reference in our parent might need updating???
-                                todo!();
-                            } else {
-                                // We have just split the root node...
-                                // We must now create the first interior node and insert two new child pages
-                                todo!();
-                            }
-                        },
-                    }
-
-                    return;
+                    break;
                 }
                 SearchResult::NotPresent(item_idx) => {
-
                     top_page.insert_item_at_index(item_idx, key, value);
 
-                    self.pager.encode_and_set(top_page_idx, top_page).unwrap();
+                    self.update_page(top_page, top_page_idx, stack);
 
-                    return;
+                    break;
                 }
                 SearchResult::GoDown(_child_index) => {
                     // The node does not contain the value, instead we found the index of a child of this node where the value should be inserted instead
@@ -91,6 +72,55 @@ where
                     todo!()
                 }
             }
+        }
+    }
+
+    fn update_page(&mut self, modified_page: NodePage, modified_page_idx: u32, stack: Vec<u32>) {
+        let result = self.pager.encode_and_set(modified_page_idx, &modified_page);
+
+        if result.is_ok() {
+            return;
+        }
+
+        let result = result.unwrap_err();
+
+        match result {
+            pager::EncodingError::NotEnoughSpaceInPage => {
+                self.split_page(modified_page, modified_page_idx, stack);
+            }
+        }
+    }
+
+    fn split_page(&mut self, modified_page: NodePage, modified_page_idx: u32, stack: Vec<u32>) {
+        let (top_page, extra_page) = modified_page.split();
+        let extra_page_idx = self.pager.allocate();
+
+        let extra_page_first_key = extra_page.smallest_key();
+
+        self.pager
+            .encode_and_set(modified_page_idx, top_page)
+            .expect("After split, parts are smaller");
+        self.pager
+            .encode_and_set(extra_page_idx, extra_page)
+            .expect("After split, parts are smaller");
+
+        if stack.len() != 1 {
+            // We must update the parent node
+            // A reference to the new extra_page must be inserted into the parent node
+            // Our reference in our parent might need updating???
+            todo!("non empty stack {stack:?}");
+        } else {
+            // We have just split the root node...
+            // We must now create the first interior node and insert two new child pages
+            let interior_node =
+                InteriorNodePage::new(modified_page_idx, extra_page_first_key, extra_page_idx);
+
+            let root_node = NodePage::Interior(interior_node);
+
+            let root_node_idx = self.pager.allocate();
+            self.pager.encode_and_set(root_node_idx, root_node).unwrap();
+            self.pager.set_root_page(&self.tree_name, root_node_idx);
+            self.verify().unwrap();
         }
     }
 }
@@ -106,19 +136,26 @@ where
     fn first(&mut self) {
         // Take the tree identified by the root page number, and find its left most node and
         // find its smallest entry
-        let root_page: NodePage = self.pager.get_and_decode(self.root_page);
 
-        let mut page = root_page;
-        let mut page_idx = self.root_page;
+        self.select_leftmost_of_idx(self.root_page)
+    }
+
+    fn select_leftmost_of_idx(&mut self, page_idx: u32) {
+        let mut page_idx = page_idx;
+
         loop {
+            let page: NodePage = self.pager.get_and_decode(page_idx);
             match page {
                 node::NodePage::Leaf(l) => {
                     // We found the first leaf in the tree.
                     // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
                     self.leaf_iterator = Some((page_idx, 0));
                     return;
-                },
-                node::NodePage::Interior(i) => todo!(),
+                }
+                node::NodePage::Interior(i) => {
+                    self.stack.push((page_idx, 0));
+                    page_idx = i.get_child_page_by_index(0);
+                }
             }
         }
     }
@@ -138,9 +175,9 @@ where
                 node::NodePage::Leaf(l) => {
                     // We found the first leaf in the tree.
                     // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
-                    self.leaf_iterator = Some((page_idx, l.num_items()-1));
+                    self.leaf_iterator = Some((page_idx, l.num_items() - 1));
                     return;
-                },
+                }
                 node::NodePage::Interior(_i) => todo!(),
             }
         }
@@ -160,7 +197,7 @@ where
                 SearchResult::Found(index) => {
                     self.leaf_iterator = Some((page_idx, index));
                     return;
-                },
+                }
                 SearchResult::NotPresent(_) => self.leaf_iterator = None,
                 SearchResult::GoDown(_) => todo!(),
             }
@@ -179,7 +216,7 @@ where
                 let (_key, value) = l.get_item_at_index(entry_index)?;
                 let value = value.get(col_idx).unwrap_or(&NULL);
                 Some(value.to_owned())
-            },
+            }
             node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
         }
     }
@@ -190,19 +227,56 @@ where
             return;
         }
 
-        let (leaf_page_number, entry_index) = self.leaf_iterator.unwrap();
-        
-        let page: NodePage = self.pager.get_and_decode(leaf_page_number);
+        let (page_number, entry_index) = self.leaf_iterator.unwrap();
 
-        match page {
-            node::NodePage::Leaf(l) => {
-                if entry_index +1 < l.num_items() {
-                    self.leaf_iterator = Some((leaf_page_number, entry_index+1));
-                } else {
-                    // We ran out of items on this page, find the next leaf page
-                }
-            },
+        let page: NodePage = self.pager.get_and_decode(page_number);
+
+        let num_items_in_leaf = match page {
+            node::NodePage::Leaf(l) => l.num_items(),
             node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
+        };
+
+        // Check if there are more items left in the curent leaf
+        if entry_index + 1 < num_items_in_leaf {
+            self.leaf_iterator = Some((page_number, entry_index + 1));
+            return;
+        }
+
+        // We ran out of items on this leaf page, find the next leaf page
+        loop {
+            // if the stack is empty then we have no more places to go
+            if self.stack.is_empty() {
+                self.leaf_iterator = None;
+                return;
+            }
+
+            let (curent_interior_idx, curent_edge) = self.stack.pop().unwrap();
+
+            let curent_interior: NodePage = self.pager.get_and_decode(curent_interior_idx);
+            let edge_count = match &curent_interior {
+                node::NodePage::Interior(i) => i.num_edges(),
+                node::NodePage::Leaf(_) => panic!("The stack should only contain interior pages"),
+            };
+
+            // if we there are more edges to the right:
+            if curent_edge + 1 < edge_count {
+                // select the next edge in the curent page
+                self.stack.push((curent_interior_idx, curent_edge + 1));
+
+                // find the page_idx for the new edge
+                let curent_edge_idx = match &curent_interior {
+                    node::NodePage::Leaf(_) => todo!(),
+                    node::NodePage::Interior(i) => i.get_child_page_by_index(curent_edge + 1),
+                };
+
+                // then select the first item in the leftmost leaf of that subtree
+                self.select_leftmost_of_idx(curent_edge_idx);
+                return;
+            }
+
+            // if there are no more edges in this node:
+            //    pop this item off the stack and repeat
+            // pop already happened
         }
     }
 
@@ -213,56 +287,107 @@ where
         }
 
         let (leaf_page_number, entry_index) = self.leaf_iterator.unwrap();
-        
+
         let page: NodePage = self.pager.get_and_decode(leaf_page_number);
 
         match page {
             node::NodePage::Leaf(l) => {
                 if entry_index > 0 {
-                    self.leaf_iterator = Some((leaf_page_number, entry_index-1));
+                    self.leaf_iterator = Some((leaf_page_number, entry_index - 1));
                 } else {
                     // We ran out of items on this page, find the previous leaf page
                 }
-            },
+            }
             node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
         }
     }
 
-    fn verify(&mut self) -> Result<(), VerifyError>{
+    fn verify_leaf(&self, leaf: LeafNodePage) -> Result<usize, VerifyError> {
+        // Check each leaf page has keys (unless its a root node)
+        assert!(leaf.num_items() > 0);
+
+        // Check the keys in each leaf page are in order
+        leaf.verify_key_ordering()?;
+
+        Ok(0)
+    }
+
+    fn verify_interior(&self, interior: InteriorNodePage) -> Result<usize, VerifyError> {
+        // if interior page contains edges to leaves, all edges must be leaves
+        // if interior page contains edges to interior nodes, each interior node must have leaves at the same level
+        // Check all interior node's keys are in order
+        interior.verify_key_ordering()?;
+
+        // Check all interior nodes are half full of entries ???
+        // They should have at least two edges
+        assert!(interior.num_edges() > 1);
+
+        // Check all interior node's child page's keys are within bounds
+        for edge in 0..interior.num_edges() - 1 {
+            let child_page_idx = interior.get_child_page_by_index(edge);
+            let child_page: NodePage = self.pager.get_and_decode(child_page_idx);
+
+            let edge_key = interior.get_key_by_index(edge);
+            let smallest_key = child_page.smallest_key();
+            let largest_key = child_page.largest_key();
+
+            assert!(smallest_key <= largest_key);
+            assert!(largest_key <= edge_key);
+        }
+
+        let mut edge_levels = vec![];
+
+        for edge in 0..interior.num_edges() {
+            let edge_idx = interior.get_child_page_by_index(edge);
+            let edge: NodePage = self.pager.get_and_decode(edge_idx);
+            let level = self.verify_node(edge)?;
+            edge_levels.push(level);
+        }
+
+        let first_level = edge_levels.first().unwrap().clone();
+
+        if edge_levels.into_iter().skip(1).filter(|l| *l != first_level).next().is_some() {
+            // found at least one edge with a different level to the first edge
+            return Err(VerifyError::Imbalance);
+        }
+
+        Ok(first_level)
+    }
+
+    fn verify_node(&self, node: NodePage) -> Result<usize, VerifyError> {
+        match node {
+            node::NodePage::Leaf(l) => self.verify_leaf(l),
+            node::NodePage::Interior(i) => self.verify_interior(i),
+        }
+    }
+
+    fn verify(&mut self) -> Result<(), VerifyError> {
         let root_page: NodePage = self.pager.get_and_decode(self.root_page);
 
-        let verify_leaf = |leaf: LeafNodePage, level| {
-            // Check each leaf page has keys (unless its a root node)
-            if level != 0 {
-                assert!(leaf.num_items() > 0);
+        match root_page {
+            node::NodePage::Leaf(l) => {
+                // we dont need to do the other validation if the leaf is the root node
+                l.verify_key_ordering()?;
             }
-
-            // Check the keys in each leaf page are in order
-            leaf.verify_key_ordering()?;
-
-            Ok(())
+            node::NodePage::Interior(i) => {
+                self.verify_interior(i)?;
+            }
         };
 
-        match root_page {
-            node::NodePage::Leaf(l) => verify_leaf(l, 0),
-            node::NodePage::Interior(_) => todo!(),
-        }
-        // Check the leaf pages are all at the same level
-        // Check all interior nodes are half full of entries ???
-        // Check all interior node's keys are in order
-        // Check all interior node's child page's keys are within bounds 
+        Ok(())
     }
 }
 
 #[derive(Debug)]
 pub enum VerifyError {
-    KeyOutOfOrder
+    KeyOutOfOrder,
+    Imbalance,
 }
 
 impl From<node::VerifyError> for VerifyError {
     fn from(value: node::VerifyError) -> Self {
         match value {
-            node::VerifyError::KeyOutOfOrder => { Self::KeyOutOfOrder },
+            node::VerifyError::KeyOutOfOrder => Self::KeyOutOfOrder,
         }
     }
 }
@@ -286,6 +411,7 @@ impl BTree {
             root_page: idx,
             stack: vec![],
             leaf_iterator: None,
+            tree_name: tree_name.to_owned(),
         })
     }
 
@@ -297,6 +423,7 @@ impl BTree {
             root_page: idx,
             stack: vec![],
             leaf_iterator: None,
+            tree_name: tree_name.to_owned(),
         })
     }
 
@@ -465,8 +592,8 @@ mod test {
         btree.debug();
     }
 
-    use proptest::{prelude::*, char::any};
-    
+    use proptest::{char::any, prelude::*};
+
     proptest! {
         #[test]
         fn test_ordering(elements in prop::collection::vec(&(1..100u64, &(any(), 1..1000usize)), 1..200usize)) {
@@ -488,10 +615,16 @@ mod test {
                 cursor.insert(k, vec![serde_json::Value::String(value.clone())]);
             }
 
+            cursor.verify();
+            my_btree.debug();
+
+            let mut cursor = my_btree.open_readonly("testing").unwrap();
+
             cursor.first();
 
-            for (_key, actual_value) in rust_btree.iter() {
+            for (key, actual_value) in rust_btree.iter() {
                 let my_value = cursor.column(0).unwrap();
+                println!("Key: {key} {my_value}");
                 assert_eq!(json![actual_value], my_value);
                 cursor.next();
             }

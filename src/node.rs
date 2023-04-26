@@ -21,6 +21,7 @@ where
         }
     }
 
+    // TODO: inserting an item into an interior page doesn't make sense, interior pages dont store values!
     pub fn insert_item_at_index(&mut self, item_idx: usize, key: K, value: V) {
         match self {
             NodePage::Leaf(l) => {
@@ -30,6 +31,7 @@ where
         };
     }
 
+    // TODO: setting an item into an interior page doesn't make sense, interior pages dont store values!
     pub fn set_item_at_index(&mut self, item_idx: usize, key: K, value: V) {
         match self {
             NodePage::Leaf(l) => {
@@ -46,6 +48,20 @@ where
                 (Self::Leaf(left), Self::Leaf(right))
             }
             NodePage::Interior(_) => todo!(),
+        }
+    }
+
+    pub fn smallest_key(&self) -> K {
+        match self {
+            NodePage::Leaf(l) => l.cells.first().unwrap().0.clone(),
+            NodePage::Interior(i) => i.keys.first().unwrap().clone(),
+        }
+    }
+
+    pub fn largest_key(&self) -> K {
+        match self {
+            NodePage::Leaf(l) => l.cells.last().unwrap().0.clone(),
+            NodePage::Interior(i) => i.keys.last().unwrap().clone(),
         }
     }
 }
@@ -147,11 +163,54 @@ where
 pub enum VerifyError {
     KeyOutOfOrder,
 }
+
+// [edge 0] [key 0] [edge 1] [key 1] ... [key N-1] [edge N]
+// items in [edge i] are LESS than or EQUAL to [key i]
+// (if there is no [key i], i.e. at the end, items in [edge i] must be GREATER than [key i-1])
 #[derive(Serialize, Deserialize)]
 pub struct InteriorNodePage<K> {
     keys: Vec<K>,
     edges: Vec<u32>,
-    // TODO: create interior node
+}
+
+impl<K: Ord + Clone> InteriorNodePage<K> {
+    pub fn new(
+        left_page_idx: u32,
+        right_page_smallest_key: K,
+        right_page_idx: u32,
+    ) -> InteriorNodePage<K> {
+        InteriorNodePage {
+            keys: vec![right_page_smallest_key],
+            edges: vec![left_page_idx, right_page_idx],
+        }
+    }
+
+    pub fn get_child_page_by_index(&self, arg: usize) -> u32 {
+        self.edges[arg].clone()
+    }
+
+    pub fn num_edges(&self) -> usize {
+        self.edges.len()
+    }
+
+    pub fn verify_key_ordering(&self) -> Result<(), VerifyError> {
+        let keys = || self.keys.iter();
+
+        for (left, right) in keys().zip(keys()) {
+            match left.cmp(right) {
+                Less | Equal => { /* GOOD! */ }
+                Greater => {
+                    return Err(VerifyError::KeyOutOfOrder);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn get_key_by_index(&self, edge: usize) -> K {
+        self.keys[edge].clone()
+    }
 }
 
 #[cfg(test)]
@@ -199,7 +258,7 @@ mod test {
         assert_eq!(2, found_index(page.search(&3)));
     }
 
-    use proptest::{prelude::*};
+    use proptest::prelude::*;
 
     proptest! {
         #[test]
