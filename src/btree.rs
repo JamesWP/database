@@ -65,11 +65,11 @@ where
 
                     break;
                 }
-                SearchResult::GoDown(_child_index) => {
+                SearchResult::GoDown(child_index) => {
                     // The node does not contain the value, instead we found the index of a child of this node where the value should be inserted instead
                     // we need to go deeper.
 
-                    todo!()
+                    stack.push(child_index);
                 }
             }
         }
@@ -108,6 +108,7 @@ where
             // We must update the parent node
             // A reference to the new extra_page must be inserted into the parent node
             // Our reference in our parent might need updating???
+            self.debug();
             todo!("non empty stack {stack:?}");
         } else {
             // We have just split the root node...
@@ -210,15 +211,28 @@ where
     /// get the value at the specified column index from the row pointed to by the cursor,
     /// or None if the cursor is not pointing to a row
     fn column(&self, col_idx: usize) -> Option<serde_json::Value> {
+        let (_key, value) = self.get_entry()?;
+
+        let value = &value[col_idx];
+
+        Some(value.clone())
+    }
+
+    fn row_key(&self) -> Option<u64> {
+       let (key, _value) = self.get_entry()?; 
+
+       Some(key)
+    }
+
+    fn get_entry(&self) -> Option<(u64, Tuple)> {
+        // TODO: This returns a copy of the entry even if we dont need a copy
         let (leaf_page_number, entry_index) = self.leaf_iterator?;
 
         let page: NodePage = self.pager.get_and_decode(leaf_page_number);
 
         match page {
             node::NodePage::Leaf(l) => {
-                let (_key, value) = l.get_item_at_index(entry_index)?;
-                let value = value.get(col_idx).unwrap_or(&NULL);
-                Some(value.to_owned())
+                return l.get_item_at_index(entry_index).cloned();
             }
             node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
         }
@@ -305,6 +319,10 @@ where
         }
     }
 
+    fn debug(&self) {
+        self.pager.debug();
+    }
+
     fn verify_leaf(&self, leaf: LeafNodePage) -> Result<usize, VerifyError> {
         // Check each leaf page has keys (unless its a root node)
         assert!(leaf.num_items() > 0);
@@ -349,7 +367,13 @@ where
 
         let first_level = edge_levels.first().unwrap().clone();
 
-        if edge_levels.into_iter().skip(1).filter(|l| *l != first_level).next().is_some() {
+        if edge_levels
+            .into_iter()
+            .skip(1)
+            .filter(|l| *l != first_level)
+            .next()
+            .is_some()
+        {
             // found at least one edge with a different level to the first edge
             return Err(VerifyError::Imbalance);
         }
@@ -598,6 +622,37 @@ mod test {
 
     use proptest::{char::any, prelude::*};
 
+    #[test]
+    fn multi_level_insertion() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        assert!(btree.open_readonly("testing").is_none());
+
+        btree.create_tree("testing");
+
+        let mut cursor = btree.open_readwrite("testing").unwrap();
+
+        let long_string = |s: &str, num| vec![serde_json::Value::String(s.repeat(num))];
+
+        cursor.insert(1, long_string("AA", 263));
+        cursor.insert(10, long_string("BBBB", 900));
+        cursor.debug();
+        cursor.insert(11, long_string("C", 1));
+
+        cursor.first();
+        cursor.debug();
+        cursor.verify().unwrap();
+
+        assert_eq!(1, cursor.row_key().unwrap());
+        cursor.next();
+        assert_eq!(10, cursor.row_key().unwrap());
+        cursor.next();
+        assert_eq!(11, cursor.row_key().unwrap());
+        cursor.next();
+        assert!(cursor.row_key().is_none());
+    }
+
     proptest! {
         #[test]
         fn test_ordering(elements in prop::collection::vec(&(1..100u64, &(any(), 1..1000usize)), 1..200usize)) {
@@ -613,13 +668,14 @@ mod test {
             let mut cursor = my_btree.open_readwrite("testing").unwrap();
 
             for (k, (v, len)) in elements {
+                cursor.verify().unwrap();
                 let value = v.to_string().repeat(len);
 
                 rust_btree.insert(k, value.clone());
                 cursor.insert(k, vec![serde_json::Value::String(value.clone())]);
             }
 
-            cursor.verify();
+            cursor.verify().unwrap();
             my_btree.debug();
 
             let mut cursor = my_btree.open_readonly("testing").unwrap();
