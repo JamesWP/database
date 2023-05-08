@@ -230,12 +230,9 @@ where
 
         let page: NodePage = self.pager.get_and_decode(leaf_page_number);
 
-        match page {
-            node::NodePage::Leaf(l) => {
-                return l.get_item_at_index(entry_index).cloned();
-            }
-            node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
-        }
+        let page = page.leaf().expect("Values are always supposed to be in leaf pages");
+
+        return page.get_item_at_index(entry_index).cloned();
     }
 
     /// Move the cursor to point at the next item in the btree
@@ -248,10 +245,8 @@ where
 
         let page: NodePage = self.pager.get_and_decode(page_number);
 
-        let num_items_in_leaf = match page {
-            node::NodePage::Leaf(l) => l.num_items(),
-            node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
-        };
+        let page = page.leaf().expect("Values are always supposed to be in leaf pages");
+        let num_items_in_leaf = page.num_items();
 
         // Check if there are more items left in the curent leaf
         if entry_index + 1 < num_items_in_leaf {
@@ -270,10 +265,9 @@ where
             let (curent_interior_idx, curent_edge) = self.stack.pop().unwrap();
 
             let curent_interior: NodePage = self.pager.get_and_decode(curent_interior_idx);
-            let edge_count = match &curent_interior {
-                node::NodePage::Interior(i) => i.num_edges(),
-                node::NodePage::Leaf(_) => panic!("The stack should only contain interior pages"),
-            };
+
+            let curent_interior = curent_interior.interior().expect("The stack should only contain interior pages");
+            let edge_count = curent_interior.num_edges();
 
             // if we there are more edges to the right:
             if curent_edge + 1 < edge_count {
@@ -281,10 +275,7 @@ where
                 self.stack.push((curent_interior_idx, curent_edge + 1));
 
                 // find the page_idx for the new edge
-                let curent_edge_idx = match &curent_interior {
-                    node::NodePage::Leaf(_) => todo!(),
-                    node::NodePage::Interior(i) => i.get_child_page_by_index(curent_edge + 1),
-                };
+                let curent_edge_idx = curent_interior.get_child_page_by_index(curent_edge + 1);
 
                 // then select the first item in the leftmost leaf of that subtree
                 self.select_leftmost_of_idx(curent_edge_idx);
@@ -307,15 +298,13 @@ where
 
         let page: NodePage = self.pager.get_and_decode(leaf_page_number);
 
-        match page {
-            node::NodePage::Leaf(l) => {
+        let _leaf_page = page.leaf().expect("Values are always supposed to be in leaf pages");
+
                 if entry_index > 0 {
                     self.leaf_iterator = Some((leaf_page_number, entry_index - 1));
                 } else {
                     // We ran out of items on this page, find the previous leaf page
-                }
-            }
-            node::NodePage::Interior(_) => panic!("Values are always supposed to be in leaf pages"),
+            todo!()
         }
     }
 

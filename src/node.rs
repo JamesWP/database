@@ -64,6 +64,20 @@ where
             NodePage::Interior(i) => i.keys.last().unwrap().clone(),
         }
     }
+
+    pub fn interior(self) -> Option<InteriorNodePage<K>> {
+        match self {
+            NodePage::Leaf(_) => None,
+            NodePage::Interior(i) => Some(i),
+        }
+    }
+
+    pub fn leaf(self) -> Option<LeafNodePage<K, V>> {
+        match self {
+            NodePage::Leaf(l) => Some(l),
+            NodePage::Interior(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
