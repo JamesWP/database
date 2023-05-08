@@ -14,7 +14,6 @@ type InteriorNodePage = node::InteriorNodePage<u64>;
 
 pub struct Cursor<PagerRef> {
     pager: PagerRef,
-    root_page: u32,
     tree_name: String,
 
     /// key for the item pointed to by the cursor
@@ -42,7 +41,8 @@ where
         //   en existing value to replace
         let mut stack = Vec::new();
 
-        stack.push(self.root_page);
+        let root_page = self.pager.get_root_page(&self.tree_name).unwrap();
+        stack.push(root_page);
 
         loop {
             let top_page_idx = *stack.last().unwrap();
@@ -137,7 +137,8 @@ where
         // Take the tree identified by the root page number, and find its left most node and
         // find its smallest entry
 
-        self.select_leftmost_of_idx(self.root_page)
+        let root_page = self.pager.get_root_page(&self.tree_name).unwrap();
+        self.select_leftmost_of_idx(root_page)
     }
 
     fn select_leftmost_of_idx(&mut self, page_idx: u32) {
@@ -165,11 +166,12 @@ where
     /// last row to point to
     fn last(&mut self) {
         // Take the tree identified by the root page number, and find its right most node and
-        // find its largest entry
-        let root_page: NodePage = self.pager.get_and_decode(self.root_page);
+        // find its largest entry.
+        let root_page_idx = self.pager.get_root_page(&self.tree_name).unwrap();
+        let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
 
         let mut page = root_page;
-        let mut page_idx = self.root_page;
+        let mut page_idx = root_page_idx;
         loop {
             match page {
                 node::NodePage::Leaf(l) => {
@@ -187,10 +189,11 @@ where
     /// This may result in the cursor not pointing to a row if there is no
     /// row found with that key to point to
     fn find(&mut self, key: u64) {
-        let root_page: NodePage = self.pager.get_and_decode(self.root_page);
+        let root_page_idx = self.pager.get_root_page(&self.tree_name).unwrap();
+        let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
 
         let mut page = root_page;
-        let page_idx = self.root_page;
+        let page_idx = root_page_idx;
 
         loop {
             match page.search(&key) {
@@ -362,7 +365,8 @@ where
     }
 
     fn verify(&mut self) -> Result<(), VerifyError> {
-        let root_page: NodePage = self.pager.get_and_decode(self.root_page);
+        let root_page_idx = self.pager.get_root_page(&self.tree_name).unwrap();
+        let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
 
         match root_page {
             node::NodePage::Leaf(l) => {
@@ -404,11 +408,11 @@ impl BTree {
     }
 
     fn open_readonly<'a>(&'a self, tree_name: &str) -> Option<Cursor<&'a Pager>> {
-        let idx = self.pager.get_root_page(tree_name)?;
+        // Check if the root page actually exists, or return None
+        self.pager.get_root_page(tree_name)?;
 
         Some(Cursor {
             pager: &self.pager,
-            root_page: idx,
             stack: vec![],
             leaf_iterator: None,
             tree_name: tree_name.to_owned(),
@@ -416,11 +420,11 @@ impl BTree {
     }
 
     fn open_readwrite<'a>(&'a mut self, tree_name: &str) -> Option<Cursor<&'a mut Pager>> {
-        let idx = self.pager.get_root_page(tree_name)?;
+        // Check if the root page actually exists, or return None
+        self.pager.get_root_page(tree_name)?;
 
         Some(Cursor {
             pager: &mut self.pager,
-            root_page: idx,
             stack: vec![],
             leaf_iterator: None,
             tree_name: tree_name.to_owned(),
