@@ -237,6 +237,27 @@ impl<K: Ord + Clone> InteriorNodePage<K> {
 
         SearchResult::GoDown(self.edges.last().unwrap().clone())
     }
+
+    pub fn node<V>(self) -> NodePage<K, V> {
+        NodePage::Interior(self)
+    }
+
+    pub fn insert_child_page(&mut self, edge_page_smallest_key: K, edge_page_idx: u32) {
+        for (idx, key) in self.keys.iter().enumerate() {
+            match edge_page_smallest_key.cmp(key) {
+                Less => {
+                    self.edges.insert(idx, edge_page_idx+1);
+                    self.keys.insert(idx, edge_page_smallest_key);
+                    return;
+                },
+                Equal => panic!("Don't think this is possible"),
+                Greater => { continue; },
+            }
+        }
+
+        self.edges.push(edge_page_idx);
+        self.keys.push(edge_page_smallest_key);
+    }
 }
 
 #[cfg(test)]

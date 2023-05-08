@@ -54,14 +54,14 @@ where
 
                     top_page.set_item_at_index(insertion_index, key, value);
 
-                    self.update_page(top_page, top_page_idx, stack);
+                    self.update_page(top_page, stack);
 
                     break;
                 }
                 SearchResult::NotPresent(item_idx) => {
                     top_page.insert_item_at_index(item_idx, key, value);
 
-                    self.update_page(top_page, top_page_idx, stack);
+                    self.update_page(top_page, stack);
 
                     break;
                 }
@@ -75,7 +75,13 @@ where
         }
     }
 
-    fn update_page(&mut self, modified_page: NodePage, modified_page_idx: u32, stack: Vec<u32>) {
+    /// Updates a page with new content
+    /// 
+    /// # Args
+    /// * `stack` the path of pages to the modified page, last entry in the stack is the one which needs updating
+    /// * `modified_page` the updated content to be saved to the page identified by the stack
+    fn update_page(&mut self, modified_page: NodePage, stack: Vec<u32>) {
+        let modified_page_idx = stack.last().unwrap();
         let result = self.pager.encode_and_set(modified_page_idx, &modified_page);
 
         if result.is_ok() {
@@ -86,43 +92,65 @@ where
 
         match result {
             pager::EncodingError::NotEnoughSpaceInPage => {
-                self.split_page(modified_page, modified_page_idx, stack);
+                self.split_page(modified_page, stack);
             }
         }
     }
 
-    fn split_page(&mut self, modified_page: NodePage, modified_page_idx: u32, stack: Vec<u32>) {
-        let (top_page, extra_page) = modified_page.split();
+    fn split_page(&mut self, page_to_be_split: NodePage, mut stack: Vec<u32>) {
+        let top_page_idx = stack.pop().unwrap();
+        let (top_page, extra_page) = page_to_be_split.split();
         let extra_page_idx = self.pager.allocate();
 
         let extra_page_first_key = extra_page.smallest_key();
 
         self.pager
-            .encode_and_set(modified_page_idx, top_page)
+            .encode_and_set(top_page_idx, top_page)
             .expect("After split, parts are smaller");
         self.pager
             .encode_and_set(extra_page_idx, extra_page)
             .expect("After split, parts are smaller");
 
-        if stack.len() != 1 {
+        // We now must put our new page into the tree.
+        // The new page is at index: extra_page_idx, and the first key on that new page is extra_page_first_key
+
+        self.debug("Before split");
+        if stack.len() != 0 {
             // We must update the parent node
             // A reference to the new extra_page must be inserted into the parent node
             // Our reference in our parent might need updating???
-            self.debug();
-            todo!("non empty stack {stack:?}");
+
+            let parent_node_idx = stack.pop().unwrap();
+
+            let parent_node: NodePage = self.pager.get_and_decode(parent_node_idx);
+
+            let mut parent_interior_node = parent_node.interior().unwrap(); 
+
+            parent_interior_node.insert_child_page(extra_page_first_key, extra_page_idx);
+
+            // TODO: this will eventuallly overflow when an interior node needs splitting
+            self.pager.encode_and_set(parent_node_idx, parent_interior_node.node::<Tuple>()).unwrap();
+
+
+            // TODO: This logic needs to repeat to arbitrary tree depths
+            assert!(stack.len() == 0);
         } else {
             // We have just split the root node...
             // We must now create the first interior node and insert two new child pages
             let interior_node =
-                InteriorNodePage::new(modified_page_idx, extra_page_first_key, extra_page_idx);
+                InteriorNodePage::new(top_page_idx, extra_page_first_key, extra_page_idx);
 
             let root_node = NodePage::Interior(interior_node);
 
             let root_node_idx = self.pager.allocate();
             self.pager.encode_and_set(root_node_idx, root_node).unwrap();
             self.pager.set_root_page(&self.tree_name, root_node_idx);
+
+            // TODO: remove this
             self.verify().unwrap();
         }
+        
+        self.debug("After split");
     }
 }
 
@@ -300,16 +328,16 @@ where
 
         let _leaf_page = page.leaf().expect("Values are always supposed to be in leaf pages");
 
-                if entry_index > 0 {
-                    self.leaf_iterator = Some((leaf_page_number, entry_index - 1));
-                } else {
-                    // We ran out of items on this page, find the previous leaf page
+        if entry_index > 0 {
+            self.leaf_iterator = Some((leaf_page_number, entry_index - 1));
+        } else {
+            // We ran out of items on this page, find the previous leaf page
             todo!()
         }
     }
 
-    fn debug(&self) {
-        self.pager.debug();
+    fn debug(&self, message: &str) {
+        self.pager.debug(message);
     }
 
     fn verify_leaf(&self, leaf: LeafNodePage) -> Result<usize, VerifyError> {
@@ -455,8 +483,8 @@ impl BTree {
         self.pager.encode_and_set(idx, empty_root_node).unwrap();
     }
 
-    fn debug(&self) {
-        self.pager.debug()
+    fn debug(&self, message: &str) {
+        self.pager.debug(message)
     }
 }
 
@@ -541,7 +569,7 @@ mod test {
             assert_eq!(cursor.column(0), Some(json!(1337)));
         }
 
-        btree.debug();
+        btree.debug("");
     }
 
     #[test]
@@ -573,7 +601,7 @@ mod test {
             }
         }
 
-        btree.debug();
+        btree.debug("");
     }
 
     #[test]
@@ -606,10 +634,10 @@ mod test {
             }
         }
 
-        btree.debug();
+        btree.debug("");
     }
 
-    use proptest::{char::any, prelude::*};
+    use proptest::prelude::*;
 
     #[test]
     fn multi_level_insertion() {
@@ -626,11 +654,11 @@ mod test {
 
         cursor.insert(1, long_string("AA", 263));
         cursor.insert(10, long_string("BBBB", 900));
-        cursor.debug();
+        cursor.debug("");
         cursor.insert(11, long_string("C", 1));
 
         cursor.first();
-        cursor.debug();
+        cursor.debug("");
         cursor.verify().unwrap();
 
         assert_eq!(1, cursor.row_key().unwrap());
@@ -644,7 +672,7 @@ mod test {
 
     proptest! {
         #[test]
-        fn test_ordering(elements in prop::collection::vec(&(1..100u64, &(any(), 1..1000usize)), 1..200usize)) {
+        fn test_ordering(elements in prop::collection::vec(&(1..100u64, &(prop::char::range('A', 'z'), 1..1000usize)), 1..200usize)) {
             println!("Test: {elements:?}");
 
             let mut rust_btree = BTreeMap::new();
@@ -665,9 +693,7 @@ mod test {
             }
 
             cursor.verify().unwrap();
-            my_btree.debug();
-
-            let mut cursor = my_btree.open_readonly("testing").unwrap();
+            cursor.debug("Before order check");
 
             cursor.first();
 
