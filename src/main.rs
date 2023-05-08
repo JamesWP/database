@@ -6,6 +6,8 @@ mod node;
 /// And the btree structures described in: https://www.sqlite.org/fileformat.html
 mod btree;
 
+mod btree_verify;
+
 mod database {
     use crate::btree;
 

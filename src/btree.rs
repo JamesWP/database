@@ -4,13 +4,13 @@ use proptest::result;
 
 use crate::{
     node::{self, SearchResult},
-    pager::{self, Pager},
+    pager::{self, Pager}, btree_verify::{self, VerifyError},
 };
 
 type Tuple = std::vec::Vec<serde_json::Value>;
-type NodePage = node::NodePage<u64, Tuple>;
-type LeafNodePage = node::LeafNodePage<u64, Tuple>;
-type InteriorNodePage = node::InteriorNodePage<u64>;
+pub type NodePage = node::NodePage<u64, Tuple>;
+pub type LeafNodePage = node::LeafNodePage<u64, Tuple>;
+pub type InteriorNodePage = node::InteriorNodePage<u64>;
 
 pub struct Cursor<PagerRef> {
     pager: PagerRef,
@@ -147,7 +147,7 @@ where
             self.pager.set_root_page(&self.tree_name, root_node_idx);
 
             // TODO: remove this
-            self.verify().unwrap();
+            btree_verify::verify(&self.pager, &self.tree_name).unwrap();
         }
         
         self.debug("After split");
@@ -314,6 +314,7 @@ where
             //    pop this item off the stack and repeat
             // pop already happened
         }
+
     }
 
     /// Move the cursor to point at the next item in the btree
@@ -340,103 +341,10 @@ where
         self.pager.debug(message);
     }
 
-    fn verify_leaf(&self, leaf: LeafNodePage) -> Result<usize, VerifyError> {
-        // Check each leaf page has keys (unless its a root node)
-        assert!(leaf.num_items() > 0);
-
-        // Check the keys in each leaf page are in order
-        leaf.verify_key_ordering()?;
-
-        Ok(0)
-    }
-
-    fn verify_interior(&self, interior: InteriorNodePage) -> Result<usize, VerifyError> {
-        // if interior page contains edges to leaves, all edges must be leaves
-        // if interior page contains edges to interior nodes, each interior node must have leaves at the same level
-        // Check all interior node's keys are in order
-        interior.verify_key_ordering()?;
-
-        // Check all interior nodes are half full of entries ???
-        // They should have at least two edges
-        assert!(interior.num_edges() > 1);
-
-        // Check all interior node's child page's keys are within bounds
-        for edge in 0..interior.num_edges() - 1 {
-            let child_page_idx = interior.get_child_page_by_index(edge);
-            let child_page: NodePage = self.pager.get_and_decode(child_page_idx);
-
-            let edge_key = interior.get_key_by_index(edge);
-            let smallest_key = child_page.smallest_key();
-            let largest_key = child_page.largest_key();
-
-            assert!(smallest_key <= largest_key);
-            assert!(largest_key <= edge_key);
-        }
-
-        let mut edge_levels = vec![];
-
-        for edge in 0..interior.num_edges() {
-            let edge_idx = interior.get_child_page_by_index(edge);
-            let edge: NodePage = self.pager.get_and_decode(edge_idx);
-            let level = self.verify_node(edge)?;
-            edge_levels.push(level);
-        }
-
-        let first_level = edge_levels.first().unwrap().clone();
-
-        if edge_levels
-            .into_iter()
-            .skip(1)
-            .filter(|l| *l != first_level)
-            .next()
-            .is_some()
-        {
-            // found at least one edge with a different level to the first edge
-            return Err(VerifyError::Imbalance);
-        }
-
-        Ok(first_level)
-    }
-
-    fn verify_node(&self, node: NodePage) -> Result<usize, VerifyError> {
-        match node {
-            node::NodePage::Leaf(l) => self.verify_leaf(l),
-            node::NodePage::Interior(i) => self.verify_interior(i),
-        }
-    }
-
-    fn verify(&mut self) -> Result<(), VerifyError> {
-        let root_page_idx = self.pager.get_root_page(&self.tree_name).unwrap();
-        let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
-
-        match root_page {
-            node::NodePage::Leaf(l) => {
-                // we dont need to do the other validation if the leaf is the root node
-                l.verify_key_ordering()?;
-            }
-            node::NodePage::Interior(i) => {
-                self.verify_interior(i)?;
-            }
-        };
-
-        Ok(())
+    fn verify(&self) -> Result<(), VerifyError> {
+        btree_verify::verify(&self.pager, &self.tree_name)
     }
 }
-
-#[derive(Debug)]
-pub enum VerifyError {
-    KeyOutOfOrder,
-    Imbalance,
-}
-
-impl From<node::VerifyError> for VerifyError {
-    fn from(value: node::VerifyError) -> Self {
-        match value {
-            node::VerifyError::KeyOutOfOrder => Self::KeyOutOfOrder,
-        }
-    }
-}
-
 pub struct BTree {
     pager: pager::Pager,
 }
