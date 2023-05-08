@@ -17,7 +17,7 @@ where
     pub fn search(&self, k: &K) -> SearchResult {
         match self {
             NodePage::Leaf(l) => l.search(k),
-            NodePage::Interior(i) => todo!(),
+            NodePage::Interior(i) => i.search::<V>(k),
         }
     }
 
@@ -210,6 +210,18 @@ impl<K: Ord + Clone> InteriorNodePage<K> {
 
     pub fn get_key_by_index(&self, edge: usize) -> K {
         self.keys[edge].clone()
+    }
+
+    fn search<V>(&self, k: &K) -> SearchResult where K: Ord, K: Clone {
+        for (idx, key) in self.keys.iter().enumerate() {
+            match k.cmp(key) {
+                Less => { return SearchResult::GoDown(self.edges[idx]); },
+                Equal => { return SearchResult::GoDown(self.edges[idx+1])},
+                Greater => { continue; },
+            };
+        }
+
+        SearchResult::GoDown(self.edges.last().unwrap().clone())
     }
 }
 
