@@ -246,7 +246,7 @@ impl<K: Ord + Clone> InteriorNodePage<K> {
         for (idx, key) in self.keys.iter().enumerate() {
             match edge_page_smallest_key.cmp(key) {
                 Less => {
-                    self.edges.insert(idx, edge_page_idx+1);
+                    self.edges.insert(idx+1, edge_page_idx);
                     self.keys.insert(idx, edge_page_smallest_key);
                     return;
                 },
