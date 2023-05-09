@@ -1,10 +1,10 @@
-use std::ops::{Deref, DerefMut};
+use std::{ops::{Deref, DerefMut}, fmt::Write};
 
 use proptest::result;
 
 use crate::{
     node::{self, SearchResult},
-    pager::{self, Pager}, btree_verify::{self, VerifyError},
+    pager::{self, Pager}, btree_verify::{self, VerifyError}, btree_graph,
 };
 
 type Tuple = std::vec::Vec<serde_json::Value>;
@@ -394,6 +394,13 @@ impl BTree {
     fn debug(&self, message: &str) {
         self.pager.debug(message)
     }
+
+    fn dump<W: Write>(&self, output: &mut W) -> std::fmt::Result {
+        btree_graph::dump(output, &self.pager)?;
+
+        Ok(())
+    }
+
 }
 
 #[cfg(test)]
@@ -402,6 +409,8 @@ mod test {
 
     use serde_json::json;
     use tempfile::NamedTempFile;
+
+    use crate::btree_graph;
 
     use super::BTree;
 
@@ -510,6 +519,10 @@ mod test {
         }
 
         btree.debug("");
+        let mut output = String::new(); 
+        btree.dump(&mut output).unwrap();
+
+        println!("{}", output);
     }
 
     #[test]

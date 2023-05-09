@@ -7,6 +7,8 @@ mod node;
 mod btree;
 
 mod btree_verify;
+mod btree_graph;
+
 
 mod database {
     use crate::btree;
