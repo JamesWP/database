@@ -43,6 +43,13 @@ fn node_name<W: Write>(output: &mut W, page_idx: u32) -> Result {
     Ok(())
 }
 
+fn interor_edge<W:Write>(output: &mut W, page_idx: u32, edge_idx: usize) -> Result {
+    write!(output, "node_{}:", page_idx)?;
+    interior_tag(output, edge_idx)?;
+
+    Ok(())
+}
+
 fn value_edge<W: Write>(output: &mut W, page_idx: u32, value_idx: usize) -> Result {
     write!(output, "node_{}:", page_idx)?;
     value_tag(output, value_idx)?;
@@ -63,12 +70,22 @@ fn value_tag<W: Write>(output: &mut W, value_idx: usize) -> Result {
     Ok(())
 }
 
+fn interior_tag<W: Write>(output: &mut W, value_idx: usize) -> Result {
+    write!(output, "e_{}", value_idx)?;
+
+    Ok(())
+}
+
 fn quote(message: &str) -> String {
     let mut s = String::new();
 
     write!(s, "\"").unwrap();
-    message.escape_default().take(20).for_each(|c| {write!(s, "{c}").unwrap();});
+    message.chars().take(20).map(|c| match c {'"' => '_', ch => ch}).for_each(|ch| s.write_char(ch).unwrap());
+    if message.chars().skip(20).next().is_some() {
+        write!(s, "...").unwrap();
+    }
     write!(s, "\"").unwrap();
+
 
     s
 }
@@ -100,6 +117,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
     writeln!(output, "digraph Database {{")?;
 
     writeln!(output, "\tnode [ shape=record ]")?;
+    writeln!(output, "\trankdir=\"LR\";")?;
 
     for page_idx in 1..pager.get_file_size_pages() {
         let page: NodePage = pager.get_and_decode(page_idx);
@@ -113,8 +131,8 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                     format!("<v_{}>{}", cell_idx, k.to_string())
                 });
                 let label = join(&mut label, "|");
-                let quoted_label = quote(&label);
-                writeln!(output, "\t[label={quoted_label}]")?;
+                let quoted_label = &label;
+                writeln!(output, "[label=\"{quoted_label}\"]")?;
 
                 for cell_idx in 0..l.num_items() {
                     write!(output, "\t")?;
@@ -130,7 +148,28 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                 }
             },
             node::NodePage::Interior(i) => {
+                write!(output, "\t")?;
+                node_name(output, page_idx)?;
+                let mut label = (1..i.num_edges()).map(|edge_index|{
+                    // Key | edge
+                    let key = i.get_key_by_index(edge_index-1);
+                    format!("key={key}|<e_{edge_index}>.")
+                });
 
+                let label = join(&mut label, "|");
+
+                let label = format!("<e_0>.| {label}");
+                let quoted_label = &label;
+                writeln!(output, "[label=\"{quoted_label}\"]")?;
+
+                for edge_index in 0..i.num_edges() {
+                    write!(output, "\t")?;
+                    interor_edge(output, page_idx, edge_index)?;
+                    write!(output, " -> ")?;
+                    let child_page_idx = i.get_child_page_by_index(edge_index);
+                    node_name(output, child_page_idx)?;
+                    writeln!(output, ";")?;
+                }
             },
         }
 

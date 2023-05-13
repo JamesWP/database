@@ -1,10 +1,15 @@
-use std::{ops::{Deref, DerefMut}, fmt::Write};
+use std::{
+    fmt::Write,
+    ops::{Deref, DerefMut},
+};
 
 use proptest::result;
 
 use crate::{
+    btree_graph,
+    btree_verify::{self, VerifyError},
     node::{self, SearchResult},
-    pager::{self, Pager}, btree_verify::{self, VerifyError}, btree_graph,
+    pager::{self, Pager},
 };
 
 type Tuple = std::vec::Vec<serde_json::Value>;
@@ -76,7 +81,7 @@ where
     }
 
     /// Updates a page with new content
-    /// 
+    ///
     /// # Args
     /// * `stack` the path of pages to the modified page, last entry in the stack is the one which needs updating
     /// * `modified_page` the updated content to be saved to the page identified by the stack
@@ -124,13 +129,14 @@ where
 
             let parent_node: NodePage = self.pager.get_and_decode(parent_node_idx);
 
-            let mut parent_interior_node = parent_node.interior().unwrap(); 
+            let mut parent_interior_node = parent_node.interior().unwrap();
 
             parent_interior_node.insert_child_page(extra_page_first_key, extra_page_idx);
 
             // TODO: this will eventuallly overflow when an interior node needs splitting
-            self.pager.encode_and_set(parent_node_idx, parent_interior_node.node::<Tuple>()).unwrap();
-
+            self.pager
+                .encode_and_set(parent_node_idx, parent_interior_node.node::<Tuple>())
+                .unwrap();
 
             // TODO: This logic needs to repeat to arbitrary tree depths
             assert!(stack.len() == 0);
@@ -149,7 +155,7 @@ where
             // TODO: remove this
             btree_verify::verify(&self.pager, &self.tree_name).unwrap();
         }
-        
+
         self.debug("After split");
     }
 }
@@ -247,9 +253,9 @@ where
     }
 
     fn row_key(&self) -> Option<u64> {
-       let (key, _value) = self.get_entry()?; 
+        let (key, _value) = self.get_entry()?;
 
-       Some(key)
+        Some(key)
     }
 
     fn get_entry(&self) -> Option<(u64, Tuple)> {
@@ -258,7 +264,9 @@ where
 
         let page: NodePage = self.pager.get_and_decode(leaf_page_number);
 
-        let page = page.leaf().expect("Values are always supposed to be in leaf pages");
+        let page = page
+            .leaf()
+            .expect("Values are always supposed to be in leaf pages");
 
         return page.get_item_at_index(entry_index).cloned();
     }
@@ -273,7 +281,9 @@ where
 
         let page: NodePage = self.pager.get_and_decode(page_number);
 
-        let page = page.leaf().expect("Values are always supposed to be in leaf pages");
+        let page = page
+            .leaf()
+            .expect("Values are always supposed to be in leaf pages");
         let num_items_in_leaf = page.num_items();
 
         // Check if there are more items left in the curent leaf
@@ -294,7 +304,9 @@ where
 
             let curent_interior: NodePage = self.pager.get_and_decode(curent_interior_idx);
 
-            let curent_interior = curent_interior.interior().expect("The stack should only contain interior pages");
+            let curent_interior = curent_interior
+                .interior()
+                .expect("The stack should only contain interior pages");
             let edge_count = curent_interior.num_edges();
 
             // if we there are more edges to the right:
@@ -314,7 +326,6 @@ where
             //    pop this item off the stack and repeat
             // pop already happened
         }
-
     }
 
     /// Move the cursor to point at the next item in the btree
@@ -327,7 +338,9 @@ where
 
         let page: NodePage = self.pager.get_and_decode(leaf_page_number);
 
-        let _leaf_page = page.leaf().expect("Values are always supposed to be in leaf pages");
+        let _leaf_page = page
+            .leaf()
+            .expect("Values are always supposed to be in leaf pages");
 
         if entry_index > 0 {
             self.leaf_iterator = Some((leaf_page_number, entry_index - 1));
@@ -400,7 +413,6 @@ impl BTree {
 
         Ok(())
     }
-
 }
 
 #[cfg(test)]
@@ -519,7 +531,7 @@ mod test {
         }
 
         btree.debug("");
-        let mut output = String::new(); 
+        let mut output = String::new();
         btree.dump(&mut output).unwrap();
 
         println!("{}", output);
@@ -589,43 +601,82 @@ mod test {
         assert_eq!(11, cursor.row_key().unwrap());
         cursor.next();
         assert!(cursor.row_key().is_none());
+
+        let mut output = String::new();
+        btree.dump(&mut output).unwrap();
+        println!("{output}");
+    }
+
+    fn do_test_ordering(elements: &[(u64, (char, usize))], my_btree: &mut BTree){
+        println!("Test: {elements:?}");
+
+        let mut rust_btree = BTreeMap::new();
+
+        my_btree.create_tree("testing");
+
+        let mut cursor = my_btree.open_readwrite("testing").unwrap();
+
+        for (k, (v, len)) in elements.to_owned() {
+            cursor.verify().unwrap();
+            let value = v.to_string().repeat(len);
+
+            rust_btree.insert(k, value.clone());
+            cursor.insert(k, vec![serde_json::Value::String(value.clone())]);
+        }
+
+        cursor.verify().unwrap();
+        cursor.debug("Before order check");
+
+        cursor.first();
+
+        for (key, actual_value) in rust_btree.iter() {
+            let my_value = cursor.column(0).unwrap();
+            println!("Key: {key} {my_value}");
+            assert_eq!(json![actual_value], my_value);
+            cursor.next();
+        }
+
+        cursor.verify().unwrap();
+
+    }
+
+    #[test]
+    fn large_test_case() {
+        let large_test_case = [
+            (22, ('A', 440)),
+            (27, ('A', 1)),
+            (23, ('a', 747)),
+            (26, ('A', 689)),
+            (28, ('A', 976)),
+            (12, ('a', 36)),
+            (29, ('a', 900)),
+            (20, ('a', 208)),
+            (4, ('A', 783)),
+            (24, ('A', 611)),
+            (10, ('A', 549)),
+            (11, ('A', 624)),
+            (4, ('A', 368)),
+            (13, ('a', 1)),
+            (3, ('\\', 604)),
+            (5, ('a', 645)),
+            (1, ('\\', 900)),
+        ];
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        do_test_ordering(&large_test_case, &mut btree);
+
+        let mut output = String::new();
+        btree.dump(&mut output).unwrap();
+        println!("{output}");
     }
 
     proptest! {
         #[test]
         fn test_ordering(elements in prop::collection::vec(&(1..100u64, &(prop::char::range('A', 'z'), 1..1000usize)), 1..200usize)) {
-            println!("Test: {elements:?}");
-
-            let mut rust_btree = BTreeMap::new();
-
             let test = TestDb::default();
-            let mut my_btree = test.btree;
-
-            my_btree.create_tree("testing");
-
-            let mut cursor = my_btree.open_readwrite("testing").unwrap();
-
-            for (k, (v, len)) in elements {
-                cursor.verify().unwrap();
-                let value = v.to_string().repeat(len);
-
-                rust_btree.insert(k, value.clone());
-                cursor.insert(k, vec![serde_json::Value::String(value.clone())]);
-            }
-
-            cursor.verify().unwrap();
-            cursor.debug("Before order check");
-
-            cursor.first();
-
-            for (key, actual_value) in rust_btree.iter() {
-                let my_value = cursor.column(0).unwrap();
-                println!("Key: {key} {my_value}");
-                assert_eq!(json![actual_value], my_value);
-                cursor.next();
-            }
-
-            cursor.verify().unwrap();
+            let mut btree = test.btree;
+            do_test_ordering(elements.as_slice(), &mut btree);
         }
     }
 }

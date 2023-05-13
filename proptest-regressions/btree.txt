@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 054d5c46c28ba24af08eb9d151eabd8c07df8b983c9ceed0373c49991092036b # shrinks to elements = [(1, ('𐀀', 874)), (38, ('𐀀', 43)), (10, ('0', 185)), (11, ('0', 185))]
+cc b26ca5c65b5594e4c17b044862da49178456ac84b9d509df5d995080608ff377 # shrinks to elements = [(22, ('A', 440)), (27, ('A', 1)), (23, ('a', 747)), (26, ('A', 689)), (28, ('A', 976)), (12, ('a', 36)), (29, ('a', 900)), (20, ('a', 208)), (4, ('A', 783)), (24, ('A', 611)), (10, ('A', 549)), (11, ('A', 624)), (4, ('A', 368)), (13, ('a', 1)), (3, ('\\', 604)), (5, ('a', 645)), (1, ('\\', 910))]

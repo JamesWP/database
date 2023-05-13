@@ -1,0 +1,50 @@
+digraph Database {
+        node [ shape=record ]
+        rankdir="LR";
+        node_1[label="<v_0>1|<v_1>3|<v_2>4|<v_3>5"]
+        node_1:v_0 -> value_1_v_0;
+        value_1_v_0[label="[_\\\\\\\\\\\\\\\\\\..."]
+        node_1:v_1 -> value_1_v_1;
+        value_1_v_1[label="[_\\\\\\\\\\\\\\\\\\..."]
+        node_1:v_2 -> value_1_v_2;
+        value_1_v_2[label="[_AAAAAAAAAAAAAAAAAA..."]
+        node_1:v_3 -> value_1_v_3;
+        value_1_v_3[label="[_aaaaaaaaaaaaaaaaaa..."]
+
+        node_2[label="<v_0>26|<v_1>27|<v_2>28|<v_3>29"]
+        node_2:v_0 -> value_2_v_0;
+        value_2_v_0[label="[_AAAAAAAAAAAAAAAAAA..."]
+        node_2:v_1 -> value_2_v_1;
+        value_2_v_1[label="[_A_]"]
+        node_2:v_2 -> value_2_v_2;
+        value_2_v_2[label="[_AAAAAAAAAAAAAAAAAA..."]
+        node_2:v_3 -> value_2_v_3;
+        value_2_v_3[label="[_aaaaaaaaaaaaaaaaaa..."]
+
+        node_3[label="<e_0>.| key=10|<e_1>.|key=20|<e_2>.|key=26|<e_3>."]
+        node_3:e_0 -> node_1;
+        node_3:e_1 -> node_5;
+        node_3:e_2 -> node_4;
+        node_3:e_3 -> node_2;
+
+        node_4[label="<v_0>20|<v_1>22|<v_2>23|<v_3>24"]
+        node_4:v_0 -> value_4_v_0;
+        value_4_v_0[label="[_aaaaaaaaaaaaaaaaaa..."]
+        node_4:v_1 -> value_4_v_1;
+        value_4_v_1[label="[_AAAAAAAAAAAAAAAAAA..."]
+        node_4:v_2 -> value_4_v_2;
+        value_4_v_2[label="[_aaaaaaaaaaaaaaaaaa..."]
+        node_4:v_3 -> value_4_v_3;
+        value_4_v_3[label="[_AAAAAAAAAAAAAAAAAA..."]
+
+        node_5[label="<v_0>10|<v_1>11|<v_2>12|<v_3>13"]
+        node_5:v_0 -> value_5_v_0;
+        value_5_v_0[label="[_AAAAAAAAAAAAAAAAAA..."]
+        node_5:v_1 -> value_5_v_1;
+        value_5_v_1[label="[_AAAAAAAAAAAAAAAAAA..."]
+        node_5:v_2 -> value_5_v_2;
+        value_5_v_2[label="[_aaaaaaaaaaaaaaaaaa..."]
+        node_5:v_3 -> value_5_v_3;
+        value_5_v_3[label="[_a_]"]
+
+}
