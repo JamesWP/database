@@ -3,21 +3,20 @@ use std::cmp::Ordering::{Equal, Greater, Less};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
-pub enum NodePage<K, V> {
-    Leaf(LeafNodePage<K, V>),
-    Interior(InteriorNodePage<K>),
+pub enum NodePage {
+    Leaf(LeafNodePage),
+    Interior(InteriorNodePage),
 }
 
-impl<K, V> NodePage<K, V>
-where
-    K: Ord,
-    K: Clone,
-    V: Clone,
+type K=u64;
+type V=Vec<u8>;
+
+impl NodePage
 {
     pub fn search(&self, k: &K) -> SearchResult {
         match self {
             NodePage::Leaf(l) => l.search(k),
-            NodePage::Interior(i) => i.search::<V>(k),
+            NodePage::Interior(i) => i.search(k),
         }
     }
 
@@ -65,14 +64,14 @@ where
         }
     }
 
-    pub fn interior(self) -> Option<InteriorNodePage<K>> {
+    pub fn interior(self) -> Option<InteriorNodePage> {
         match self {
             NodePage::Leaf(_) => None,
             NodePage::Interior(i) => Some(i),
         }
     }
 
-    pub fn leaf(self) -> Option<LeafNodePage<K, V>> {
+    pub fn leaf(self) -> Option<LeafNodePage> {
         match self {
             NodePage::Leaf(l) => Some(l),
             NodePage::Interior(_) => None,
@@ -81,11 +80,11 @@ where
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct LeafNodePage<K, V> {
+pub struct LeafNodePage {
     cells: Vec<(K, V)>,
 }
 
-impl<K, V> Default for LeafNodePage<K, V> {
+impl Default for LeafNodePage {
     fn default() -> Self {
         Self {
             cells: Default::default(),
@@ -103,9 +102,7 @@ pub enum SearchResult {
     GoDown(u32),
 }
 
-impl<K, V> LeafNodePage<K, V>
-where
-    K: Ord,
+impl LeafNodePage
 {
     pub fn search(&self, search_key: &K) -> SearchResult {
         // Simple linear search through the page.
@@ -153,7 +150,7 @@ where
         Ok(())
     }
 
-    fn split(&self) -> (LeafNodePage<K, V>, LeafNodePage<K, V>)
+    fn split(&self) -> (LeafNodePage, LeafNodePage)
     where
         K: Clone,
         V: Clone,
@@ -182,17 +179,17 @@ pub enum VerifyError {
 // items in [edge i] are LESS than or EQUAL to [key i]
 // (if there is no [key i], i.e. at the end, items in [edge i] must be GREATER than [key i-1])
 #[derive(Serialize, Deserialize)]
-pub struct InteriorNodePage<K> {
+pub struct InteriorNodePage {
     keys: Vec<K>,
     edges: Vec<u32>,
 }
 
-impl<K: Ord + Clone> InteriorNodePage<K> {
+impl InteriorNodePage {
     pub fn new(
         left_page_idx: u32,
         right_page_smallest_key: K,
         right_page_idx: u32,
-    ) -> InteriorNodePage<K> {
+    ) -> InteriorNodePage {
         InteriorNodePage {
             keys: vec![right_page_smallest_key],
             edges: vec![left_page_idx, right_page_idx],
@@ -226,7 +223,7 @@ impl<K: Ord + Clone> InteriorNodePage<K> {
         self.keys[edge].clone()
     }
 
-    fn search<V>(&self, k: &K) -> SearchResult where K: Ord, K: Clone {
+    fn search(&self, k: &K) -> SearchResult {
         for (idx, key) in self.keys.iter().enumerate() {
             match k.cmp(key) {
                 Less => { return SearchResult::GoDown(self.edges[idx]); },
@@ -238,7 +235,7 @@ impl<K: Ord + Clone> InteriorNodePage<K> {
         SearchResult::GoDown(self.edges.last().unwrap().clone())
     }
 
-    pub fn node<V>(self) -> NodePage<K, V> {
+    pub fn node(self) -> NodePage {
         NodePage::Interior(self)
     }
 

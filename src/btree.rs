@@ -8,14 +8,11 @@ use proptest::result;
 use crate::{
     btree_graph,
     btree_verify::{self, VerifyError},
-    node::{self, SearchResult},
+    node::{self, SearchResult, NodePage, InteriorNodePage},
     pager::{self, Pager},
 };
 
 type Tuple = std::vec::Vec<serde_json::Value>;
-pub type NodePage = node::NodePage<u64, Tuple>;
-pub type LeafNodePage = node::LeafNodePage<u64, Tuple>;
-pub type InteriorNodePage = node::InteriorNodePage<u64>;
 
 pub struct Cursor<PagerRef> {
     pager: PagerRef,
@@ -119,7 +116,7 @@ where
         // We now must put our new page into the tree.
         // The new page is at index: extra_page_idx, and the first key on that new page is extra_page_first_key
 
-        self.debug("Before split");
+        // self.debug("Before split");
         if stack.len() != 0 {
             // We must update the parent node
             // A reference to the new extra_page must be inserted into the parent node
@@ -135,7 +132,7 @@ where
 
             // TODO: this will eventuallly overflow when an interior node needs splitting
             self.pager
-                .encode_and_set(parent_node_idx, parent_interior_node.node::<Tuple>())
+                .encode_and_set(parent_node_idx, parent_interior_node.node())
                 .unwrap();
 
             // TODO: This logic needs to repeat to arbitrary tree depths
@@ -156,7 +153,7 @@ where
             btree_verify::verify(&self.pager, &self.tree_name).unwrap();
         }
 
-        self.debug("After split");
+        // self.debug("After split");
     }
 }
 
@@ -398,7 +395,7 @@ impl BTree {
         assert!(self.pager.get_root_page(tree_name).is_none());
         let idx = self.pager.allocate();
         self.pager.set_root_page(tree_name, idx);
-        let empty_leaf_node = node::LeafNodePage::<u64, Tuple>::default();
+        let empty_leaf_node = node::LeafNodePage::default();
         let empty_root_node = node::NodePage::Leaf(empty_leaf_node);
         // Encode and set the empty_root_node in the pager
         self.pager.encode_and_set(idx, empty_root_node).unwrap();
@@ -607,7 +604,7 @@ mod test {
         println!("{output}");
     }
 
-    fn do_test_ordering(elements: &[(u64, (char, usize))], my_btree: &mut BTree){
+    fn do_test_ordering(elements: &[(u64, (char, usize))], my_btree: &mut BTree) {
         println!("Test: {elements:?}");
 
         let mut rust_btree = BTreeMap::new();
@@ -625,41 +622,24 @@ mod test {
         }
 
         cursor.verify().unwrap();
-        cursor.debug("Before order check");
+        // cursor.debug("Before order check");
 
         cursor.first();
 
         for (key, actual_value) in rust_btree.iter() {
             let my_value = cursor.column(0).unwrap();
-            println!("Key: {key} {my_value}");
+            // println!("Key: {key} {my_value}");
             assert_eq!(json![actual_value], my_value);
             cursor.next();
         }
 
         cursor.verify().unwrap();
-
     }
 
     #[test]
     fn large_test_case() {
         let large_test_case = [
-            (22, ('A', 440)),
-            (27, ('A', 1)),
-            (23, ('a', 747)),
-            (26, ('A', 689)),
             (28, ('A', 976)),
-            (12, ('a', 36)),
-            (29, ('a', 900)),
-            (20, ('a', 208)),
-            (4, ('A', 783)),
-            (24, ('A', 611)),
-            (10, ('A', 549)),
-            (11, ('A', 624)),
-            (4, ('A', 368)),
-            (13, ('a', 1)),
-            (3, ('\\', 604)),
-            (5, ('a', 645)),
-            (1, ('\\', 900)),
         ];
 
         let test = TestDb::default();

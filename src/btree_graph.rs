@@ -1,7 +1,7 @@
 use std::fmt::Result;
 use std::fmt::Write;
 
-use crate::btree::{InteriorNodePage, LeafNodePage, NodePage};
+use crate::node::{InteriorNodePage, LeafNodePage, NodePage};
 use crate::node;
 use crate::pager::Pager;
 
@@ -128,7 +128,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                 node_name(output, page_idx)?;
                 let mut label = (0..l.num_items()).map(|cell_idx| {
                     let (k, _v) = l.get_item_at_index(cell_idx).unwrap();
-                    format!("<v_{}>{}", cell_idx, k.to_string())
+                    format!("<v_{}>{:?}", cell_idx, k)
                 });
                 let label = join(&mut label, "|");
                 let quoted_label = &label;
@@ -144,7 +144,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                     write!(output, "\t")?;
                     value_node(output, page_idx, cell_idx)?;
                     let value = &l.get_item_at_index(cell_idx).unwrap().1;
-                    writeln!(output, "[label={}]", quote(&to_json_string(value)))?;
+                    writeln!(output, "[label={:?}]", value)?;
                 }
             },
             node::NodePage::Interior(i) => {
@@ -153,7 +153,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                 let mut label = (1..i.num_edges()).map(|edge_index|{
                     // Key | edge
                     let key = i.get_key_by_index(edge_index-1);
-                    format!("key={key}|<e_{edge_index}>.")
+                    format!("key={key:?}|<e_{edge_index}>.")
                 });
 
                 let label = join(&mut label, "|");
