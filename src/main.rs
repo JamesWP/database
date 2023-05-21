@@ -9,6 +9,7 @@ mod btree;
 mod btree_verify;
 mod btree_graph;
 
+mod node_new;
 
 mod database {
     use crate::btree;
