@@ -8,11 +8,11 @@ pub enum NodePage {
     Interior(InteriorNodePage),
 }
 
-type K=u64;
-type V=Vec<u8>;
+type K = u64;
+type V = Vec<u8>;
+type VRef<'a> = &'a [u8];
 
-impl NodePage
-{
+impl NodePage {
     pub fn search(&self, k: &K) -> SearchResult {
         match self {
             NodePage::Leaf(l) => l.search(k),
@@ -102,8 +102,7 @@ pub enum SearchResult {
     GoDown(u32),
 }
 
-impl LeafNodePage
-{
+impl LeafNodePage {
     pub fn search(&self, search_key: &K) -> SearchResult {
         // Simple linear search through the page.
         for (index, (key, _value)) in self.cells.iter().enumerate() {
@@ -127,8 +126,10 @@ impl LeafNodePage
         self.cells.insert(index, (key, value));
     }
 
-    pub fn get_item_at_index(&self, entry_index: usize) -> Option<&(K, V)> {
-        self.cells.get(entry_index)
+    pub fn get_item_at_index<'a>(&'a self, entry_index: usize) -> Option<(K, VRef<'a>)> {
+        let (key, value) = self.cells.get(entry_index)?;
+
+        Some((*key, value))
     }
 
     pub fn num_items(&self) -> usize {
@@ -226,9 +227,13 @@ impl InteriorNodePage {
     fn search(&self, k: &K) -> SearchResult {
         for (idx, key) in self.keys.iter().enumerate() {
             match k.cmp(key) {
-                Less => { return SearchResult::GoDown(self.edges[idx]); },
-                Equal => { return SearchResult::GoDown(self.edges[idx+1])},
-                Greater => { continue; },
+                Less => {
+                    return SearchResult::GoDown(self.edges[idx]);
+                }
+                Equal => return SearchResult::GoDown(self.edges[idx + 1]),
+                Greater => {
+                    continue;
+                }
             };
         }
 
@@ -243,12 +248,14 @@ impl InteriorNodePage {
         for (idx, key) in self.keys.iter().enumerate() {
             match edge_page_smallest_key.cmp(key) {
                 Less => {
-                    self.edges.insert(idx+1, edge_page_idx);
+                    self.edges.insert(idx + 1, edge_page_idx);
                     self.keys.insert(idx, edge_page_smallest_key);
                     return;
-                },
+                }
                 Equal => panic!("Don't think this is possible"),
-                Greater => { continue; },
+                Greater => {
+                    continue;
+                }
             }
         }
 
@@ -268,11 +275,11 @@ mod test {
         let mut page = LeafNodePage::default();
 
         // []
-        page.insert_item_at_index(0, 2, 0);
+        page.insert_item_at_index(0, 2, vec![0]);
         // [2]
-        page.insert_item_at_index(0, 1, 0);
+        page.insert_item_at_index(0, 1, vec![0]);
         // [1, 2]
-        page.insert_item_at_index(2, 3, 0);
+        page.insert_item_at_index(2, 3, vec![0]);
         // [1, 2, 3]
 
         assert_eq!(page.cells[0].0, 1);
@@ -292,9 +299,9 @@ mod test {
     fn test_search() {
         let mut page = LeafNodePage::default();
 
-        page.insert_item_at_index(0, 1, 0);
-        page.insert_item_at_index(1, 2, 0);
-        page.insert_item_at_index(2, 3, 0);
+        page.insert_item_at_index(0, 1, vec![0]);
+        page.insert_item_at_index(1, 2, vec![0]);
+        page.insert_item_at_index(2, 3, vec![0]);
 
         println!("Page: {:?}", page);
         assert_eq!(0, found_index(page.search(&1)));
@@ -306,13 +313,14 @@ mod test {
 
     proptest! {
         #[test]
-        fn test_split(insertions in prop::collection::vec(&(0..100, 0..1000),0..100usize)) {
+        fn test_split(insertions in prop::collection::vec(&(0..100u64, 0..1000u64),0..100usize)) {
             let mut page = LeafNodePage::default();
 
             // Count num unique keys
-            let n = insertions.iter().map(|(k,_v)|k).collect::<HashSet<_>>().len();
+            let n = insertions.iter().map(|(k,_)| k).collect::<HashSet<_>>().len();
 
             for (key, value) in insertions {
+                let value = value.to_be_bytes().to_vec();
                 let result = page.search(&key);
                 match result {
                     SearchResult::Found(idx) => {

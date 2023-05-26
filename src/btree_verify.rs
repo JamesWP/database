@@ -1,7 +1,7 @@
 use crate::node;
 use crate::pager::Pager;
 
-use crate::node::{NodePage, LeafNodePage, InteriorNodePage};
+use crate::node::{InteriorNodePage, LeafNodePage, NodePage};
 
 #[derive(Debug)]
 pub enum VerifyError {

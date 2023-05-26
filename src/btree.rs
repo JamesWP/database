@@ -8,11 +8,12 @@ use proptest::result;
 use crate::{
     btree_graph,
     btree_verify::{self, VerifyError},
-    node::{self, SearchResult, NodePage, InteriorNodePage},
+    node::{self, InteriorNodePage, NodePage, SearchResult},
     pager::{self, Pager},
 };
 
-type Tuple = std::vec::Vec<serde_json::Value>;
+type Tuple = std::vec::Vec<u8>;
+type TupleRef<'a> = &'a [u8];
 
 pub struct Cursor<PagerRef> {
     pager: PagerRef,
@@ -239,16 +240,6 @@ where
         }
     }
 
-    /// get the value at the specified column index from the row pointed to by the cursor,
-    /// or None if the cursor is not pointing to a row
-    fn column(&self, col_idx: usize) -> Option<serde_json::Value> {
-        let (_key, value) = self.get_entry()?;
-
-        let value = &value[col_idx];
-
-        Some(value.clone())
-    }
-
     fn row_key(&self) -> Option<u64> {
         let (key, _value) = self.get_entry()?;
 
@@ -265,7 +256,9 @@ where
             .leaf()
             .expect("Values are always supposed to be in leaf pages");
 
-        return page.get_item_at_index(entry_index).cloned();
+        let (key, value) = page.get_item_at_index(entry_index)?;
+
+        Some((key, value.to_owned()))
     }
 
     /// Move the cursor to point at the next item in the btree
@@ -459,7 +452,7 @@ mod test {
             let mut cursor = btree.open_readonly("testing").unwrap();
             cursor.first();
 
-            assert!(cursor.column(0).is_none());
+            assert!(cursor.get_entry().is_none());
         }
 
         // Test the new table is empty, when using a readwrite cursor
@@ -467,7 +460,7 @@ mod test {
             let mut cursor = btree.open_readwrite("testing").unwrap();
 
             cursor.first();
-            assert!(cursor.column(0).is_none());
+            assert!(cursor.get_entry().is_none());
         }
     }
 
@@ -484,7 +477,7 @@ mod test {
         {
             let mut cursor = btree.open_readwrite("testing").unwrap();
 
-            cursor.insert(42, vec![json!(1337), json!(42), json!(386), json!(64)]);
+            cursor.insert(42, vec![42, 255, 64]);
         }
 
         // Test we can read out the new value
@@ -492,7 +485,7 @@ mod test {
             let mut cursor = btree.open_readonly("testing").unwrap();
 
             cursor.first();
-            assert_eq!(cursor.column(0), Some(json!(1337)));
+            assert_eq!(cursor.get_entry().unwrap().1, &[42, 255, 64]);
         }
 
         btree.debug("");
@@ -511,8 +504,9 @@ mod test {
         {
             let mut cursor = btree.open_readwrite("testing").unwrap();
 
-            for i in 1..10 {
-                cursor.insert(i, vec![json!(i)]);
+            for i in 1..10u64 {
+                let value = i.to_be_bytes().to_vec();
+                cursor.insert(i, value);
             }
         }
 
@@ -521,8 +515,8 @@ mod test {
             let mut cursor = btree.open_readonly("testing").unwrap();
 
             cursor.first();
-            for i in 1..10 {
-                assert_eq!(cursor.column(0), Some(json!(i)));
+            for i in 1..10u64 {
+                assert_eq!(cursor.get_entry().unwrap().1, i.to_be_bytes());
                 cursor.next();
             }
         }
@@ -547,8 +541,9 @@ mod test {
         {
             let mut cursor = btree.open_readwrite("testing").unwrap();
 
-            for i in 1..10 {
-                cursor.insert(i, vec![json!(i)]);
+            for i in 1..10u64 {
+                let value = i.to_be_bytes().to_vec();
+                cursor.insert(i, value);
             }
         }
 
@@ -558,8 +553,8 @@ mod test {
 
             cursor.find(7);
 
-            for i in 7..10 {
-                assert_eq!(cursor.column(0), Some(json!(i)));
+            for i in 7..10u64 {
+                assert_eq!(cursor.get_entry().unwrap().1, i.to_be_bytes());
                 cursor.next();
             }
         }
@@ -580,7 +575,7 @@ mod test {
 
         let mut cursor = btree.open_readwrite("testing").unwrap();
 
-        let long_string = |s: &str, num| vec![serde_json::Value::String(s.repeat(num))];
+        let long_string = |s: &str, num| s.repeat(num).into_bytes();
 
         cursor.insert(1, long_string("AA", 263));
         cursor.insert(10, long_string("BBBB", 900));
@@ -615,10 +610,10 @@ mod test {
 
         for (k, (v, len)) in elements.to_owned() {
             cursor.verify().unwrap();
-            let value = v.to_string().repeat(len);
+            let value = v.to_string().repeat(len).as_bytes().to_vec();
 
             rust_btree.insert(k, value.clone());
-            cursor.insert(k, vec![serde_json::Value::String(value.clone())]);
+            cursor.insert(k, value);
         }
 
         cursor.verify().unwrap();
@@ -627,9 +622,9 @@ mod test {
         cursor.first();
 
         for (key, actual_value) in rust_btree.iter() {
-            let my_value = cursor.column(0).unwrap();
+            let my_value = cursor.get_entry().unwrap().1;
             // println!("Key: {key} {my_value}");
-            assert_eq!(json![actual_value], my_value);
+            assert_eq!(actual_value, &my_value);
             cursor.next();
         }
 
@@ -638,9 +633,7 @@ mod test {
 
     #[test]
     fn large_test_case() {
-        let large_test_case = [
-            (28, ('A', 976)),
-        ];
+        let large_test_case = [(28, ('A', 976))];
 
         let test = TestDb::default();
         let mut btree = test.btree;

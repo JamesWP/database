@@ -1,8 +1,8 @@
 use std::fmt::Result;
 use std::fmt::Write;
 
-use crate::node::{InteriorNodePage, LeafNodePage, NodePage};
 use crate::node;
+use crate::node::{InteriorNodePage, LeafNodePage, NodePage};
 use crate::pager::Pager;
 
 /*
@@ -43,7 +43,7 @@ fn node_name<W: Write>(output: &mut W, page_idx: u32) -> Result {
     Ok(())
 }
 
-fn interor_edge<W:Write>(output: &mut W, page_idx: u32, edge_idx: usize) -> Result {
+fn interor_edge<W: Write>(output: &mut W, page_idx: u32, edge_idx: usize) -> Result {
     write!(output, "node_{}:", page_idx)?;
     interior_tag(output, edge_idx)?;
 
@@ -80,19 +80,24 @@ fn quote(message: &str) -> String {
     let mut s = String::new();
 
     write!(s, "\"").unwrap();
-    message.chars().take(20).map(|c| match c {'"' => '_', ch => ch}).for_each(|ch| s.write_char(ch).unwrap());
+    message
+        .chars()
+        .take(20)
+        .map(|c| match c {
+            '"' => '_',
+            ch => ch,
+        })
+        .for_each(|ch| s.write_char(ch).unwrap());
     if message.chars().skip(20).next().is_some() {
         write!(s, "...").unwrap();
     }
     write!(s, "\"").unwrap();
 
-
     s
 }
 
 // Shamelessly copied from itertools
-fn join<I: Iterator<Item=T>, T: std::fmt::Display>(iter: &mut I, sep: &str) -> String
-{
+fn join<I: Iterator<Item = T>, T: std::fmt::Display>(iter: &mut I, sep: &str) -> String {
     match iter.next() {
         None => String::new(),
         Some(first_elt) => {
@@ -146,13 +151,13 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                     let value = &l.get_item_at_index(cell_idx).unwrap().1;
                     writeln!(output, "[label={:?}]", value)?;
                 }
-            },
+            }
             node::NodePage::Interior(i) => {
                 write!(output, "\t")?;
                 node_name(output, page_idx)?;
-                let mut label = (1..i.num_edges()).map(|edge_index|{
+                let mut label = (1..i.num_edges()).map(|edge_index| {
                     // Key | edge
-                    let key = i.get_key_by_index(edge_index-1);
+                    let key = i.get_key_by_index(edge_index - 1);
                     format!("key={key:?}|<e_{edge_index}>.")
                 });
 
@@ -170,7 +175,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                     node_name(output, child_page_idx)?;
                     writeln!(output, ";")?;
                 }
-            },
+            }
         }
 
         writeln!(output)?;

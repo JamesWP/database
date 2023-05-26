@@ -1,14 +1,13 @@
 use std::{
-    collections::{
-        HashMap,
-    },
+    borrow::Borrow,
+    collections::HashMap,
     fs::{File, OpenOptions},
     io::{BufReader, Read, Seek, Write},
-    os::{unix::prelude::MetadataExt},
-    path::Path, borrow::Borrow,
+    os::unix::prelude::MetadataExt,
+    path::Path,
 };
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub struct Page {
     // TODO: maybe share an existing open page
@@ -51,7 +50,7 @@ const PAGE_SIZE: u32 = 2 << 11;
 
 #[derive(Debug)]
 pub enum EncodingError {
-    NotEnoughSpaceInPage
+    NotEnoughSpaceInPage,
 }
 
 impl Pager {
@@ -132,21 +131,28 @@ impl Pager {
 
         p
     }
-    
-    pub fn get_and_decode<P:Borrow<P> + DeserializeOwned, PageNo: Borrow<u32>>(&self, idx: PageNo) -> P { 
+
+    pub fn get_and_decode<P: Borrow<P> + DeserializeOwned, PageNo: Borrow<u32>>(
+        &self,
+        idx: PageNo,
+    ) -> P {
         let p = self.get(idx);
         let reader = BufReader::new(p.borrow().content.as_slice());
         let mut deserializer = serde_json::Deserializer::from_reader(reader);
         P::deserialize(&mut deserializer).unwrap()
     }
 
-    pub fn set<P:Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
+    pub fn set<P: Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
         println!("Writing page {}", idx.borrow());
         let mut file = self.file_at_page_write(idx.borrow().clone());
         file.write_all(&page.borrow().content).unwrap();
     }
 
-    pub fn encode_and_set<P:Borrow<P> + Serialize, PageNo: Borrow<u32>>(&mut self, idx: PageNo, v: P) -> Result<(), EncodingError> {
+    pub fn encode_and_set<P: Borrow<P> + Serialize, PageNo: Borrow<u32>>(
+        &mut self,
+        idx: PageNo,
+        v: P,
+    ) -> Result<(), EncodingError> {
         let mut page = Page::default();
         let result = serde_json::to_writer(page.content.as_mut_slice(), v.borrow());
 
@@ -154,7 +160,7 @@ impl Pager {
             Err(e) => match e.classify() {
                 serde_json::error::Category::Io => {
                     return Err(EncodingError::NotEnoughSpaceInPage);
-                },
+                }
                 serde_json::error::Category::Syntax => todo!(),
                 serde_json::error::Category::Data => todo!(),
                 serde_json::error::Category::Eof => todo!(),
