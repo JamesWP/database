@@ -8,12 +8,10 @@ use proptest::result;
 use crate::{
     btree_graph,
     btree_verify::{self, VerifyError},
-    node::{self, InteriorNodePage, NodePage, SearchResult},
+    node::{self, InteriorNodePage, NodePage, SearchResult, Cell},
     pager::{self, Pager},
+    node::{Value}
 };
-
-type Tuple = std::vec::Vec<u8>;
-type TupleRef<'a> = &'a [u8];
 
 pub struct Cursor<PagerRef> {
     pager: PagerRef,
@@ -37,7 +35,19 @@ impl<PagerRef> Cursor<PagerRef>
 where
     PagerRef: DerefMut<Target = Pager>,
 {
-    fn insert(&mut self, key: u64, value: Tuple) {
+    fn insert(&mut self, key: u64, value: Value) {
+        assert!(value.len() > 0);
+
+        // values must be small enough so that a few can fit on each page
+        // this is to ensure when splitting nodes we always end up with at least 50% free space
+        let (first_part, continuation) = if value.len()>55 {
+            todo!("store the rest of the item in overflow pages");
+        } else {
+            (value, None)
+        };
+
+        let cell = Cell::new(key, first_part, continuation);
+
         // we maintain a stack of the nodes we decended through in case of needing to split them.
         // Starting at the root, we search to find:
         //   an empty place to put the new value
@@ -55,14 +65,14 @@ where
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
 
-                    top_page.set_item_at_index(insertion_index, key, value);
+                    top_page.set_item_at_index(insertion_index, cell);
 
                     self.update_page(top_page, stack);
 
                     break;
                 }
                 SearchResult::NotPresent(item_idx) => {
-                    top_page.insert_item_at_index(item_idx, key, value);
+                    top_page.insert_item_at_index(item_idx, cell);
 
                     self.update_page(top_page, stack);
 
@@ -246,7 +256,7 @@ where
         Some(key)
     }
 
-    fn get_entry(&self) -> Option<(u64, Tuple)> {
+    fn get_entry(&self) -> Option<(u64, Value)> {
         // TODO: This returns a copy of the entry even if we dont need a copy
         let (leaf_page_number, entry_index) = self.leaf_iterator?;
 
@@ -256,9 +266,9 @@ where
             .leaf()
             .expect("Values are always supposed to be in leaf pages");
 
-        let (key, value) = page.get_item_at_index(entry_index)?;
+        let cell = page.get_item_at_index(entry_index)?;
 
-        Some((key, value.to_owned()))
+        Some((cell.key(), cell.value().to_owned()))
     }
 
     /// Move the cursor to point at the next item in the btree

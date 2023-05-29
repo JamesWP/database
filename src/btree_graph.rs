@@ -132,8 +132,8 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                 write!(output, "\t")?;
                 node_name(output, page_idx)?;
                 let mut label = (0..l.num_items()).map(|cell_idx| {
-                    let (k, _v) = l.get_item_at_index(cell_idx).unwrap();
-                    format!("<v_{}>{:?}", cell_idx, k)
+                    let cell = l.get_item_at_index(cell_idx).unwrap();
+                    format!("<v_{}>{:?}", cell_idx, cell.key())
                 });
                 let label = join(&mut label, "|");
                 let quoted_label = &label;
@@ -148,7 +148,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
 
                     write!(output, "\t")?;
                     value_node(output, page_idx, cell_idx)?;
-                    let value = &l.get_item_at_index(cell_idx).unwrap().1;
+                    let value = &l.get_item_at_index(cell_idx).unwrap().value();
                     writeln!(output, "[label={:?}]", value)?;
                 }
             }

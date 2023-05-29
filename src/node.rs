@@ -1,6 +1,9 @@
-use std::cmp::Ordering::{Equal, Greater, Less};
+use std::{cmp::Ordering::{Equal, Greater, Less}};
 
 use serde::{Deserialize, Serialize};
+mod cell;
+
+pub use cell::{Key, Value, ValueRef, Cell};
 
 #[derive(Serialize, Deserialize)]
 pub enum NodePage {
@@ -8,12 +11,8 @@ pub enum NodePage {
     Interior(InteriorNodePage),
 }
 
-type K = u64;
-type V = Vec<u8>;
-type VRef<'a> = &'a [u8];
-
 impl NodePage {
-    pub fn search(&self, k: &K) -> SearchResult {
+    pub fn search(&self, k: &Key) -> SearchResult {
         match self {
             NodePage::Leaf(l) => l.search(k),
             NodePage::Interior(i) => i.search(k),
@@ -21,20 +20,20 @@ impl NodePage {
     }
 
     // TODO: inserting an item into an interior page doesn't make sense, interior pages dont store values!
-    pub fn insert_item_at_index(&mut self, item_idx: usize, key: K, value: V) {
+    pub fn insert_item_at_index(&mut self, item_idx: usize, cell: Cell) {
         match self {
             NodePage::Leaf(l) => {
-                l.insert_item_at_index(item_idx, key, value);
+                l.insert_item_at_index(item_idx, cell);
             }
             NodePage::Interior(_) => todo!(),
         };
     }
 
     // TODO: setting an item into an interior page doesn't make sense, interior pages dont store values!
-    pub fn set_item_at_index(&mut self, item_idx: usize, key: K, value: V) {
+    pub fn set_item_at_index(&mut self, item_idx: usize, cell: Cell) {
         match self {
             NodePage::Leaf(l) => {
-                l.set_item_at_index(item_idx, key, value);
+                l.set_item_at_index(item_idx, cell);
             }
             NodePage::Interior(_) => todo!(),
         };
@@ -50,16 +49,16 @@ impl NodePage {
         }
     }
 
-    pub fn smallest_key(&self) -> K {
+    pub fn smallest_key(&self) -> Key {
         match self {
-            NodePage::Leaf(l) => l.cells.first().unwrap().0.clone(),
+            NodePage::Leaf(l) => l.cells.first().unwrap().key().clone(),
             NodePage::Interior(i) => i.keys.first().unwrap().clone(),
         }
     }
 
-    pub fn largest_key(&self) -> K {
+    pub fn largest_key(&self) -> Key {
         match self {
-            NodePage::Leaf(l) => l.cells.last().unwrap().0.clone(),
+            NodePage::Leaf(l) => l.cells.last().unwrap().key().clone(),
             NodePage::Interior(i) => i.keys.last().unwrap().clone(),
         }
     }
@@ -81,7 +80,7 @@ impl NodePage {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LeafNodePage {
-    cells: Vec<(K, V)>,
+    cells: Vec<Cell>,
 }
 
 impl Default for LeafNodePage {
@@ -103,10 +102,11 @@ pub enum SearchResult {
 }
 
 impl LeafNodePage {
-    pub fn search(&self, search_key: &K) -> SearchResult {
+    pub fn search(&self, search_key: &Key) -> SearchResult {
         // Simple linear search through the page.
-        for (index, (key, _value)) in self.cells.iter().enumerate() {
-            match search_key.cmp(key) {
+        for (index, cell) in self.cells.iter().enumerate() {
+            let cell_key = cell.key();
+            match search_key.cmp(&cell_key) {
                 Less => return SearchResult::NotPresent(index),
                 Equal => return SearchResult::Found(index),
                 Greater => {} // Continue the search
@@ -116,20 +116,16 @@ impl LeafNodePage {
         SearchResult::NotPresent(self.cells.len())
     }
 
-    pub fn set_item_at_index(&mut self, index: usize, key: K, value: V) {
-        self.cells[index] = (key, value);
+    pub fn set_item_at_index(&mut self, index: usize, cell: Cell) {
+        self.cells[index] = cell;
     }
 
-    pub fn insert_item_at_index(&mut self, index: usize, key: K, value: V) {
-        // put item into leaf at given index.
-
-        self.cells.insert(index, (key, value));
+    pub fn insert_item_at_index(&mut self, index: usize, cell: Cell) {
+        self.cells.insert(index, cell);
     }
 
-    pub fn get_item_at_index<'a>(&'a self, entry_index: usize) -> Option<(K, VRef<'a>)> {
-        let (key, value) = self.cells.get(entry_index)?;
-
-        Some((*key, value))
+    pub fn get_item_at_index<'a>(&'a self, entry_index: usize) -> Option<&Cell> {
+        self.cells.get(entry_index)
     }
 
     pub fn num_items(&self) -> usize {
@@ -137,10 +133,10 @@ impl LeafNodePage {
     }
 
     pub fn verify_key_ordering(&self) -> Result<(), VerifyError> {
-        let keys = || self.cells.iter().map(|(k, _v)| k);
+        let keys = || self.cells.iter().map(Cell::key);
 
         for (left, right) in keys().zip(keys()) {
-            match left.cmp(right) {
+            match left.cmp(&right) {
                 Less | Equal => { /* GOOD! */ }
                 Greater => {
                     return Err(VerifyError::KeyOutOfOrder);
@@ -152,9 +148,6 @@ impl LeafNodePage {
     }
 
     fn split(&self) -> (LeafNodePage, LeafNodePage)
-    where
-        K: Clone,
-        V: Clone,
     {
         let midpoint = self.cells.len() / 2;
         let (left, right) = self.cells.split_at(midpoint);
@@ -181,14 +174,14 @@ pub enum VerifyError {
 // (if there is no [key i], i.e. at the end, items in [edge i] must be GREATER than [key i-1])
 #[derive(Serialize, Deserialize)]
 pub struct InteriorNodePage {
-    keys: Vec<K>,
+    keys: Vec<Key>,
     edges: Vec<u32>,
 }
 
 impl InteriorNodePage {
     pub fn new(
         left_page_idx: u32,
-        right_page_smallest_key: K,
+        right_page_smallest_key: Key,
         right_page_idx: u32,
     ) -> InteriorNodePage {
         InteriorNodePage {
@@ -220,11 +213,11 @@ impl InteriorNodePage {
         Ok(())
     }
 
-    pub fn get_key_by_index(&self, edge: usize) -> K {
+    pub fn get_key_by_index(&self, edge: usize) -> Key {
         self.keys[edge].clone()
     }
 
-    fn search(&self, k: &K) -> SearchResult {
+    fn search(&self, k: &Key) -> SearchResult {
         for (idx, key) in self.keys.iter().enumerate() {
             match k.cmp(key) {
                 Less => {
@@ -244,7 +237,7 @@ impl InteriorNodePage {
         NodePage::Interior(self)
     }
 
-    pub fn insert_child_page(&mut self, edge_page_smallest_key: K, edge_page_idx: u32) {
+    pub fn insert_child_page(&mut self, edge_page_smallest_key: Key, edge_page_idx: u32) {
         for (idx, key) in self.keys.iter().enumerate() {
             match edge_page_smallest_key.cmp(key) {
                 Less => {
@@ -268,6 +261,8 @@ impl InteriorNodePage {
 mod test {
     use std::collections::HashSet;
 
+    use crate::node::Cell;
+
     use super::{LeafNodePage, SearchResult};
 
     #[test]
@@ -275,16 +270,16 @@ mod test {
         let mut page = LeafNodePage::default();
 
         // []
-        page.insert_item_at_index(0, 2, vec![0]);
+        page.insert_item_at_index(0, Cell::new(2, vec![0], None));
         // [2]
-        page.insert_item_at_index(0, 1, vec![0]);
+        page.insert_item_at_index(0, Cell::new(1, vec![0], None));
         // [1, 2]
-        page.insert_item_at_index(2, 3, vec![0]);
+        page.insert_item_at_index(2, Cell::new(3, vec![0], None));
         // [1, 2, 3]
 
-        assert_eq!(page.cells[0].0, 1);
-        assert_eq!(page.cells[1].0, 2);
-        assert_eq!(page.cells[2].0, 3);
+        assert_eq!(page.cells[0].key(), 1);
+        assert_eq!(page.cells[1].key(), 2);
+        assert_eq!(page.cells[2].key(), 3);
     }
 
     fn found_index(r: SearchResult) -> usize {
@@ -299,9 +294,9 @@ mod test {
     fn test_search() {
         let mut page = LeafNodePage::default();
 
-        page.insert_item_at_index(0, 1, vec![0]);
-        page.insert_item_at_index(1, 2, vec![0]);
-        page.insert_item_at_index(2, 3, vec![0]);
+        page.insert_item_at_index(0, Cell::new(1, vec![0], None));
+        page.insert_item_at_index(1, Cell::new(2, vec![0], None));
+        page.insert_item_at_index(2, Cell::new(3, vec![0], None));
 
         println!("Page: {:?}", page);
         assert_eq!(0, found_index(page.search(&1)));
@@ -321,14 +316,11 @@ mod test {
 
             for (key, value) in insertions {
                 let value = value.to_be_bytes().to_vec();
+                let cell = Cell::new(key, value, None);
                 let result = page.search(&key);
                 match result {
-                    SearchResult::Found(idx) => {
-                        page.set_item_at_index(idx, key, value);
-                    }
-                    SearchResult::NotPresent(idx) => {
-                        page.insert_item_at_index(idx, key, value);
-                    }
+                    SearchResult::Found(idx) => page.set_item_at_index(idx, cell),
+                    SearchResult::NotPresent(idx) => page.insert_item_at_index(idx, cell),
                     SearchResult::GoDown(_) => panic!(),
                 };
 
@@ -353,7 +345,7 @@ mod test {
 
             // If we have items in both parts, they should be in order
             if left.num_items()>0 && right.num_items()>0 {
-                assert!(left.get_item_at_index(left.num_items()-1).unwrap().0 < right.get_item_at_index(0).unwrap().0);
+                assert!(left.get_item_at_index(left.num_items()-1).unwrap().key() < right.get_item_at_index(0).unwrap().key());
             }
         }
     }
