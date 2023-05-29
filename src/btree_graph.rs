@@ -175,6 +175,22 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                     node_name(output, child_page_idx)?;
                     writeln!(output, ";")?;
                 }
+            },
+            node::NodePage::OverflowPage(o) => {
+                write!(output, "\t")?;
+                node_name(output, page_idx)?;
+                if let Some(next_page_idx) = o.continuation() {
+                    writeln!(output, "[label=\"<e_0>.\"]")?;
+
+                    write!(output, "\t")?;
+                    interor_edge(output, page_idx, 0)?;
+                    write!(output, " -> ")?;
+                    node_name(output, next_page_idx);
+                    writeln!(output, ";");
+                } else {
+                    writeln!(output, "[label=\".\"]")?;
+                }
+
             }
         }
 

@@ -9,6 +9,7 @@ pub use cell::{Key, Value, ValueRef, Cell};
 pub enum NodePage {
     Leaf(LeafNodePage),
     Interior(InteriorNodePage),
+    OverflowPage(OverflowPage),
 }
 
 impl NodePage {
@@ -16,6 +17,7 @@ impl NodePage {
         match self {
             NodePage::Leaf(l) => l.search(k),
             NodePage::Interior(i) => i.search(k),
+            _ => panic!()
         }
     }
 
@@ -26,6 +28,7 @@ impl NodePage {
                 l.insert_item_at_index(item_idx, cell);
             }
             NodePage::Interior(_) => todo!(),
+            _ => panic!()
         };
     }
 
@@ -36,6 +39,7 @@ impl NodePage {
                 l.set_item_at_index(item_idx, cell);
             }
             NodePage::Interior(_) => todo!(),
+            _ => panic!()
         };
     }
 
@@ -46,6 +50,7 @@ impl NodePage {
                 (Self::Leaf(left), Self::Leaf(right))
             }
             NodePage::Interior(_) => todo!(),
+            _ => panic!()
         }
     }
 
@@ -53,6 +58,7 @@ impl NodePage {
         match self {
             NodePage::Leaf(l) => l.cells.first().unwrap().key().clone(),
             NodePage::Interior(i) => i.keys.first().unwrap().clone(),
+            _ => panic!()
         }
     }
 
@@ -60,20 +66,21 @@ impl NodePage {
         match self {
             NodePage::Leaf(l) => l.cells.last().unwrap().key().clone(),
             NodePage::Interior(i) => i.keys.last().unwrap().clone(),
+            _ => panic!()
         }
     }
 
     pub fn interior(self) -> Option<InteriorNodePage> {
         match self {
-            NodePage::Leaf(_) => None,
             NodePage::Interior(i) => Some(i),
+            _ => None,
         }
     }
 
     pub fn leaf(self) -> Option<LeafNodePage> {
         match self {
             NodePage::Leaf(l) => Some(l),
-            NodePage::Interior(_) => None,
+            _ => None,
         }
     }
 }
@@ -254,6 +261,21 @@ impl InteriorNodePage {
 
         self.edges.push(edge_page_idx);
         self.keys.push(edge_page_smallest_key);
+    }
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OverflowPage {
+    content: Vec<u8>,
+    continuation: Option<u32>
+}
+
+impl OverflowPage {
+    pub fn new(content: Vec<u8>, continuation: Option<u32>) -> OverflowPage {
+        OverflowPage { content, continuation }
+    }
+
+    pub fn continuation(&self) -> Option<u32> {
+        self.continuation
     }
 }
 

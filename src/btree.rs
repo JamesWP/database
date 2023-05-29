@@ -8,7 +8,7 @@ use proptest::result;
 use crate::{
     btree_graph,
     btree_verify::{self, VerifyError},
-    node::{self, InteriorNodePage, NodePage, SearchResult, Cell},
+    node::{self, InteriorNodePage, NodePage, SearchResult, Cell, OverflowPage},
     pager::{self, Pager},
     node::{Value}
 };
@@ -29,6 +29,7 @@ type InteriorNodeIterator = (u32, usize);
 type LeafNodeIterator = (u32, usize);
 
 const NULL: serde_json::Value = serde_json::Value::Null;
+const CHUNK_THRESHOLD: usize = 55;
 
 /// Mutable cursor implementation
 impl<PagerRef> Cursor<PagerRef>
@@ -40,8 +41,10 @@ where
 
         // values must be small enough so that a few can fit on each page
         // this is to ensure when splitting nodes we always end up with at least 50% free space
-        let (first_part, continuation) = if value.len()>55 {
-            todo!("store the rest of the item in overflow pages");
+        let (first_part, continuation) = if value.len()>CHUNK_THRESHOLD {
+            let (first_part, rest) = value.split_at(CHUNK_THRESHOLD);
+            let second_part = split_and_store(&mut self.pager, rest);
+            (first_part.to_owned(), Some(second_part))
         } else {
             (value, None)
         };
@@ -200,6 +203,7 @@ where
                     self.stack.push((page_idx, 0));
                     page_idx = i.get_child_page_by_index(0);
                 }
+                NodePage::OverflowPage(_) => panic!()
             }
         }
     }
@@ -224,6 +228,7 @@ where
                     return;
                 }
                 node::NodePage::Interior(_i) => todo!(),
+                node::NodePage::OverflowPage(_) => panic!()
             }
         }
     }
@@ -358,6 +363,44 @@ where
         btree_verify::verify(&self.pager, &self.tree_name)
     }
 }
+
+fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
+
+    // [first] [next] [next+1] ...
+    //  ^ page_idx
+    //          ^ next_page_idx
+
+    // [next] [last]
+    //  ^ page_idx
+    //         ^ next_page_idx
+
+    // after loop exits:
+    // [last]
+    //  ^ page_idx
+
+    assert!(rest.len() > 0);
+
+    const OVERFLOW_LIMIT: usize = 100;
+
+    let mut page_idx = pager.allocate();
+    let first_page_idx = page_idx;
+
+    while rest.len() > OVERFLOW_LIMIT {
+        // We know there will be at least one more page following this...
+        let next_page_idx = pager.allocate();
+        let (first, the_rest) = rest.split_at(OVERFLOW_LIMIT);
+        let overflow_page = NodePage::OverflowPage(OverflowPage::new(first.to_owned(), Some(next_page_idx)));
+        pager.encode_and_set(page_idx, overflow_page).expect("to be able to store overflow pages");
+        rest = the_rest;
+        page_idx = next_page_idx;
+    };
+
+    let overflow_page = NodePage::OverflowPage(OverflowPage::new(rest.to_owned(), None));
+    pager.encode_and_set(page_idx, overflow_page).expect("to be able to store overflow pages");
+
+    first_page_idx
+}
+
 pub struct BTree {
     pager: pager::Pager,
 }

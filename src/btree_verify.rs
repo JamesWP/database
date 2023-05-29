@@ -79,6 +79,7 @@ fn verify_node(pager: &Pager, node: NodePage) -> Result<usize, VerifyError> {
     match node {
         NodePage::Leaf(l) => verify_leaf(pager, l),
         NodePage::Interior(i) => verify_interior(pager, i),
+        NodePage::OverflowPage(_) => Ok(1000),
     }
 }
 
@@ -93,6 +94,9 @@ pub fn verify(pager: &Pager, tree_name: &str) -> Result<(), VerifyError> {
         }
         NodePage::Interior(i) => {
             verify_interior(pager, i)?;
+        }
+        NodePage::OverflowPage(_) => {
+            panic!()
         }
     };
 
