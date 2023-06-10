@@ -8,9 +8,9 @@ use proptest::result;
 use crate::{
     btree_graph,
     btree_verify::{self, VerifyError},
-    node::{self, InteriorNodePage, NodePage, SearchResult, Cell, OverflowPage},
+    node::{self, InteriorNodePage, NodePage, SearchResult, OverflowPage},
     pager::{self, Pager},
-    node::{Value}
+    cell::{Value, Cell}, cell_reader::CellReader
 };
 
 pub struct Cursor<PagerRef> {
@@ -36,7 +36,7 @@ impl<PagerRef> Cursor<PagerRef>
 where
     PagerRef: DerefMut<Target = Pager>,
 {
-    fn insert(&mut self, key: u64, value: Value) {
+    pub fn insert(&mut self, key: u64, value: Value) {
         assert!(value.len() > 0);
 
         // values must be small enough so that a few can fit on each page
@@ -179,7 +179,7 @@ where
     /// Move the cursor to point at the first row in the btree
     /// This may result in the cursor not pointing to a row if there is no
     /// first row to point to
-    fn first(&mut self) {
+    pub fn first(&mut self) {
         // Take the tree identified by the root page number, and find its left most node and
         // find its smallest entry
 
@@ -211,7 +211,7 @@ where
     /// Move the cursor to point at the last row in the btree
     /// This may result in the cursor not pointing to a row if there is no
     /// last row to point to
-    fn last(&mut self) {
+    pub fn last(&mut self) {
         // Take the tree identified by the root page number, and find its right most node and
         // find its largest entry.
         let root_page_idx = self.pager.get_root_page(&self.tree_name).unwrap();
@@ -236,7 +236,7 @@ where
     /// Move the cursor to point at the row in the btree identified by the given key
     /// This may result in the cursor not pointing to a row if there is no
     /// row found with that key to point to
-    fn find(&mut self, key: u64) {
+    pub fn find(&mut self, key: u64) {
         let root_page_idx = self.pager.get_root_page(&self.tree_name).unwrap();
         let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
 
@@ -256,28 +256,19 @@ where
     }
 
     fn row_key(&self) -> Option<u64> {
-        let (key, _value) = self.get_entry()?;
+        let cell = self.get_entry()?;
 
-        Some(key)
+        Some(cell.key())
     }
 
-    fn get_entry(&self) -> Option<(u64, Value)> {
-        // TODO: This returns a copy of the entry even if we dont need a copy
+    pub fn get_entry<'a>(&'a self) -> Option<CellReader<'a>> {
         let (leaf_page_number, entry_index) = self.leaf_iterator?;
 
-        let page: NodePage = self.pager.get_and_decode(leaf_page_number);
-
-        let page = page
-            .leaf()
-            .expect("Values are always supposed to be in leaf pages");
-
-        let cell = page.get_item_at_index(entry_index)?;
-
-        Some((cell.key(), cell.value().to_owned()))
+        CellReader::new(&self.pager, leaf_page_number, entry_index)
     }
 
     /// Move the cursor to point at the next item in the btree
-    fn next(&mut self) {
+    pub fn next(&mut self) {
         if self.leaf_iterator.is_none() {
             return;
         }
@@ -334,7 +325,7 @@ where
     }
 
     /// Move the cursor to point at the next item in the btree
-    fn prev(&mut self) {
+    pub fn prev(&mut self) {
         if self.leaf_iterator.is_none() {
             return;
         }
@@ -355,11 +346,11 @@ where
         }
     }
 
-    fn debug(&self, message: &str) {
+    pub fn debug(&self, message: &str) {
         self.pager.debug(message);
     }
 
-    fn verify(&self) -> Result<(), VerifyError> {
+    pub fn verify(&self) -> Result<(), VerifyError> {
         btree_verify::verify(&self.pager, &self.tree_name)
     }
 }
@@ -406,13 +397,13 @@ pub struct BTree {
 }
 
 impl BTree {
-    fn new(path: &str) -> BTree {
+    pub fn new(path: &str) -> BTree {
         BTree {
             pager: Pager::new(path),
         }
     }
 
-    fn open_readonly<'a>(&'a self, tree_name: &str) -> Option<Cursor<&'a Pager>> {
+    pub fn open_readonly<'a>(&'a self, tree_name: &str) -> Option<Cursor<&'a Pager>> {
         // Check if the root page actually exists, or return None
         self.pager.get_root_page(tree_name)?;
 
@@ -424,7 +415,7 @@ impl BTree {
         })
     }
 
-    fn open_readwrite<'a>(&'a mut self, tree_name: &str) -> Option<Cursor<&'a mut Pager>> {
+    pub fn open_readwrite<'a>(&'a mut self, tree_name: &str) -> Option<Cursor<&'a mut Pager>> {
         // Check if the root page actually exists, or return None
         self.pager.get_root_page(tree_name)?;
 
@@ -437,7 +428,7 @@ impl BTree {
     }
 
     /// Create a new tree with the given name, tree must not already exist
-    fn create_tree(&mut self, tree_name: &str) {
+    pub fn create_tree(&mut self, tree_name: &str) {
         assert!(self.pager.get_root_page(tree_name).is_none());
         let idx = self.pager.allocate();
         self.pager.set_root_page(tree_name, idx);
@@ -447,11 +438,11 @@ impl BTree {
         self.pager.encode_and_set(idx, empty_root_node).unwrap();
     }
 
-    fn debug(&self, message: &str) {
+    pub fn debug(&self, message: &str) {
         self.pager.debug(message)
     }
 
-    fn dump<W: Write>(&self, output: &mut W) -> std::fmt::Result {
+    pub fn dump<W: Write>(&self, output: &mut W) -> std::fmt::Result {
         btree_graph::dump(output, &self.pager)?;
 
         Ok(())
@@ -460,7 +451,7 @@ impl BTree {
 
 #[cfg(test)]
 mod test {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, io::Read};
 
     use serde_json::json;
     use tempfile::NamedTempFile;
@@ -538,7 +529,9 @@ mod test {
             let mut cursor = btree.open_readonly("testing").unwrap();
 
             cursor.first();
-            assert_eq!(cursor.get_entry().unwrap().1, &[42, 255, 64]);
+            let mut buf = [0;3];
+            cursor.get_entry().unwrap().read(&mut buf).unwrap();
+            assert_eq!(&buf, &[42, 255, 64]);
         }
 
         btree.debug("");
@@ -569,7 +562,9 @@ mod test {
 
             cursor.first();
             for i in 1..10u64 {
-                assert_eq!(cursor.get_entry().unwrap().1, i.to_be_bytes());
+                let mut buf = [0;8];
+                cursor.get_entry().unwrap().read(&mut buf).unwrap();
+                assert_eq!(buf, i.to_be_bytes());
                 cursor.next();
             }
         }
@@ -607,7 +602,9 @@ mod test {
             cursor.find(7);
 
             for i in 7..10u64 {
-                assert_eq!(cursor.get_entry().unwrap().1, i.to_be_bytes());
+                let mut buf = [0;8];
+                cursor.get_entry().unwrap().read(&mut buf).unwrap();
+                assert_eq!(buf, i.to_be_bytes());
                 cursor.next();
             }
         }
@@ -674,10 +671,11 @@ mod test {
 
         cursor.first();
 
-        for (key, actual_value) in rust_btree.iter() {
-            let my_value = cursor.get_entry().unwrap().1;
+        for (_key, actual_value) in rust_btree.iter() {
             // println!("Key: {key} {my_value}");
-            assert_eq!(actual_value, &my_value);
+            let mut buf = vec![];
+            cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+            assert_eq!(actual_value, &buf);
             cursor.next();
         }
 

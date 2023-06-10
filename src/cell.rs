@@ -23,6 +23,10 @@ impl Cell {
     pub fn value(&self) -> ValueRef {
         &self.value
     }
+
+    pub fn continuation(&self) -> Option<u32> {
+        self.continuation
+    }
 }
 
 impl Serialize for Cell {

@@ -1,9 +1,8 @@
 use std::{cmp::Ordering::{Equal, Greater, Less}};
 
 use serde::{Deserialize, Serialize};
-mod cell;
 
-pub use cell::{Key, Value, ValueRef, Cell};
+use crate::cell::{Key, Value, ValueRef, Cell};
 
 #[derive(Serialize, Deserialize)]
 pub enum NodePage {
@@ -77,7 +76,7 @@ impl NodePage {
         }
     }
 
-    pub fn leaf(self) -> Option<LeafNodePage> {
+    pub fn leaf(&self) -> Option<&LeafNodePage> {
         match self {
             NodePage::Leaf(l) => Some(l),
             _ => None,
@@ -276,6 +275,10 @@ impl OverflowPage {
 
     pub fn continuation(&self) -> Option<u32> {
         self.continuation
+    }
+
+    pub fn value(&self) -> &[u8] {
+        &self.content
     }
 }
 
