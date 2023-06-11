@@ -1,7 +1,8 @@
 use std::{
-    fmt::Write,
+    fmt::{Display, Debug},
     ops::{Deref, DerefMut},
 };
+use std::io::Write;
 
 use proptest::result;
 
@@ -442,8 +443,22 @@ impl BTree {
         self.pager.debug(message)
     }
 
-    pub fn dump<W: Write>(&self, output: &mut W) -> std::fmt::Result {
-        btree_graph::dump(output, &self.pager)?;
+    pub fn dump_to_file(&self, output_path: &std::path::Path) -> std::io::Result<()> {
+        let file = std::fs::OpenOptions::new().create(true).write(true).append(false).open(output_path)?;
+        let mut writer = std::io::BufWriter::new(file);
+
+        write!(writer, "{}", self)?;
+        Ok(())
+    }
+
+    pub fn verify(&self) -> Result<(), VerifyError> {
+        btree_verify::verify_all_trees(&self.pager)
+    }
+}
+
+impl Display for BTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        btree_graph::dump(f, &self.pager)?;
 
         Ok(())
     }
@@ -570,10 +585,7 @@ mod test {
         }
 
         btree.debug("");
-        let mut output = String::new();
-        btree.dump(&mut output).unwrap();
-
-        println!("{}", output);
+        println!("{}", btree);
     }
 
     #[test]
@@ -644,9 +656,7 @@ mod test {
         cursor.next();
         assert!(cursor.row_key().is_none());
 
-        let mut output = String::new();
-        btree.dump(&mut output).unwrap();
-        println!("{output}");
+        println!("{btree}");
     }
 
     fn do_test_ordering(elements: &[(u64, (char, usize))], my_btree: &mut BTree) {
@@ -690,9 +700,7 @@ mod test {
         let mut btree = test.btree;
         do_test_ordering(&large_test_case, &mut btree);
 
-        let mut output = String::new();
-        btree.dump(&mut output).unwrap();
-        println!("{output}");
+        println!("{btree}");
     }
 
     proptest! {

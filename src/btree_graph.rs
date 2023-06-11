@@ -149,7 +149,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                     write!(output, "\t")?;
                     value_node(output, page_idx, cell_idx)?;
                     let value = &l.get_item_at_index(cell_idx).unwrap().value();
-                    writeln!(output, "[label={:?}]", value)?;
+                    writeln!(output, "[label=\"{:?}\"]", value)?;
                 }
             }
             node::NodePage::Interior(i) => {
@@ -185,8 +185,8 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                     write!(output, "\t")?;
                     interor_edge(output, page_idx, 0)?;
                     write!(output, " -> ")?;
-                    node_name(output, next_page_idx);
-                    writeln!(output, ";");
+                    node_name(output, next_page_idx)?;
+                    writeln!(output, ";")?;
                 } else {
                     writeln!(output, "[label=\".\"]")?;
                 }

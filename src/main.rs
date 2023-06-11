@@ -105,7 +105,14 @@ pub(crate) fn main() {
             ["print", "data"] => {
                 let cursor = match &mut state {
                     State::Cursor(handle) => handle.borrow_mut(),
-                    _ => panic!()
+                    State::Open(_) => {
+                        println!("Open a table before printing");
+                        continue;
+                    },
+                    State::None => {
+                        println!("Open a database before printing");
+                        continue;
+                    }
                 };
 
                 cursor.first();
@@ -145,6 +152,52 @@ pub(crate) fn main() {
                 let key: u64 = u64::from_str_radix(*key, 10).unwrap();
                 let value = rest.join(" ");
                 cursor.insert(key, value.into_bytes());
+            }
+            ["dump", path] => {
+                let path = std::path::Path::new(*path);
+
+                let result = match &state {
+                    State::None => panic!(),
+                    State::Cursor(_) => {
+                        println!("Close open cursor before dumping");
+                        continue;
+                    },
+                    State::Open(db) => db.dump_to_file(&path)
+                };
+
+                match result {
+                    Err(e) => {
+                        println!("Error dumping to {:?}", &path);
+                        println!("Error: {}", e);
+                        continue;
+                    }
+                    Ok(_) => {
+                        println!("Dumped graph to {:?}", &path);
+                        continue;
+                    }
+                }
+            }
+            ["verify"] => {
+                let result = match &state {
+                    State::None => panic!(),
+                    State::Cursor(c) => {
+                        c.verify()
+                    },
+                    State::Open(db) => {
+                        db.verify()
+                    }
+                };
+
+                match result {
+                    Err(e) => {
+                        println!("Verify error {:?}", &e);
+                        continue;
+                    }
+                    Ok(_) => {
+                        println!("Verify Success!");
+                        continue;
+                    }
+                }
             }
             ["close"] => {
                 state = match state {

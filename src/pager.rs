@@ -121,7 +121,7 @@ impl Pager {
     }
 
     pub fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
-        println!("Reading page {}", idx.borrow());
+        // println!("Reading page {}", idx.borrow());
         let mut p = Page::default();
 
         let content = p.content.as_mut_slice();
@@ -143,7 +143,7 @@ impl Pager {
     }
 
     pub fn set<P: Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
-        println!("Writing page {}", idx.borrow());
+        // println!("Writing page {}", idx.borrow());
         let mut file = self.file_at_page_write(idx.borrow().clone());
         file.write_all(&page.borrow().content).unwrap();
     }
@@ -242,6 +242,16 @@ impl Pager {
 
             println!("{message}: Page {i} : {page}");
         }
+    }
+
+    pub fn get_tree_names(&self) -> Vec<String> {
+        let zp = self.get_zero_page();
+        if zp.is_none() {
+            return vec![];
+        }
+        let zp = zp.unwrap();
+
+        zp.root_pages.keys().cloned().collect()
     }
 }
 
