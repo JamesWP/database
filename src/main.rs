@@ -1,4 +1,4 @@
-use std::{io::{Write, Read}, cell::{RefCell, Ref}, borrow::BorrowMut};
+use std::{io::{Write, Read}, cell::{RefCell, Ref}, borrow::BorrowMut, cmp::min};
 
 use owning_ref::{OwningHandle};
 use rand::{Rng, distributions::uniform::{UniformInt, UniformSampler}};
@@ -171,16 +171,20 @@ pub(crate) fn main() {
 
                 let count = u64::from_str_radix(*count, 10).unwrap();
                 let max_size = u64::from_str_radix(*&max_size, 10).unwrap();
+
+                let max_size = min(10usize, max_size as usize);
+                let count = min(10usize, count as usize);
+                
                 for _ in 0..count {
                     let mut rng = rand::thread_rng();
-                    let size = rng.sample(rand::distributions::Uniform::new(10usize, max_size as usize));
+                    let size = rng.sample(rand::distributions::Uniform::new(10, max_size));
                     let mut bytes = Vec::with_capacity(size);
                     for _ in 0..size {
                         bytes.push(0);
                     }
                     rng.fill(bytes.as_mut_slice());
 
-                    let key = rng.sample(rand::distributions::Uniform::new(1000, 100000 as u64));
+                    let key = rng.sample(rand::distributions::Uniform::new(1<<10, 1<<32 as u64));
 
                     cursor.insert(key, bytes);
                 }
