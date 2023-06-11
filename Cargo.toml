@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 owning_ref = "0.4.1"
 proptest = "1.1.0"
+rand = "0.8.5"
 serde = { version = "1.0.158", features = ["derive"] }
 serde_json = "1.0.94"
 tempfile = "3.4.0"

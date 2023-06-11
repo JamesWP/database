@@ -1,6 +1,7 @@
 use std::{io::{Write, Read}, cell::{RefCell, Ref}, borrow::BorrowMut};
 
 use owning_ref::{OwningHandle};
+use rand::{Rng, distributions::uniform::{UniformInt, UniformSampler}};
 
 mod node;
 mod pager;
@@ -126,12 +127,14 @@ pub(crate) fn main() {
 
                     let mut entry = entry.unwrap();
                     let key = entry.key();
-                    let mut value_buf = String::new();
-                    let value = entry.read_to_string(&mut value_buf);
-
-                    match value {
-                        Ok(len) => println!("Entry: key={key}, value={value_buf}"),
-                        Err(e) => println!("Entry: key={key}, value=<unable to read value>"),
+                    let mut value_buf = Vec::new();
+                    let value_size = entry.read_to_end(&mut value_buf);
+                    let str_value = String::from_utf8(value_buf);
+                    match (value_size, str_value) {
+                        (Ok(len), Ok(str_value)) if len < 80 => println!("Entry: key={key}, len={len} value={str_value}"),
+                        (Ok(len), Ok(_)) => println!("Entry: key={key}, len={len} value=<redacted>"),
+                        (Ok(len), Err(_)) => println!("Entry: key={key}, len={len} value=<unable to decode utf8>"),
+                        (Err(_), _) => println!("Entry: key={key}, value=<unable to read value>"),
                     };
 
                     cursor.next();
@@ -152,6 +155,37 @@ pub(crate) fn main() {
                 let key: u64 = u64::from_str_radix(*key, 10).unwrap();
                 let value = rest.join(" ");
                 cursor.insert(key, value.into_bytes());
+            }
+            ["random", "insert", count, max_size] => {
+                let cursor = match &mut state {
+                    State::None => {
+                        println!("No database open");
+                        continue;
+                    },
+                    State::Open(database) => {
+                        println!("No cursor open");
+                        continue;
+                    }
+                    State::Cursor(cursor) => cursor.borrow_mut(),
+                };
+
+                let count = u64::from_str_radix(*count, 10).unwrap();
+                let max_size = u64::from_str_radix(*&max_size, 10).unwrap();
+                for _ in 0..count {
+                    let mut rng = rand::thread_rng();
+                    let size = rng.sample(rand::distributions::Uniform::new(10usize, max_size as usize));
+                    let mut bytes = Vec::with_capacity(size);
+                    for _ in 0..size {
+                        bytes.push(0);
+                    }
+                    rng.fill(bytes.as_mut_slice());
+
+                    let key = rng.sample(rand::distributions::Uniform::new(1000, 100000 as u64));
+
+                    cursor.insert(key, bytes);
+                }
+
+                println!("Inserted {count} items with a random size up to {max_size}");
             }
             ["dump", path] => {
                 let path = std::path::Path::new(*path);
