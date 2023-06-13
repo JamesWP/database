@@ -175,7 +175,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                     node_name(output, child_page_idx)?;
                     writeln!(output, ";")?;
                 }
-            },
+            }
             node::NodePage::OverflowPage(o) => {
                 write!(output, "\t")?;
                 node_name(output, page_idx)?;
@@ -190,7 +190,6 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                 } else {
                     writeln!(output, "[label=\".\"]")?;
                 }
-
             }
         }
 

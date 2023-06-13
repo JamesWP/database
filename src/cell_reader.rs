@@ -2,10 +2,9 @@ use std::ops::Range;
 use std::pin::Pin;
 use std::ptr::slice_from_raw_parts_mut;
 
-use crate::node::{NodePage, LeafNodePage};
+use crate::cell::{Cell, Key, ValueRef};
+use crate::node::{LeafNodePage, NodePage};
 use crate::pager::Pager;
-use crate::cell::{Key, ValueRef, Cell};
-
 
 // TODO: refactor to make this safer
 //       unsafe pointer dereference
@@ -39,7 +38,7 @@ impl<'a> std::io::Read for CellReader<'a> {
 
                 // TODO: factor the unsafe into seperate struct
                 let value = overflow_page.value();
-                self.buf = unsafe {std::slice::from_raw_parts(value.as_ptr(), value.len())};
+                self.buf = unsafe { std::slice::from_raw_parts(value.as_ptr(), value.len()) };
                 self.continuation = overflow_page.continuation();
 
                 self.buf.read(buf)
@@ -49,7 +48,7 @@ impl<'a> std::io::Read for CellReader<'a> {
 }
 
 impl<'a> CellReader<'a> {
-    pub fn new(pager: &'a Pager, leaf_page_idx: u32, cell_idx: usize) -> Option<CellReader<'a>>{
+    pub fn new(pager: &'a Pager, leaf_page_idx: u32, cell_idx: usize) -> Option<CellReader<'a>> {
         let node: Box<NodePage> = Box::new(pager.get_and_decode(leaf_page_idx));
 
         let leaf_page = node
@@ -62,7 +61,7 @@ impl<'a> CellReader<'a> {
         let value = cell.value();
 
         // TODO: factor the unsafe into seperate struct
-        let buf = unsafe {std::slice::from_raw_parts(value.as_ptr(), value.len())};
+        let buf = unsafe { std::slice::from_raw_parts(value.as_ptr(), value.len()) };
 
         Some(CellReader {
             pager,

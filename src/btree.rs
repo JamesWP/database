@@ -1,17 +1,18 @@
+use std::io::Write;
 use std::{
-    fmt::{Display, Debug},
+    fmt::{Debug, Display},
     ops::{Deref, DerefMut},
 };
-use std::io::Write;
 
 use proptest::result;
 
 use crate::{
     btree_graph,
     btree_verify::{self, VerifyError},
-    node::{self, InteriorNodePage, NodePage, SearchResult, OverflowPage},
+    cell::{Cell, Value},
+    cell_reader::CellReader,
+    node::{self, InteriorNodePage, NodePage, OverflowPage, SearchResult},
     pager::{self, Pager},
-    cell::{Value, Cell}, cell_reader::CellReader
 };
 
 pub struct Cursor<PagerRef> {
@@ -42,7 +43,7 @@ where
 
         // values must be small enough so that a few can fit on each page
         // this is to ensure when splitting nodes we always end up with at least 50% free space
-        let (first_part, continuation) = if value.len()>CHUNK_THRESHOLD {
+        let (first_part, continuation) = if value.len() > CHUNK_THRESHOLD {
             let (first_part, rest) = value.split_at(CHUNK_THRESHOLD);
             let second_part = split_and_store(&mut self.pager, rest);
             (first_part.to_owned(), Some(second_part))
@@ -204,7 +205,7 @@ where
                     self.stack.push((page_idx, 0));
                     page_idx = i.get_child_page_by_index(0);
                 }
-                NodePage::OverflowPage(_) => panic!()
+                NodePage::OverflowPage(_) => panic!(),
             }
         }
     }
@@ -229,7 +230,7 @@ where
                     return;
                 }
                 node::NodePage::Interior(_i) => todo!(),
-                node::NodePage::OverflowPage(_) => panic!()
+                node::NodePage::OverflowPage(_) => panic!(),
             }
         }
     }
@@ -357,7 +358,6 @@ where
 }
 
 fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
-
     // [first] [next] [next+1] ...
     //  ^ page_idx
     //          ^ next_page_idx
@@ -381,14 +381,19 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
         // We know there will be at least one more page following this...
         let next_page_idx = pager.allocate();
         let (first, the_rest) = rest.split_at(OVERFLOW_LIMIT);
-        let overflow_page = NodePage::OverflowPage(OverflowPage::new(first.to_owned(), Some(next_page_idx)));
-        pager.encode_and_set(page_idx, overflow_page).expect("to be able to store overflow pages");
+        let overflow_page =
+            NodePage::OverflowPage(OverflowPage::new(first.to_owned(), Some(next_page_idx)));
+        pager
+            .encode_and_set(page_idx, overflow_page)
+            .expect("to be able to store overflow pages");
         rest = the_rest;
         page_idx = next_page_idx;
-    };
+    }
 
     let overflow_page = NodePage::OverflowPage(OverflowPage::new(rest.to_owned(), None));
-    pager.encode_and_set(page_idx, overflow_page).expect("to be able to store overflow pages");
+    pager
+        .encode_and_set(page_idx, overflow_page)
+        .expect("to be able to store overflow pages");
 
     first_page_idx
 }
@@ -444,7 +449,11 @@ impl BTree {
     }
 
     pub fn dump_to_file(&self, output_path: &std::path::Path) -> std::io::Result<()> {
-        let file = std::fs::OpenOptions::new().create(true).write(true).append(false).open(output_path)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(false)
+            .open(output_path)?;
         let mut writer = std::io::BufWriter::new(file);
 
         write!(writer, "{}", self)?;
@@ -544,7 +553,7 @@ mod test {
             let mut cursor = btree.open_readonly("testing").unwrap();
 
             cursor.first();
-            let mut buf = [0;3];
+            let mut buf = [0; 3];
             cursor.get_entry().unwrap().read(&mut buf).unwrap();
             assert_eq!(&buf, &[42, 255, 64]);
         }
@@ -577,7 +586,7 @@ mod test {
 
             cursor.first();
             for i in 1..10u64 {
-                let mut buf = [0;8];
+                let mut buf = [0; 8];
                 cursor.get_entry().unwrap().read(&mut buf).unwrap();
                 assert_eq!(buf, i.to_be_bytes());
                 cursor.next();
@@ -614,7 +623,7 @@ mod test {
             cursor.find(7);
 
             for i in 7..10u64 {
-                let mut buf = [0;8];
+                let mut buf = [0; 8];
                 cursor.get_entry().unwrap().read(&mut buf).unwrap();
                 assert_eq!(buf, i.to_be_bytes());
                 cursor.next();

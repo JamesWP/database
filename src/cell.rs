@@ -1,7 +1,7 @@
-use serde::{Serialize, de::Visitor, Deserialize};
+use serde::{de::Visitor, Deserialize, Serialize};
 
-pub type Key=u64;
-pub type Value=Vec<u8>;
+pub type Key = u64;
+pub type Value = Vec<u8>;
 pub type ValueRef<'a> = &'a [u8];
 
 #[derive(Debug, Clone)]
@@ -13,8 +13,12 @@ pub struct Cell {
 
 impl Cell {
     pub fn new(key: Key, value: Value, continuation: Option<u32>) -> Cell {
-        Cell {key, value, continuation}
-    }  
+        Cell {
+            key,
+            value,
+            continuation,
+        }
+    }
 
     pub fn key(&self) -> Key {
         self.key
@@ -32,10 +36,11 @@ impl Cell {
 impl Serialize for Cell {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer {
+        S: serde::Serializer,
+    {
         match self.continuation {
             Some(continuation) => (&self.key, &self.value, continuation).serialize(serializer),
-            None => (&self.key, &self.value).serialize(serializer)
+            None => (&self.key, &self.value).serialize(serializer),
         }
     }
 }
@@ -49,8 +54,9 @@ impl<'de> Visitor<'de> for CellDeserializeVisitor {
     }
 
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-        where
-            A: serde::de::SeqAccess<'de>, {
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
         let key = seq.next_element()?.unwrap();
         let value = seq.next_element()?.unwrap();
         let continuation = seq.next_element()?;
@@ -62,9 +68,14 @@ impl<'de> Visitor<'de> for CellDeserializeVisitor {
 impl<'de> Deserialize<'de> for Cell {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de> {
-        let cell_deserialize_visitor = CellDeserializeVisitor{};
+        D: serde::Deserializer<'de>,
+    {
+        let cell_deserialize_visitor = CellDeserializeVisitor {};
         let (key, value, continuation) = deserializer.deserialize_seq(cell_deserialize_visitor)?;
-        Ok(Self {key, value, continuation})
+        Ok(Self {
+            key,
+            value,
+            continuation,
+        })
     }
 }

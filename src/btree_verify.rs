@@ -103,7 +103,7 @@ pub fn verify(pager: &Pager, tree_name: &str) -> Result<(), VerifyError> {
     Ok(())
 }
 
-pub fn verify_all_trees(pager:&Pager) -> Result<(), VerifyError> {
+pub fn verify_all_trees(pager: &Pager) -> Result<(), VerifyError> {
     let tree_names = pager.get_tree_names();
     for tree_name in tree_names {
         verify(pager, &tree_name)?;

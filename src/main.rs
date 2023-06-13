@@ -1,12 +1,20 @@
-use std::{io::{Write, Read}, cell::{RefCell, Ref}, borrow::BorrowMut, cmp::min};
+use std::{
+    borrow::BorrowMut,
+    cell::{Ref, RefCell},
+    cmp::min,
+    io::{Read, Write},
+};
 
-use owning_ref::{OwningHandle};
-use rand::{Rng, distributions::uniform::{UniformInt, UniformSampler}};
+use owning_ref::OwningHandle;
+use rand::{
+    distributions::uniform::{UniformInt, UniformSampler},
+    Rng,
+};
 
-mod node;
-mod pager;
 mod cell;
 mod cell_reader;
+mod node;
+mod pager;
 
 /// Btree module heavily inspired by the fantastic article: https://cglab.ca/~abeinges/blah/rust-btree-case/
 ///
@@ -18,13 +26,12 @@ mod btree_verify;
 
 mod database {
     use crate::btree;
-
 }
 
 enum State {
     None,
     Open(Box<btree::BTree>),
-    Cursor(OwningHandle<Box<btree::BTree>, Box<btree::Cursor<&'static mut pager::Pager>>>)
+    Cursor(OwningHandle<Box<btree::BTree>, Box<btree::Cursor<&'static mut pager::Pager>>>),
 }
 
 pub(crate) fn main() {
@@ -36,12 +43,19 @@ pub(crate) fn main() {
 
     if db_path.exists() {
         println!("Path {db_path:?} exists. opening");
-        assert!(db_path.is_file(), "Path {db_path:?} is not a file directory");
+        assert!(
+            db_path.is_file(),
+            "Path {db_path:?} is not a file directory"
+        );
     } else {
         println!("Path {db_path:?} does not exist. creating");
-        std::fs::OpenOptions::new().write(true).create(true).open(&db_path).expect("can create database file");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&db_path)
+            .expect("can create database file");
     }
-    
+
     let db_path = db_path.canonicalize().unwrap();
 
     let btree = Box::new(btree::BTree::new(db_path.to_str().unwrap()));
@@ -87,8 +101,9 @@ pub(crate) fn main() {
 
                 let open_cursor = |btree_ptr: *const btree::BTree| {
                     let btree_ptr: *mut btree::BTree = unsafe { std::mem::transmute(btree_ptr) };
-                    let cursor = unsafe{ btree_ptr.as_mut().unwrap().open_readwrite(&tree_name)};
-                    let cursor: Option<btree::Cursor<&'static mut pager::Pager>> = unsafe {std::mem::transmute(cursor)};
+                    let cursor = unsafe { btree_ptr.as_mut().unwrap().open_readwrite(&tree_name) };
+                    let cursor: Option<btree::Cursor<&'static mut pager::Pager>> =
+                        unsafe { std::mem::transmute(cursor) };
                     let cursor = match cursor {
                         Some(cursor) => {
                             println!("Obtained a readonly cursor for {tree_name}");
@@ -109,7 +124,7 @@ pub(crate) fn main() {
                     State::Open(_) => {
                         println!("Open a table before printing");
                         continue;
-                    },
+                    }
                     State::None => {
                         println!("Open a database before printing");
                         continue;
@@ -131,21 +146,27 @@ pub(crate) fn main() {
                     let value_size = entry.read_to_end(&mut value_buf);
                     let str_value = String::from_utf8(value_buf);
                     match (value_size, str_value) {
-                        (Ok(len), Ok(str_value)) if len < 80 => println!("Entry: key={key}, len={len} value={str_value}"),
-                        (Ok(len), Ok(_)) => println!("Entry: key={key}, len={len} value=<redacted>"),
-                        (Ok(len), Err(_)) => println!("Entry: key={key}, len={len} value=<unable to decode utf8>"),
+                        (Ok(len), Ok(str_value)) if len < 80 => {
+                            println!("Entry: key={key}, len={len} value={str_value}")
+                        }
+                        (Ok(len), Ok(_)) => {
+                            println!("Entry: key={key}, len={len} value=<redacted>")
+                        }
+                        (Ok(len), Err(_)) => {
+                            println!("Entry: key={key}, len={len} value=<unable to decode utf8>")
+                        }
                         (Err(_), _) => println!("Entry: key={key}, value=<unable to read value>"),
                     };
 
                     cursor.next();
                 }
             }
-            ["insert", key,  rest@..] => {
+            ["insert", key, rest @ ..] => {
                 let cursor = match &mut state {
                     State::None => {
                         println!("No database open");
                         continue;
-                    },
+                    }
                     State::Open(database) => {
                         println!("No cursor open");
                         continue;
@@ -161,7 +182,7 @@ pub(crate) fn main() {
                     State::None => {
                         println!("No database open");
                         continue;
-                    },
+                    }
                     State::Open(database) => {
                         println!("No cursor open");
                         continue;
@@ -174,7 +195,7 @@ pub(crate) fn main() {
 
                 let max_size = min(10usize, max_size as usize);
                 let count = min(10usize, count as usize);
-                
+
                 for _ in 0..count {
                     let mut rng = rand::thread_rng();
                     let size = rng.sample(rand::distributions::Uniform::new(10, max_size));
@@ -184,7 +205,8 @@ pub(crate) fn main() {
                     }
                     rng.fill(bytes.as_mut_slice());
 
-                    let key = rng.sample(rand::distributions::Uniform::new(1<<10, 1<<32 as u64));
+                    let key =
+                        rng.sample(rand::distributions::Uniform::new(1 << 10, 1 << 32 as u64));
 
                     cursor.insert(key, bytes);
                 }
@@ -199,8 +221,8 @@ pub(crate) fn main() {
                     State::Cursor(_) => {
                         println!("Close open cursor before dumping");
                         continue;
-                    },
-                    State::Open(db) => db.dump_to_file(&path)
+                    }
+                    State::Open(db) => db.dump_to_file(&path),
                 };
 
                 match result {
@@ -218,12 +240,8 @@ pub(crate) fn main() {
             ["verify"] => {
                 let result = match &state {
                     State::None => panic!(),
-                    State::Cursor(c) => {
-                        c.verify()
-                    },
-                    State::Open(db) => {
-                        db.verify()
-                    }
+                    State::Cursor(c) => c.verify(),
+                    State::Open(db) => db.verify(),
                 };
 
                 match result {

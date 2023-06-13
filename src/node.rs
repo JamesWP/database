@@ -1,8 +1,8 @@
-use std::{cmp::Ordering::{Equal, Greater, Less}};
+use std::cmp::Ordering::{Equal, Greater, Less};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cell::{Key, Value, ValueRef, Cell};
+use crate::cell::{Cell, Key, Value, ValueRef};
 
 #[derive(Serialize, Deserialize)]
 pub enum NodePage {
@@ -16,7 +16,7 @@ impl NodePage {
         match self {
             NodePage::Leaf(l) => l.search(k),
             NodePage::Interior(i) => i.search(k),
-            _ => panic!()
+            _ => panic!(),
         }
     }
 
@@ -27,7 +27,7 @@ impl NodePage {
                 l.insert_item_at_index(item_idx, cell);
             }
             NodePage::Interior(_) => todo!(),
-            _ => panic!()
+            _ => panic!(),
         };
     }
 
@@ -38,7 +38,7 @@ impl NodePage {
                 l.set_item_at_index(item_idx, cell);
             }
             NodePage::Interior(_) => todo!(),
-            _ => panic!()
+            _ => panic!(),
         };
     }
 
@@ -49,7 +49,7 @@ impl NodePage {
                 (Self::Leaf(left), Self::Leaf(right))
             }
             NodePage::Interior(_) => todo!(),
-            _ => panic!()
+            _ => panic!(),
         }
     }
 
@@ -57,7 +57,7 @@ impl NodePage {
         match self {
             NodePage::Leaf(l) => l.cells.first().unwrap().key().clone(),
             NodePage::Interior(i) => i.keys.first().unwrap().clone(),
-            _ => panic!()
+            _ => panic!(),
         }
     }
 
@@ -65,7 +65,7 @@ impl NodePage {
         match self {
             NodePage::Leaf(l) => l.cells.last().unwrap().key().clone(),
             NodePage::Interior(i) => i.keys.last().unwrap().clone(),
-            _ => panic!()
+            _ => panic!(),
         }
     }
 
@@ -153,8 +153,7 @@ impl LeafNodePage {
         Ok(())
     }
 
-    fn split(&self) -> (LeafNodePage, LeafNodePage)
-    {
+    fn split(&self) -> (LeafNodePage, LeafNodePage) {
         let midpoint = self.cells.len() / 2;
         let (left, right) = self.cells.split_at(midpoint);
 
@@ -265,12 +264,15 @@ impl InteriorNodePage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OverflowPage {
     content: Vec<u8>,
-    continuation: Option<u32>
+    continuation: Option<u32>,
 }
 
 impl OverflowPage {
     pub fn new(content: Vec<u8>, continuation: Option<u32>) -> OverflowPage {
-        OverflowPage { content, continuation }
+        OverflowPage {
+            content,
+            continuation,
+        }
     }
 
     pub fn continuation(&self) -> Option<u32> {
