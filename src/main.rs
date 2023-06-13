@@ -2,7 +2,7 @@ use std::{
     borrow::BorrowMut,
     cell::{Ref, RefCell},
     cmp::{min, max},
-    io::{Read, Write},
+    io::{Read, Write}, ops::ControlFlow,
 };
 
 use owning_ref::OwningHandle;
@@ -135,31 +135,88 @@ pub(crate) fn main() {
 
                 loop {
                     let entry = cursor.get_entry();
-                    if entry.is_none() {
-                        println!("Cursor is complete");
+                    if let ControlFlow::Break(_) = print_value(entry) {
                         break;
                     }
 
-                    let mut entry = entry.unwrap();
-                    let key = entry.key();
-                    let mut value_buf = Vec::new();
-                    let value_size = entry.read_to_end(&mut value_buf);
-                    let str_value = String::from_utf8(value_buf);
-                    match (value_size, str_value) {
-                        (Ok(len), Ok(str_value)) if len < 80 => {
-                            println!("Entry: key={key}, len={len} value={str_value}")
-                        }
-                        (Ok(len), Ok(_)) => {
-                            println!("Entry: key={key}, len={len} value=<redacted>")
-                        }
-                        (Ok(len), Err(_)) => {
-                            println!("Entry: key={key}, len={len} value=<unable to decode utf8>")
-                        }
-                        (Err(_), _) => println!("Entry: key={key}, value=<unable to read value>"),
-                    };
-
                     cursor.next();
                 }
+            }
+            ["first"] => {
+                let cursor = match &mut state {
+                    State::None => {
+                        println!("No database open");
+                        continue;
+                    }
+                    State::Open(database) => {
+                        println!("No cursor open");
+                        continue;
+                    }
+                    State::Cursor(cursor) => cursor.borrow_mut(),
+                };
+
+                cursor.first();
+            }
+            ["next"] => {
+                let cursor = match &mut state {
+                    State::None => {
+                        println!("No database open");
+                        continue;
+                    }
+                    State::Open(database) => {
+                        println!("No cursor open");
+                        continue;
+                    }
+                    State::Cursor(cursor) => cursor.borrow_mut(),
+                };
+
+                cursor.next();
+            }
+            ["prev"] => {
+                let cursor = match &mut state {
+                    State::None => {
+                        println!("No database open");
+                        continue;
+                    }
+                    State::Open(database) => {
+                        println!("No cursor open");
+                        continue;
+                    }
+                    State::Cursor(cursor) => cursor.borrow_mut(),
+                };
+
+                cursor.prev();
+            }
+            ["find", key] => {
+                let cursor = match &mut state {
+                    State::None => {
+                        println!("No database open");
+                        continue;
+                    }
+                    State::Open(database) => {
+                        println!("No cursor open");
+                        continue;
+                    }
+                    State::Cursor(cursor) => cursor.borrow_mut(),
+                };
+                let key = u64::from_str_radix(*key, 10).unwrap();
+
+                cursor.find(key);
+            }
+            ["print"] => {
+                let cursor = match &mut state {
+                    State::None => {
+                        println!("No database open");
+                        continue;
+                    }
+                    State::Open(database) => {
+                        println!("No cursor open");
+                        continue;
+                    }
+                    State::Cursor(cursor) => cursor.borrow_mut(),
+                };
+
+                print_value(cursor.get_entry());
             }
             ["insert", key, rest @ ..] => {
                 let cursor = match &mut state {
@@ -277,4 +334,30 @@ pub(crate) fn main() {
             }
         }
     }
+}
+
+fn print_value(entry: Option<cell_reader::CellReader<'_>>) -> ControlFlow<()> {
+    if entry.is_none() {
+        println!("Cursor is complete");
+        return ControlFlow::Break(());
+    }
+    let mut entry = entry.unwrap();
+    let key = entry.key();
+    let mut value_buf = Vec::new();
+    let value_size = entry.read_to_end(&mut value_buf);
+    let str_value = String::from_utf8(value_buf);
+    match (value_size, str_value) {
+        (Ok(len), Ok(str_value)) if len < 80 => {
+            println!("Entry: key={key}, len={len} value={str_value}")
+        }
+        (Ok(len), Ok(_)) => {
+            println!("Entry: key={key}, len={len} value=<redacted>")
+        }
+        (Ok(len), Err(_)) => {
+            println!("Entry: key={key}, len={len} value=<unable to decode utf8>")
+        }
+        (Err(_), _) => println!("Entry: key={key}, value=<unable to read value>"),
+    };
+
+    ControlFlow::Continue(())
 }
