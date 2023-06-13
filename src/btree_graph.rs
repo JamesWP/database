@@ -129,27 +129,27 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
 
         match page {
             node::NodePage::Leaf(l) => {
-                write!(output, "\t")?;
-                node_name(output, page_idx)?;
-                let mut label = (0..l.num_items()).map(|cell_idx| {
-                    let cell = l.get_item_at_index(cell_idx).unwrap();
-                    format!("<v_{}>{:?}", cell_idx, cell.key())
-                });
-                let label = join(&mut label, "|");
-                let quoted_label = &label;
-                writeln!(output, "[label=\"{quoted_label}\"]")?;
+                // write!(output, "\t")?;
+                // node_name(output, page_idx)?;
+                // let mut label = (0..l.num_items()).map(|cell_idx| {
+                //     let cell = l.get_item_at_index(cell_idx).unwrap();
+                //     format!("<v_{}>{:?}", cell_idx, cell.key())
+                // });
+                // let label = join(&mut label, "|");
+                // let quoted_label = &label;
+                // writeln!(output, "[label=\"{quoted_label}\"]")?;
 
                 for cell_idx in 0..l.num_items() {
-                    write!(output, "\t")?;
-                    value_edge(output, page_idx, cell_idx)?;
-                    write!(output, " -> ")?;
-                    value_node(output, page_idx, cell_idx)?;
-                    writeln!(output, ";")?;
+                    //write!(output, "\t")?;
+                    //value_edge(output, page_idx, cell_idx)?;
+                    //write!(output, " -> ")?;
+                    //value_node(output, page_idx, cell_idx)?;
+                    //writeln!(output, ";")?;
 
-                    write!(output, "\t")?;
-                    value_node(output, page_idx, cell_idx)?;
-                    let value = &l.get_item_at_index(cell_idx).unwrap().value();
-                    writeln!(output, "[label=\"{:?}\"]", value)?;
+                    //write!(output, "\t")?;
+                    //value_node(output, page_idx, cell_idx)?;
+                    //let value = &l.get_item_at_index(cell_idx).unwrap().value();
+                    //writeln!(output, "[label=\"{:?}\"]", value)?;
                 }
             }
             node::NodePage::Interior(i) => {
@@ -177,19 +177,19 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                 }
             }
             node::NodePage::OverflowPage(o) => {
-                write!(output, "\t")?;
-                node_name(output, page_idx)?;
-                if let Some(next_page_idx) = o.continuation() {
-                    writeln!(output, "[label=\"<e_0>.\"]")?;
+                // write!(output, "\t")?;
+                // node_name(output, page_idx)?;
+                // if let Some(next_page_idx) = o.continuation() {
+                //     writeln!(output, "[label=\"<e_0>.\"]")?;
 
-                    write!(output, "\t")?;
-                    interor_edge(output, page_idx, 0)?;
-                    write!(output, " -> ")?;
-                    node_name(output, next_page_idx)?;
-                    writeln!(output, ";")?;
-                } else {
-                    writeln!(output, "[label=\".\"]")?;
-                }
+                //     write!(output, "\t")?;
+                //     interor_edge(output, page_idx, 0)?;
+                //     write!(output, " -> ")?;
+                //     node_name(output, next_page_idx)?;
+                //     writeln!(output, ";")?;
+                // } else {
+                //     writeln!(output, "[label=\".\"]")?;
+                // }
             }
         }
 

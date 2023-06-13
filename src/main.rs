@@ -1,7 +1,7 @@
 use std::{
     borrow::BorrowMut,
     cell::{Ref, RefCell},
-    cmp::min,
+    cmp::{min, max},
     io::{Read, Write},
 };
 
@@ -193,8 +193,8 @@ pub(crate) fn main() {
                 let count = u64::from_str_radix(*count, 10).unwrap();
                 let max_size = u64::from_str_radix(*&max_size, 10).unwrap();
 
-                let max_size = min(10usize, max_size as usize);
-                let count = min(10usize, count as usize);
+                let max_size = max(11usize, max_size as usize);
+                let count = max(11usize, count as usize);
 
                 for _ in 0..count {
                     let mut rng = rand::thread_rng();

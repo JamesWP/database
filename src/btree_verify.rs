@@ -36,6 +36,7 @@ fn verify_interior(pager: &Pager, interior: InteriorNodePage) -> Result<usize, V
     // Check all interior nodes are half full of entries ???
     // They should have at least two edges
     assert!(interior.num_edges() > 1);
+    assert_eq!(interior.num_edges() -1, interior.num_keys());
 
     // Check all interior node's child page's keys are within bounds
     for edge in 0..interior.num_edges() - 1 {

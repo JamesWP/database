@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cell::{Cell, Key, Value, ValueRef};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum NodePage {
     Leaf(LeafNodePage),
     Interior(InteriorNodePage),
@@ -48,7 +48,10 @@ impl NodePage {
                 let (left, right) = l.split();
                 (Self::Leaf(left), Self::Leaf(right))
             }
-            NodePage::Interior(_) => todo!(),
+            NodePage::Interior(i) => {
+                let (left, right) = i.split();
+                (Self::Interior(left), Self::Interior(right))
+            }
             _ => panic!(),
         }
     }
@@ -84,7 +87,7 @@ impl NodePage {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LeafNodePage {
     cells: Vec<Cell>,
 }
@@ -154,6 +157,8 @@ impl LeafNodePage {
     }
 
     fn split(&self) -> (LeafNodePage, LeafNodePage) {
+        //TODO: can this take self by value?
+
         let midpoint = self.cells.len() / 2;
         let (left, right) = self.cells.split_at(midpoint);
 
@@ -177,7 +182,7 @@ pub enum VerifyError {
 // [edge 0] [key 0] [edge 1] [key 1] ... [key N-1] [edge N]
 // items in [edge i] are LESS than or EQUAL to [key i]
 // (if there is no [key i], i.e. at the end, items in [edge i] must be GREATER than [key i-1])
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InteriorNodePage {
     keys: Vec<Key>,
     edges: Vec<u32>,
@@ -201,6 +206,10 @@ impl InteriorNodePage {
 
     pub fn num_edges(&self) -> usize {
         self.edges.len()
+    }
+
+    pub fn num_keys(&self) -> usize {
+        self.keys.len()
     }
 
     pub fn verify_key_ordering(&self) -> Result<(), VerifyError> {
@@ -260,8 +269,56 @@ impl InteriorNodePage {
         self.edges.push(edge_page_idx);
         self.keys.push(edge_page_smallest_key);
     }
+
+    fn split(&self) -> (InteriorNodePage, InteriorNodePage) {
+        /*
+            W  E  R
+          [A][S][D][F]
+
+          left:     right:
+            W          R
+          [A][S]     [D][F]
+
+          E is no longer required
+        */
+
+        // InteriorNodePage { 
+        //   keys:    [1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14], // len: 14, len/2: 7, 
+        //   edges: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] // len: 15, len/2: 7
+
+        //   left_keys:    [1, 2, 3, 4, 5, 6, 7]
+        //   left_edges: [1, 1, 1, 1, 1, 1, 1, 1]
+
+        //   right_keys:    [9,10,11,12,13,14], // len: 14, len/2: 7, 
+        //   right_edges: [1, 1, 1, 1, 1, 1, 1] // len: 15, len/2: 7
+        // } 
+
+        // invariant each of the two interior pages produced must have at least two child pages and one key
+        assert!(self.keys.len() >= 3); // One key is removed in the split
+        assert!(self.edges.len() >= 4);
+
+        let (left_keys, right_keys) = self.keys.split_at(self.keys.len() / 2);
+
+        // we must take the extra key in the right side and remove it.
+        let right_keys = &right_keys[1..];
+
+        let (left_edges, right_edges) = self.edges.split_at((self.edges.len() +1) / 2);
+        
+        assert_eq!(left_keys.len() +1, left_edges.len());
+        assert_eq!(right_keys.len() +1, right_edges.len());
+
+        let left = Self {
+            edges: left_edges.to_vec(),
+            keys: left_keys.to_vec(),
+        };
+        let right = Self {
+            edges: right_edges.to_vec(),
+            keys: right_keys.to_vec(),
+        };
+        (left, right)
+    }
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OverflowPage {
     content: Vec<u8>,
     continuation: Option<u32>,
@@ -290,7 +347,7 @@ mod test {
 
     use crate::node::Cell;
 
-    use super::{LeafNodePage, SearchResult};
+    use super::{LeafNodePage, SearchResult, InteriorNodePage};
 
     #[test]
     fn test_insertion_ordering() {
@@ -374,6 +431,50 @@ mod test {
             if left.num_items()>0 && right.num_items()>0 {
                 assert!(left.get_item_at_index(left.num_items()-1).unwrap().key() < right.get_item_at_index(0).unwrap().key());
             }
+        }
+    }
+
+    #[test]
+    fn test_interior_split() {
+        /*
+            W  E  R
+          [A][S][D][F]
+
+          left:     right:
+            W          R
+          [A][S]     [D][F]
+
+          E is no longer required
+        */
+        let (W, E, R) = (1,2,3);
+        let (A,S,D,F) = (10,20,30,40);
+
+        let mut interior_node = InteriorNodePage::new(A, W, S);
+        interior_node.insert_child_page(E, D);
+        interior_node.insert_child_page(R, F);
+
+        assert_eq!(interior_node.edges, &[A,S,D,F]);
+        assert_eq!(interior_node.keys, &[W,E,R]);
+
+        let (left, right) = interior_node.split();
+
+        assert_eq!(left.edges, &[A,S]);
+        assert_eq!(left.keys, &[W]);
+
+        assert_eq!(right.edges, &[D,F]);
+        assert_eq!(right.keys, &[R]);
+    }
+
+    proptest! {
+        #[test]
+        fn test_interior_page_split(interior_num_edges in 4u64..150) {
+            let num_inserts = interior_num_edges-2; // there are already two edges in the interior page
+            let mut interior_node = InteriorNodePage::new(1, 1, 1);
+            for page in 0..num_inserts {
+                interior_node.insert_child_page(page+2,1);
+            }
+            // println!("{interior_node:?}");
+            let (_left, _right) = interior_node.split();            
         }
     }
 }

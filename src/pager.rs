@@ -46,7 +46,7 @@ pub struct Pager {
     path: String,
 }
 
-const PAGE_SIZE: u32 = 2 << 11;
+const PAGE_SIZE: u64 = 2 << 11;
 
 #[derive(Debug)]
 pub enum EncodingError {
@@ -67,8 +67,10 @@ impl Pager {
             .write(false)
             .open(path)
             .unwrap();
+        let file_size_bytes = file.metadata().unwrap().size();
+        let num_pages = file_size_bytes / PAGE_SIZE;
 
-        file.metadata().unwrap().size() as u32 / PAGE_SIZE
+        num_pages as u32
     }
 
     pub fn set_file_size_pages(&self, num_pages: u32) {
@@ -79,7 +81,7 @@ impl Pager {
             .open(path)
             .unwrap();
 
-        file.set_len(PAGE_SIZE as u64 * num_pages as u64).unwrap();
+        file.set_len(PAGE_SIZE * num_pages as u64).unwrap();
     }
 
     fn get_zero_page(&self) -> Option<ZeroPage> {
@@ -101,8 +103,8 @@ impl Pager {
             .write(false)
             .open(path)
             .unwrap();
-        let seek = PAGE_SIZE * idx;
-        file.seek(std::io::SeekFrom::Start(seek as u64)).unwrap();
+        let seek = PAGE_SIZE * idx as u64;
+        file.seek(std::io::SeekFrom::Start(seek)).unwrap();
 
         file
     }
@@ -114,8 +116,8 @@ impl Pager {
             .write(true)
             .open(path)
             .unwrap();
-        let seek = PAGE_SIZE * idx;
-        file.seek(std::io::SeekFrom::Start(seek as u64)).unwrap();
+        let seek = PAGE_SIZE * idx as u64;
+        file.seek(std::io::SeekFrom::Start(seek)).unwrap();
 
         file
     }

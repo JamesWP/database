@@ -131,8 +131,6 @@ where
 
         // We now must put our new page into the tree.
         // The new page is at index: extra_page_idx, and the first key on that new page is extra_page_first_key
-
-        // self.debug("Before split");
         if stack.len() != 0 {
             // We must update the parent node
             // A reference to the new extra_page must be inserted into the parent node
@@ -146,13 +144,19 @@ where
 
             parent_interior_node.insert_child_page(extra_page_first_key, extra_page_idx);
 
-            // TODO: this will eventuallly overflow when an interior node needs splitting
-            self.pager
-                .encode_and_set(parent_node_idx, parent_interior_node.node())
-                .unwrap();
+            let parent_interior_node = parent_interior_node.node();
 
-            // TODO: This logic needs to repeat to arbitrary tree depths
-            assert!(stack.len() == 0);
+            let result = self
+                .pager
+                .encode_and_set(parent_node_idx, parent_interior_node.clone());
+
+            match result {
+                Err(pager::EncodingError::NotEnoughSpaceInPage) => {
+                    stack.push(parent_node_idx);
+                    self.split_page(parent_interior_node, stack);
+                }
+                Ok(_) => { }
+            }
         } else {
             // We have just split the root node...
             // We must now create the first interior node and insert two new child pages
@@ -164,12 +168,7 @@ where
             let root_node_idx = self.pager.allocate();
             self.pager.encode_and_set(root_node_idx, root_node).unwrap();
             self.pager.set_root_page(&self.tree_name, root_node_idx);
-
-            // TODO: remove this
-            btree_verify::verify(&self.pager, &self.tree_name).unwrap();
         }
-
-        // self.debug("After split");
     }
 }
 
