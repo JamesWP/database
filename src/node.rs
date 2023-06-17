@@ -106,8 +106,8 @@ pub enum SearchResult {
     /// The value is not present in the leaf node, but if it were it should be at this index
     NotPresent(usize),
     /// The element wasn't found, but if it is anywhere
-    /// then it must be in the child node identified by the given page number
-    GoDown(u32),
+    /// then it must be in the child node identified by the given index and page number
+    GoDown(usize, u32),
 }
 
 impl LeafNodePage {
@@ -235,16 +235,16 @@ impl InteriorNodePage {
         for (idx, key) in self.keys.iter().enumerate() {
             match k.cmp(key) {
                 Less => {
-                    return SearchResult::GoDown(self.edges[idx]);
+                    return SearchResult::GoDown(idx, self.edges[idx]);
                 }
-                Equal => return SearchResult::GoDown(self.edges[idx + 1]),
+                Equal => return SearchResult::GoDown(idx+1, self.edges[idx + 1]),
                 Greater => {
                     continue;
                 }
             };
         }
 
-        SearchResult::GoDown(self.edges.last().unwrap().clone())
+        SearchResult::GoDown(self.edges.len()-1, self.edges.last().unwrap().clone())
     }
 
     pub fn node(self) -> NodePage {
@@ -370,7 +370,7 @@ mod test {
         match r {
             super::SearchResult::Found(i) => i,
             super::SearchResult::NotPresent(_) => panic!(),
-            super::SearchResult::GoDown(_) => panic!(),
+            super::SearchResult::GoDown(_,_) => panic!(),
         }
     }
 
@@ -405,7 +405,7 @@ mod test {
                 match result {
                     SearchResult::Found(idx) => page.set_item_at_index(idx, cell),
                     SearchResult::NotPresent(idx) => page.insert_item_at_index(idx, cell),
-                    SearchResult::GoDown(_) => panic!(),
+                    SearchResult::GoDown(_, _) => panic!(),
                 };
 
                 page.verify_key_ordering().unwrap();

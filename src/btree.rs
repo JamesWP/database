@@ -83,11 +83,11 @@ where
 
                     break;
                 }
-                SearchResult::GoDown(child_index) => {
+                SearchResult::GoDown(_child_index, child_page_idx) => {
                     // The node does not contain the value, instead we found the index of a child of this node where the value should be inserted instead
                     // we need to go deeper.
 
-                    stack.push(child_index);
+                    stack.push(child_page_idx);
                 }
             }
         }
@@ -209,6 +209,27 @@ where
         }
     }
 
+    fn select_rightmost_of_idx(&mut self, page_idx: u32) {
+        let mut page_idx = page_idx;
+
+        loop {
+            let page: NodePage = self.pager.get_and_decode(page_idx);
+            match page {
+                node::NodePage::Leaf(l) => {
+                    // We found the first leaf in the tree.
+                    // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
+                    self.leaf_iterator = Some((page_idx, l.num_items()-1));
+                    return;
+                }
+                node::NodePage::Interior(i) => {
+                    self.stack.push((page_idx, i.num_edges()-1));
+                    page_idx = i.get_child_page_by_index(i.num_edges()-1);
+                }
+                NodePage::OverflowPage(_) => panic!(),
+            }
+        }
+    }
+
     /// Move the cursor to point at the last row in the btree
     /// This may result in the cursor not pointing to a row if there is no
     /// last row to point to
@@ -239,19 +260,26 @@ where
     /// row found with that key to point to
     pub fn find(&mut self, key: u64) {
         let root_page_idx = self.pager.get_root_page(&self.tree_name).unwrap();
-        let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
-
-        let mut page = root_page;
-        let page_idx = root_page_idx;
+        let mut page_idx = root_page_idx;
 
         loop {
+            let page: NodePage = self.pager.get_and_decode(page_idx);
+
             match page.search(&key) {
                 SearchResult::Found(index) => {
                     self.leaf_iterator = Some((page_idx, index));
                     return;
                 }
-                SearchResult::NotPresent(_) => self.leaf_iterator = None,
-                SearchResult::GoDown(_) => todo!(),
+                SearchResult::NotPresent(index) => {
+                    self.leaf_iterator = Some((page_idx, index));
+                    // TODO: does the caller need to know this isnt what they were looking for?
+                    return;
+                }
+                SearchResult::GoDown(c_idx, c) => {
+                    self.stack.push((page_idx, c_idx));
+                    // we should continue searching at the child page below
+                    page_idx = c;
+                }
             }
         }
     }
@@ -270,26 +298,54 @@ where
 
     /// Move the cursor to point at the next item in the btree
     pub fn next(&mut self) {
+        // function takes a curent index and the number of indexes, and returns Some(idx) where idx is the next index to consider
+        // or none if there are no more on this page
+        let next_idx = |curent: usize, count| { 
+            if curent +1 < count {
+                Some(curent+1)
+            } else {
+                None
+            }
+        };
+
+        // function to move the cursor to the next item to consider in subtree identified by page_idx in the given direction
+        let select_first_in_direction = Self::select_leftmost_of_idx;
+
+        self.move_in_direction(next_idx, select_first_in_direction);
+    }
+
+    /// Move the cursor to point at the next item in the btree
+    pub fn prev(&mut self) {
+        // function takes a curent index and the number of indexes, and returns Some(idx) where idx is the next index to consider
+        // or none if there are no more on this page
+        let next_idx = |curent: usize, _count| { 
+            if curent != 0 {
+                Some(curent-1)
+            } else {
+                None
+            }
+        };
+
+        // function to move the cursor to the next item to consider in subtree identified by page_idx in the given direction
+        let select_first_in_direction = Self::select_rightmost_of_idx;
+
+        self.move_in_direction(next_idx, select_first_in_direction);
+    }
+
+    fn move_in_direction(&mut self, next_idx: impl Fn(usize, usize) -> Option<usize>, select_first_in_direction: impl Fn(&mut Self, u32)) {
         if self.leaf_iterator.is_none() {
             return;
         }
-
         let (page_number, entry_index) = self.leaf_iterator.unwrap();
-
         let page: NodePage = self.pager.get_and_decode(page_number);
-
         let page = page
             .leaf()
             .expect("Values are always supposed to be in leaf pages");
         let num_items_in_leaf = page.num_items();
-
-        // Check if there are more items left in the curent leaf
-        if entry_index + 1 < num_items_in_leaf {
-            self.leaf_iterator = Some((page_number, entry_index + 1));
+        if let Some(entry_index) = next_idx(entry_index, num_items_in_leaf) {
+            self.leaf_iterator = Some((page_number, entry_index));
             return;
         }
-
-        // We ran out of items on this leaf page, find the next leaf page
         loop {
             // if the stack is empty then we have no more places to go
             if self.stack.is_empty() {
@@ -307,43 +363,21 @@ where
             let edge_count = curent_interior.num_edges();
 
             // if we there are more edges to the right:
-            if curent_edge + 1 < edge_count {
+            if let Some(next_edge) = next_idx(curent_edge, edge_count) {
                 // select the next edge in the curent page
-                self.stack.push((curent_interior_idx, curent_edge + 1));
+                self.stack.push((curent_interior_idx, next_edge));
 
                 // find the page_idx for the new edge
-                let curent_edge_idx = curent_interior.get_child_page_by_index(curent_edge + 1);
+                let curent_edge_idx = curent_interior.get_child_page_by_index(next_edge);
 
                 // then select the first item in the leftmost leaf of that subtree
-                self.select_leftmost_of_idx(curent_edge_idx);
+                select_first_in_direction(self, curent_edge_idx);
                 return;
             }
 
             // if there are no more edges in this node:
             //    pop this item off the stack and repeat
             // pop already happened
-        }
-    }
-
-    /// Move the cursor to point at the next item in the btree
-    pub fn prev(&mut self) {
-        if self.leaf_iterator.is_none() {
-            return;
-        }
-
-        let (leaf_page_number, entry_index) = self.leaf_iterator.unwrap();
-
-        let page: NodePage = self.pager.get_and_decode(leaf_page_number);
-
-        let _leaf_page = page
-            .leaf()
-            .expect("Values are always supposed to be in leaf pages");
-
-        if entry_index > 0 {
-            self.leaf_iterator = Some((leaf_page_number, entry_index - 1));
-        } else {
-            // We ran out of items on this page, find the previous leaf page
-            todo!()
         }
     }
 
@@ -667,7 +701,7 @@ mod test {
         println!("{btree}");
     }
 
-    fn do_test_ordering(elements: &[(u64, (char, usize))], my_btree: &mut BTree) {
+    fn do_test_ordering(elements: &[(u64, (char, usize))], my_btree: &mut BTree, ordering_forwards: bool) {
         println!("Test: {elements:?}");
 
         let mut rust_btree = BTreeMap::new();
@@ -687,14 +721,25 @@ mod test {
         cursor.verify().unwrap();
         // cursor.debug("Before order check");
 
-        cursor.first();
+        if ordering_forwards {
+            cursor.first();
+        } else {
+            cursor.last();
+        }
 
-        for (_key, actual_value) in rust_btree.iter() {
+        let rust_btree_iter: Box<dyn Iterator<Item=_>>  = if ordering_forwards { Box::new(rust_btree.iter())} else { Box::new(rust_btree.iter().rev())};
+
+        for (_key, actual_value) in rust_btree_iter {
             // println!("Key: {key} {my_value}");
             let mut buf = vec![];
             cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
             assert_eq!(actual_value, &buf);
-            cursor.next();
+
+            if ordering_forwards {
+                cursor.next();
+            } else {
+                cursor.prev();
+            }
         }
 
         cursor.verify().unwrap();
@@ -706,17 +751,17 @@ mod test {
 
         let test = TestDb::default();
         let mut btree = test.btree;
-        do_test_ordering(&large_test_case, &mut btree);
+        do_test_ordering(&large_test_case, &mut btree, true);
 
         println!("{btree}");
     }
 
     proptest! {
         #[test]
-        fn test_ordering(elements in prop::collection::vec(&(1..100u64, &(prop::char::range('A', 'z'), 1..1000usize)), 1..200usize)) {
+        fn test_ordering(ordering: bool, elements in prop::collection::vec(&(50..60u64, &(prop::char::range('A', 'Z'), 500..600usize)), 10..20usize)) {
             let test = TestDb::default();
             let mut btree = test.btree;
-            do_test_ordering(elements.as_slice(), &mut btree);
+            do_test_ordering(elements.as_slice(), &mut btree, ordering);
         }
     }
 }
