@@ -1,0 +1,36 @@
+- create sql parser
+- create sql compiler
+- create virtual machine
+- ✅ create btree
+  - delete from btree
+  - index support in btree
+- ✅ create pager
+
+
+
+simple sql
+
+sqlite> create table tablename(col int, othercol int, finalcol int);
+sqlite> insert into tablename(col,othercol,finalcol) values(1,1,1);
+sqlite> select t.col, t.othercol+1, finalcol*2 from tablename as t where col=1 and finalcol>0 limit 23;
+1|2|2
+ - select t.col, t.othercol+1, finalcol*2 from tablename as t where col=1 and finalcol > 0 limit 23
+
+
+ select
+    - columns:
+        - expr: ColumnExpr(table=t, column=col)
+          name: "col"
+        - expr: AddExpr(ColumnExpr(table=t, column=othercol), 1)
+          name: "t.othercol+1"
+        - expr: Mult(ColumnExpr(column=finalcol), 2)
+    - where:
+        expr: AndExpr(
+            EqualsExpr(ColumnExpr(column=col), LiteralExpr(1),
+            GreaterThanExpr(ColumnExpr(column=finalcol), LiteralExpr(0)))
+    - limit:
+        expr: LiteralExpr(1)
+
+grammar:
+    sql_expression_grammar.txt - the grammar for understanding expressions
+    sql_statement_grammar.txt - the grammar for understanding sql constructs

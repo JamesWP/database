@@ -1,0 +1,45 @@
+sql_statement:
+    : select_statement
+    ;
+
+select_statement:
+    : SELECT column_expressions FROM named_tuple_source WHERE filter_expression LIMIT limit_expression
+    | SELECT column_expressions FROM named_tuple_source LIMIT limit_expression
+    | SELECT column_expressions FROM named_tuple_source WHERE limit_expression
+    | SELECT column_expressions FROM named_tuple_source 
+    ; 
+
+column_expressions:
+    : named_column_expression
+    | column_expressions ',' named_column_expression
+    ;
+
+named_column_expression:
+    : column_expression AS IDENT
+    | column_expression
+    ;
+
+column_expression:
+    :  expression
+
+named_tuple_source:
+    : tuple_source AS IDENT
+    | tuple_source
+    ;
+
+tuple_source:
+    : '(' select_statement ')'
+    | table_name
+    ;
+
+table_name:
+    : IDENT
+    ;
+
+filter_expression:
+    : expression
+    ;
+
+limit_expression:
+    : expression
+    ;
