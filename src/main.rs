@@ -28,6 +28,8 @@ mod database {
     use crate::btree;
 }
 
+mod frontend;
+
 enum State {
     None,
     Open(Box<btree::BTree>),

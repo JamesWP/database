@@ -77,11 +77,8 @@ cast_expression
 
 unary_expression
     : postfix_expression
-    | INC_OP unary_expression
-    | DEC_OP unary_expression
     | unary_operator cast_expression
-    | SIZEOF unary_expression
-    | SIZEOF '(' type_name ')'
+    ;
 
 postfix_expression
     : primary_expression
@@ -95,10 +92,7 @@ postfix_expression
     ;
 
 unary_operator
-    : '&'
-    | '*'
-    | '+'
-    | '~'
+    : '+'
     | '!'
     ;
 
