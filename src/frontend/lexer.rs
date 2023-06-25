@@ -38,7 +38,8 @@ pub enum Type {
     // Literals.
     Identifier(String),
     String(String),
-    Number(i64),
+    IntegerNumber(i64),
+    FloatingPointNumber(f64),
 
     // Keywords.
     Select,
@@ -56,7 +57,12 @@ pub enum Type {
 }
 
 pub enum Error {
-    UnterminatedStringLiteral
+    UnterminatedStringLiteral,
+    UnknownCharacter(char),
+    UnknownEscape(char),
+    BadFloatingPointNumber(String),
+    BadIntegerNumber(String),
+    MissingEscape,
 }
 
 pub fn lex(input: &str) -> Vec<Token> {
@@ -80,8 +86,9 @@ struct Lexer<'a> {
 }
 
 impl<'a> Into<Vec<Token>> for Lexer<'a> {
-    fn into(self) -> Vec<Token> {
-        todo!("add EOF token");
+    fn into(mut self) -> Vec<Token> {
+        let token = self.make_token(Type::Eof);
+        self.tokens.push(token);
         self.tokens
     }
 }
@@ -176,7 +183,7 @@ impl<'a> Lexer<'a> {
             '"' => self.string('"'),
             '0' ..= '9' => self.number(),
             'a' ..= 'z' | 'A' ..= 'Z' | '_' => self.identifier(),
-            _ => todo!(),
+            c => self.make_token(Type::Error(Error::UnknownCharacter(c)))
         }
     }
 
@@ -236,19 +243,28 @@ impl<'a> Lexer<'a> {
 
     fn string(&mut self, arg: char) -> Token {
         loop {
-            if self.peek() == arg {
-                break;
-            }
             if self.is_at_end() {
                 break;
             }
 
-            if self.peek() == '\n' {
-                self.line += 1;
-                self.column = 0;
+            // This is a single character escape sequence
+            match self.peek() {
+                '\\' => {
+                    self.advance();
+                    self.advance();
+                }
+                '\n' => {
+                    self.line += 1;
+                    self.column = 0;
+                    self.advance();
+                }
+                c if c == arg => {
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
             }
-
-            self.advance();
         }
 
         if self.is_at_end() {
@@ -257,7 +273,40 @@ impl<'a> Lexer<'a> {
 
         // The closing quote.
         self.advance();
-        self.make_token(Type::String(todo!()))
+
+        let mut value = String::with_capacity(self.curent_lexeme.len());
+        let mut chars = self.curent_lexeme.chars();
+
+        // Skip the opening quote
+        let mut chars = chars.skip(1).peekable();
+
+        while let Some(c) = chars.next() {
+            if chars.peek().is_none() {
+                // we just took the ending quote character
+                break
+            }
+
+            match c {
+                '\\' => {
+                    match chars.peek() {
+                        Some('t') => value.push('\t'),
+                        Some('n') => value.push('\n'),
+                        Some('\\') => value.push('\\'),
+                        Some(c) => {
+                            return self.make_token(Type::Error(Error::UnknownEscape(*c)));
+                        }
+                        None => {
+                            return self.make_token(Type::Error(Error::MissingEscape));
+                        }
+                    }
+                },
+                c => {
+                    value.push(c);
+                }
+            }
+        }
+
+        self.make_token(Type::String(value))
     }
 
     fn number(&mut self) -> Token {
@@ -281,8 +330,19 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let n = todo!();
-        self.make_token(Type::Number(n))
+        if self.curent_lexeme.contains('.') {
+            let n = self.curent_lexeme.parse();
+            match n {
+                Err(e) => self.make_token(Type::Error(Error::BadFloatingPointNumber(self.curent_lexeme.to_owned()))),
+                Ok(n) => self.make_token(Type::FloatingPointNumber(n))
+            }
+        } else{
+            let n = self.curent_lexeme.parse();
+            match n {
+                Err(e) => self.make_token(Type::Error(Error::BadIntegerNumber(self.curent_lexeme.to_owned()))),
+                Ok(n) => self.make_token(Type::IntegerNumber(n))
+            }
+        }
     }
 
     fn identifier(&mut self) -> Token {
