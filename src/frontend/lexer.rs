@@ -1,5 +1,5 @@
 use peekmore::{PeekMore, PeekMoreIterator};
-use std::{iter::Peekable, str::Chars};
+use std::str::Chars;
 
 pub struct Pos {
     line: usize,
@@ -12,8 +12,6 @@ pub struct Token {
     start: Pos,
     end: Pos,
 }
-
-pub enum Identifiers {}
 
 pub enum Type {
     // Single-character tokens.
@@ -38,18 +36,19 @@ pub enum Type {
     LessEqual,
 
     // Literals.
-    Identifier(Identifiers),
+    Identifier(String),
     String(String),
     Number(i64),
 
     // Keywords.
     Select,
+    As,
     From,
     Where,
     Limit,
     False,
-    Null,
     True,
+    Null,
 
     Error(Error),
 
@@ -67,7 +66,16 @@ pub fn lex(input: &str) -> Vec<Token> {
 
 struct Lexer<'a> {
     input: PeekMoreIterator<Chars<'a>>,
+
+    // Current position in the input
     line: usize,
+    column: usize,
+
+    // Starting point of the curent token
+    start: Pos,
+
+    curent_lexeme: String,
+
     tokens: Vec<Token>,
 }
 
@@ -83,7 +91,10 @@ impl<'a> Lexer<'a> {
         Lexer {
             input: input.chars().peekmore(),
             tokens: Default::default(),
-            line: 0,
+            line: 1,
+            column: 0,
+            start: Pos { col: 0, line: 0 },
+            curent_lexeme: String::new(),
         }
     }
 
@@ -92,6 +103,8 @@ impl<'a> Lexer<'a> {
             if self.is_at_end() {
                 break;
             }
+            self.start = Pos { col: self.column, line: self.line };
+            self.curent_lexeme.clear();
             let token = self.scan_token();
             self.tokens.push(token);
         }
@@ -114,6 +127,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn advance(&mut self) -> char {
+        self.column += 1;
+
         match self.input.next() {
             Some(c) => c,
             None => '\0',
@@ -125,8 +140,6 @@ impl<'a> Lexer<'a> {
     }
 
     fn scan_token(&mut self) -> Token {
-        // TODO: set pos correctly
-
         let c = self.advance();
 
         match c {
@@ -162,7 +175,8 @@ impl<'a> Lexer<'a> {
             '\'' => self.string('\''),
             '"' => self.string('"'),
             '0' ..= '9' => self.number(),
-            _ => todo!()
+            'a' ..= 'z' | 'A' ..= 'Z' | '_' => self.identifier(),
+            _ => todo!(),
         }
     }
 
@@ -176,6 +190,7 @@ impl<'a> Lexer<'a> {
                 '\n' => {
                     self.advance();
                     self.line += 1;
+                    self.column = 0;
                     break;
                 }
                 '-' => {
@@ -197,7 +212,15 @@ impl<'a> Lexer<'a> {
     }
 
     fn make_token(&mut self, tipe: Type) -> Token {
-        todo!()
+        let start = Pos{ col: self.start.col,  line: self.start.line };
+        let end = Pos{ col: self.column,  line: self.line };
+
+        Token {
+            tipe,
+            lexeme: self.curent_lexeme.clone(),
+            start,
+            end,
+        }
     }
 
     fn check_next(&mut self, arg: char) -> bool {
@@ -222,6 +245,7 @@ impl<'a> Lexer<'a> {
 
             if self.peek() == '\n' {
                 self.line += 1;
+                self.column = 0;
             }
 
             self.advance();
@@ -237,10 +261,6 @@ impl<'a> Lexer<'a> {
     }
 
     fn number(&mut self) -> Token {
-        let is_digit = |c| {
-            ('0'..='9').contains(&c)
-        };
-
         loop {
             if !is_digit(self.peek()){
                 break;
@@ -265,4 +285,52 @@ impl<'a> Lexer<'a> {
         self.make_token(Type::Number(n))
     }
 
+    fn identifier(&mut self) -> Token {
+        // consume all characters for the identifier
+        loop {
+            if !is_digit(self.peek()) && !is_alpha(self.peek()) {
+                break;
+            }
+            self.advance();
+        }
+
+        let ident: String = self.curent_lexeme.clone().to_lowercase();
+        let ident= ident.as_str();
+
+        let tipe = match ident.chars().next().unwrap() {
+            's' => match_reserved(ident, "select", Type::Select),
+            'a' => match_reserved(ident, "as", Type::As),
+            'f' => {
+                match ident.chars().nth(1) {
+                    Some('r') => match_reserved(ident, "from", Type::From),
+                    Some('a') => match_reserved(ident, "false", Type::False),
+                    _ => Type::Identifier(ident.to_owned())
+                }
+            },
+            'w' => match_reserved(ident, "where", Type::Where),
+            'l' => match_reserved(ident, "limit", Type::Where),
+            't' => match_reserved(ident, "true", Type::True),
+            'n' => match_reserved(ident, "null", Type::Null),
+            _ => Type::Identifier(ident.to_owned())
+        };
+
+        self.make_token(tipe)
+    }
+
+}
+
+fn match_reserved(ident: &str, possible_keyword: &str, tipe: Type) -> Type {
+    if ident == possible_keyword {
+        tipe
+    } else {
+        Type::Identifier(ident.to_owned())
+    }
+}
+
+fn is_digit(c: char) -> bool {
+    ('0'..='9').contains(&c)
+}
+
+fn is_alpha(c: char) -> bool {
+    ('a' ..= 'z').contains(&c) || ('A' ..= 'Z').contains(&c)  || c == '_'
 }
