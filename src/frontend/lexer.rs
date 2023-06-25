@@ -1,5 +1,5 @@
 use peekmore::{PeekMore, PeekMoreIterator};
-use std::str::Chars;
+use std::{str::Chars, fmt::{Display, Debug}};
 
 pub struct Pos {
     line: usize,
@@ -13,6 +13,7 @@ pub struct Token {
     end: Pos,
 }
 
+#[derive(Debug)]
 pub enum Type {
     // Single-character tokens.
     LeftParen,
@@ -54,8 +55,11 @@ pub enum Type {
     Error(Error),
 
     Eof,
+    And,
+    Or,
 }
 
+#[derive(Debug)]
 pub enum Error {
     UnterminatedStringLiteral,
     UnknownCharacter(char),
@@ -63,6 +67,12 @@ pub enum Error {
     BadFloatingPointNumber(String),
     BadIntegerNumber(String),
     MissingEscape,
+}
+
+impl Debug for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.tipe.fmt(f)
+    }
 }
 
 pub fn lex(input: &str) -> Vec<Token> {
@@ -110,8 +120,6 @@ impl<'a> Lexer<'a> {
             if self.is_at_end() {
                 break;
             }
-            self.start = Pos { col: self.column, line: self.line };
-            self.curent_lexeme.clear();
             let token = self.scan_token();
             self.tokens.push(token);
         }
@@ -136,17 +144,26 @@ impl<'a> Lexer<'a> {
     fn advance(&mut self) -> char {
         self.column += 1;
 
-        match self.input.next() {
+        let c = match self.input.next() {
             Some(c) => c,
             None => '\0',
-        }
+        };
+
+        self.curent_lexeme.push(c);
+
+        c
     }
 
     fn is_at_end(&mut self) -> bool {
-        self.peek() != '\0'
+        self.peek() == '\0'
     }
 
     fn scan_token(&mut self) -> Token {
+        self.skip_whitespace();
+
+        self.start = Pos { col: self.column, line: self.line };
+        self.curent_lexeme.clear();
+
         let c = self.advance();
 
         match c {
@@ -359,16 +376,23 @@ impl<'a> Lexer<'a> {
 
         let tipe = match ident.chars().next().unwrap() {
             's' => match_reserved(ident, "select", Type::Select),
-            'a' => match_reserved(ident, "as", Type::As),
+            'a' => { 
+                match ident.chars().nth(1) {
+                    Some('s') => match_reserved(ident, "as", Type::As),
+                    Some('n') => match_reserved(ident, "and", Type::And),
+                    _ => Type::Identifier(ident.to_owned())
+                }
+            }
             'f' => {
                 match ident.chars().nth(1) {
                     Some('r') => match_reserved(ident, "from", Type::From),
                     Some('a') => match_reserved(ident, "false", Type::False),
                     _ => Type::Identifier(ident.to_owned())
                 }
-            },
+            }
             'w' => match_reserved(ident, "where", Type::Where),
-            'l' => match_reserved(ident, "limit", Type::Where),
+            'o' => match_reserved(ident, "or", Type::Or),
+            'l' => match_reserved(ident, "limit", Type::Limit),
             't' => match_reserved(ident, "true", Type::True),
             'n' => match_reserved(ident, "null", Type::Null),
             _ => Type::Identifier(ident.to_owned())
@@ -393,4 +417,18 @@ fn is_digit(c: char) -> bool {
 
 fn is_alpha(c: char) -> bool {
     ('a' ..= 'z').contains(&c) || ('A' ..= 'Z').contains(&c)  || c == '_'
+}
+
+#[cfg(test)]
+mod test {
+    use super::lex;
+
+    #[test]
+    fn test() {
+        let input = "select t.col, t.othercol+1, finalcol*2 from tablename as t where col=1 and finalcol>0 limit 23;";
+        let output = lex(input);
+
+        println!("{:?}", input);
+        println!("{:?}", output);
+    }
 }
