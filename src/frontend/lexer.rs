@@ -1,5 +1,8 @@
 use peekmore::{PeekMore, PeekMoreIterator};
-use std::{str::Chars, fmt::{Display, Debug}};
+use std::{
+    fmt::{Debug, Display},
+    str::Chars,
+};
 
 pub struct Pos {
     line: usize,
@@ -124,7 +127,7 @@ impl<'a> Lexer<'a> {
             self.tokens.push(token);
         }
 
-        self.into() 
+        self.into()
     }
 
     fn peek(&mut self) -> char {
@@ -161,7 +164,10 @@ impl<'a> Lexer<'a> {
     fn scan_token(&mut self) -> Token {
         self.skip_whitespace();
 
-        self.start = Pos { col: self.column, line: self.line };
+        self.start = Pos {
+            col: self.column,
+            line: self.line,
+        };
         self.curent_lexeme.clear();
 
         let c = self.advance();
@@ -198,9 +204,9 @@ impl<'a> Lexer<'a> {
             }
             '\'' => self.string('\''),
             '"' => self.string('"'),
-            '0' ..= '9' => self.number(),
-            'a' ..= 'z' | 'A' ..= 'Z' | '_' => self.identifier(),
-            c => self.make_token(Type::Error(Error::UnknownCharacter(c)))
+            '0'..='9' => self.number(),
+            'a'..='z' | 'A'..='Z' | '_' => self.identifier(),
+            c => self.make_token(Type::Error(Error::UnknownCharacter(c))),
         }
     }
 
@@ -236,8 +242,14 @@ impl<'a> Lexer<'a> {
     }
 
     fn make_token(&mut self, tipe: Type) -> Token {
-        let start = Pos{ col: self.start.col,  line: self.start.line };
-        let end = Pos{ col: self.column,  line: self.line };
+        let start = Pos {
+            col: self.start.col,
+            line: self.start.line,
+        };
+        let end = Pos {
+            col: self.column,
+            line: self.line,
+        };
 
         Token {
             tipe,
@@ -300,21 +312,19 @@ impl<'a> Lexer<'a> {
         while let Some(c) = chars.next() {
             if chars.peek().is_none() {
                 // we just took the ending quote character
-                break
+                break;
             }
 
             match c {
-                '\\' => {
-                    match chars.peek() {
-                        Some('t') => value.push('\t'),
-                        Some('n') => value.push('\n'),
-                        Some('\\') => value.push('\\'),
-                        Some(c) => {
-                            return self.make_token(Type::Error(Error::UnknownEscape(*c)));
-                        }
-                        None => {
-                            return self.make_token(Type::Error(Error::MissingEscape));
-                        }
+                '\\' => match chars.peek() {
+                    Some('t') => value.push('\t'),
+                    Some('n') => value.push('\n'),
+                    Some('\\') => value.push('\\'),
+                    Some(c) => {
+                        return self.make_token(Type::Error(Error::UnknownEscape(*c)));
+                    }
+                    None => {
+                        return self.make_token(Type::Error(Error::MissingEscape));
                     }
                 },
                 c => {
@@ -328,14 +338,14 @@ impl<'a> Lexer<'a> {
 
     fn number(&mut self) -> Token {
         loop {
-            if !is_digit(self.peek()){
+            if !is_digit(self.peek()) {
                 break;
             }
             self.advance();
-        } 
+        }
 
         // Look for a fractional part.
-        if self.peek() == '.' && is_digit(self.peek_next()){
+        if self.peek() == '.' && is_digit(self.peek_next()) {
             // Consume the ".".
             self.advance();
 
@@ -350,14 +360,18 @@ impl<'a> Lexer<'a> {
         if self.curent_lexeme.contains('.') {
             let n = self.curent_lexeme.parse();
             match n {
-                Err(e) => self.make_token(Type::Error(Error::BadFloatingPointNumber(self.curent_lexeme.to_owned()))),
-                Ok(n) => self.make_token(Type::FloatingPointNumber(n))
+                Err(e) => self.make_token(Type::Error(Error::BadFloatingPointNumber(
+                    self.curent_lexeme.to_owned(),
+                ))),
+                Ok(n) => self.make_token(Type::FloatingPointNumber(n)),
             }
-        } else{
+        } else {
             let n = self.curent_lexeme.parse();
             match n {
-                Err(e) => self.make_token(Type::Error(Error::BadIntegerNumber(self.curent_lexeme.to_owned()))),
-                Ok(n) => self.make_token(Type::IntegerNumber(n))
+                Err(e) => self.make_token(Type::Error(Error::BadIntegerNumber(
+                    self.curent_lexeme.to_owned(),
+                ))),
+                Ok(n) => self.make_token(Type::IntegerNumber(n)),
             }
         }
     }
@@ -372,35 +386,30 @@ impl<'a> Lexer<'a> {
         }
 
         let ident: String = self.curent_lexeme.clone().to_lowercase();
-        let ident= ident.as_str();
+        let ident = ident.as_str();
 
         let tipe = match ident.chars().next().unwrap() {
             's' => match_reserved(ident, "select", Type::Select),
-            'a' => { 
-                match ident.chars().nth(1) {
-                    Some('s') => match_reserved(ident, "as", Type::As),
-                    Some('n') => match_reserved(ident, "and", Type::And),
-                    _ => Type::Identifier(ident.to_owned())
-                }
-            }
-            'f' => {
-                match ident.chars().nth(1) {
-                    Some('r') => match_reserved(ident, "from", Type::From),
-                    Some('a') => match_reserved(ident, "false", Type::False),
-                    _ => Type::Identifier(ident.to_owned())
-                }
-            }
+            'a' => match ident.chars().nth(1) {
+                Some('s') => match_reserved(ident, "as", Type::As),
+                Some('n') => match_reserved(ident, "and", Type::And),
+                _ => Type::Identifier(ident.to_owned()),
+            },
+            'f' => match ident.chars().nth(1) {
+                Some('r') => match_reserved(ident, "from", Type::From),
+                Some('a') => match_reserved(ident, "false", Type::False),
+                _ => Type::Identifier(ident.to_owned()),
+            },
             'w' => match_reserved(ident, "where", Type::Where),
             'o' => match_reserved(ident, "or", Type::Or),
             'l' => match_reserved(ident, "limit", Type::Limit),
             't' => match_reserved(ident, "true", Type::True),
             'n' => match_reserved(ident, "null", Type::Null),
-            _ => Type::Identifier(ident.to_owned())
+            _ => Type::Identifier(ident.to_owned()),
         };
 
         self.make_token(tipe)
     }
-
 }
 
 fn match_reserved(ident: &str, possible_keyword: &str, tipe: Type) -> Type {
@@ -416,7 +425,7 @@ fn is_digit(c: char) -> bool {
 }
 
 fn is_alpha(c: char) -> bool {
-    ('a' ..= 'z').contains(&c) || ('A' ..= 'Z').contains(&c)  || c == '_'
+    ('a'..='z').contains(&c) || ('A'..='Z').contains(&c) || c == '_'
 }
 
 #[cfg(test)]

@@ -1,8 +1,9 @@
 use std::{
     borrow::BorrowMut,
     cell::{Ref, RefCell},
-    cmp::{min, max},
-    io::{Read, Write}, ops::ControlFlow,
+    cmp::{max, min},
+    io::{Read, Write},
+    ops::ControlFlow,
 };
 
 use owning_ref::OwningHandle;

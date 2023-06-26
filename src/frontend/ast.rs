@@ -1,5 +1,5 @@
 enum Statement {
-    Select(SelectStatement)
+    Select(SelectStatement),
 }
 
 struct SelectStatement {
@@ -10,7 +10,10 @@ struct SelectStatement {
 }
 
 enum ColumnExpression {
-    Named { name: String, expression: Box<Expression> },
+    Named {
+        name: String,
+        expression: Box<Expression>,
+    },
     Anonyomous(Box<Expression>),
 }
 

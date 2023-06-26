@@ -237,14 +237,14 @@ impl InteriorNodePage {
                 Less => {
                     return SearchResult::GoDown(idx, self.edges[idx]);
                 }
-                Equal => return SearchResult::GoDown(idx+1, self.edges[idx + 1]),
+                Equal => return SearchResult::GoDown(idx + 1, self.edges[idx + 1]),
                 Greater => {
                     continue;
                 }
             };
         }
 
-        SearchResult::GoDown(self.edges.len()-1, self.edges.last().unwrap().clone())
+        SearchResult::GoDown(self.edges.len() - 1, self.edges.last().unwrap().clone())
     }
 
     pub fn node(self) -> NodePage {
@@ -282,16 +282,16 @@ impl InteriorNodePage {
           E is no longer required
         */
 
-        // InteriorNodePage { 
-        //   keys:    [1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14], // len: 14, len/2: 7, 
+        // InteriorNodePage {
+        //   keys:    [1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14], // len: 14, len/2: 7,
         //   edges: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] // len: 15, len/2: 7
 
         //   left_keys:    [1, 2, 3, 4, 5, 6, 7]
         //   left_edges: [1, 1, 1, 1, 1, 1, 1, 1]
 
-        //   right_keys:    [9,10,11,12,13,14], // len: 14, len/2: 7, 
+        //   right_keys:    [9,10,11,12,13,14], // len: 14, len/2: 7,
         //   right_edges: [1, 1, 1, 1, 1, 1, 1] // len: 15, len/2: 7
-        // } 
+        // }
 
         // invariant each of the two interior pages produced must have at least two child pages and one key
         assert!(self.keys.len() >= 3); // One key is removed in the split
@@ -302,10 +302,10 @@ impl InteriorNodePage {
         // we must take the extra key in the right side and remove it.
         let right_keys = &right_keys[1..];
 
-        let (left_edges, right_edges) = self.edges.split_at((self.edges.len() +1) / 2);
-        
-        assert_eq!(left_keys.len() +1, left_edges.len());
-        assert_eq!(right_keys.len() +1, right_edges.len());
+        let (left_edges, right_edges) = self.edges.split_at((self.edges.len() + 1) / 2);
+
+        assert_eq!(left_keys.len() + 1, left_edges.len());
+        assert_eq!(right_keys.len() + 1, right_edges.len());
 
         let left = Self {
             edges: left_edges.to_vec(),
@@ -347,7 +347,7 @@ mod test {
 
     use crate::node::Cell;
 
-    use super::{LeafNodePage, SearchResult, InteriorNodePage};
+    use super::{InteriorNodePage, LeafNodePage, SearchResult};
 
     #[test]
     fn test_insertion_ordering() {
@@ -370,7 +370,7 @@ mod test {
         match r {
             super::SearchResult::Found(i) => i,
             super::SearchResult::NotPresent(_) => panic!(),
-            super::SearchResult::GoDown(_,_) => panic!(),
+            super::SearchResult::GoDown(_, _) => panic!(),
         }
     }
 
@@ -446,22 +446,22 @@ mod test {
 
           E is no longer required
         */
-        let (W, E, R) = (1,2,3);
-        let (A,S,D,F) = (10,20,30,40);
+        let (W, E, R) = (1, 2, 3);
+        let (A, S, D, F) = (10, 20, 30, 40);
 
         let mut interior_node = InteriorNodePage::new(A, W, S);
         interior_node.insert_child_page(E, D);
         interior_node.insert_child_page(R, F);
 
-        assert_eq!(interior_node.edges, &[A,S,D,F]);
-        assert_eq!(interior_node.keys, &[W,E,R]);
+        assert_eq!(interior_node.edges, &[A, S, D, F]);
+        assert_eq!(interior_node.keys, &[W, E, R]);
 
         let (left, right) = interior_node.split();
 
-        assert_eq!(left.edges, &[A,S]);
+        assert_eq!(left.edges, &[A, S]);
         assert_eq!(left.keys, &[W]);
 
-        assert_eq!(right.edges, &[D,F]);
+        assert_eq!(right.edges, &[D, F]);
         assert_eq!(right.keys, &[R]);
     }
 
@@ -474,7 +474,7 @@ mod test {
                 interior_node.insert_child_page(page+2,1);
             }
             // println!("{interior_node:?}");
-            let (_left, _right) = interior_node.split();            
+            let (_left, _right) = interior_node.split();
         }
     }
 }

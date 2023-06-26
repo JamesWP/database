@@ -155,7 +155,7 @@ where
                     stack.push(parent_node_idx);
                     self.split_page(parent_interior_node, stack);
                 }
-                Ok(_) => { }
+                Ok(_) => {}
             }
         } else {
             // We have just split the root node...
@@ -218,12 +218,12 @@ where
                 node::NodePage::Leaf(l) => {
                     // We found the first leaf in the tree.
                     // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
-                    self.leaf_iterator = Some((page_idx, l.num_items()-1));
+                    self.leaf_iterator = Some((page_idx, l.num_items() - 1));
                     return;
                 }
                 node::NodePage::Interior(i) => {
-                    self.stack.push((page_idx, i.num_edges()-1));
-                    page_idx = i.get_child_page_by_index(i.num_edges()-1);
+                    self.stack.push((page_idx, i.num_edges() - 1));
+                    page_idx = i.get_child_page_by_index(i.num_edges() - 1);
                 }
                 NodePage::OverflowPage(_) => panic!(),
             }
@@ -300,9 +300,9 @@ where
     pub fn next(&mut self) {
         // function takes a curent index and the number of indexes, and returns Some(idx) where idx is the next index to consider
         // or none if there are no more on this page
-        let next_idx = |curent: usize, count| { 
-            if curent +1 < count {
-                Some(curent+1)
+        let next_idx = |curent: usize, count| {
+            if curent + 1 < count {
+                Some(curent + 1)
             } else {
                 None
             }
@@ -318,9 +318,9 @@ where
     pub fn prev(&mut self) {
         // function takes a curent index and the number of indexes, and returns Some(idx) where idx is the next index to consider
         // or none if there are no more on this page
-        let next_idx = |curent: usize, _count| { 
+        let next_idx = |curent: usize, _count| {
             if curent != 0 {
-                Some(curent-1)
+                Some(curent - 1)
             } else {
                 None
             }
@@ -332,7 +332,11 @@ where
         self.move_in_direction(next_idx, select_first_in_direction);
     }
 
-    fn move_in_direction(&mut self, next_idx: impl Fn(usize, usize) -> Option<usize>, select_first_in_direction: impl Fn(&mut Self, u32)) {
+    fn move_in_direction(
+        &mut self,
+        next_idx: impl Fn(usize, usize) -> Option<usize>,
+        select_first_in_direction: impl Fn(&mut Self, u32),
+    ) {
         if self.leaf_iterator.is_none() {
             return;
         }
@@ -701,7 +705,11 @@ mod test {
         println!("{btree}");
     }
 
-    fn do_test_ordering(elements: &[(u64, (char, usize))], my_btree: &mut BTree, ordering_forwards: bool) {
+    fn do_test_ordering(
+        elements: &[(u64, (char, usize))],
+        my_btree: &mut BTree,
+        ordering_forwards: bool,
+    ) {
         println!("Test: {elements:?}");
 
         let mut rust_btree = BTreeMap::new();
@@ -727,7 +735,11 @@ mod test {
             cursor.last();
         }
 
-        let rust_btree_iter: Box<dyn Iterator<Item=_>>  = if ordering_forwards { Box::new(rust_btree.iter())} else { Box::new(rust_btree.iter().rev())};
+        let rust_btree_iter: Box<dyn Iterator<Item = _>> = if ordering_forwards {
+            Box::new(rust_btree.iter())
+        } else {
+            Box::new(rust_btree.iter().rev())
+        };
 
         for (_key, actual_value) in rust_btree_iter {
             // println!("Key: {key} {my_value}");
