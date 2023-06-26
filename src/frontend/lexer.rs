@@ -74,7 +74,8 @@ pub enum Error {
 
 impl Debug for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.tipe.fmt(f)
+        core::fmt::Debug::fmt(&self.lexeme, f)
+        // self.tipe.fmt(f)
     }
 }
 
@@ -100,7 +101,8 @@ struct Lexer<'a> {
 
 impl<'a> Into<Vec<Token>> for Lexer<'a> {
     fn into(mut self) -> Vec<Token> {
-        let token = self.make_token(Type::Eof);
+        let mut token = self.make_token(Type::Eof);
+        token.lexeme.clear();
         self.tokens.push(token);
         self.tokens
     }
