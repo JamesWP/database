@@ -1,14 +1,17 @@
-enum Statement {
+#[derive(Debug)]
+pub enum Statement {
     Select(SelectStatement),
 }
 
-struct SelectStatement {
+#[derive(Debug)]
+pub struct SelectStatement {
     columns: Vec<ColumnExpression>,
     from: NamedTupleSource,
     filter: Option<Expression>,
     limit: Option<Expression>,
 }
 
+#[derive(Debug)]
 enum ColumnExpression {
     Named {
         name: String,
@@ -17,16 +20,19 @@ enum ColumnExpression {
     Anonyomous(Box<Expression>),
 }
 
+#[derive(Debug)]
 enum Value {
     Number(i64),
     String(String),
 }
 
+#[derive(Debug)]
 enum UnaryOp {
     Plus,
     Negate,
 }
 
+#[derive(Debug)]
 enum BinaryOp {
     Sum,
     Difference,
@@ -40,6 +46,7 @@ enum BinaryOp {
     RightBitShift,
 }
 
+#[derive(Debug)]
 enum Expression {
     UnaryOp {
         op: UnaryOp,
@@ -53,11 +60,13 @@ enum Expression {
     Value(Value),
 }
 
+#[derive(Debug)]
 enum NamedTupleSource {
     Named { alias: String, source: TupleSource },
     Anonyomous(TupleSource),
 }
 
+#[derive(Debug)]
 enum TupleSource {
     Table(String),
     Subquery(Box<SelectStatement>),
