@@ -31,6 +31,7 @@ and_expression
     : equality_expression
     | and_expression '&' equality_expression
     ;
+    
 equality_expression
     : relational_expression
     | equality_expression EQ_OP relational_expression
