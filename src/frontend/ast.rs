@@ -21,19 +21,19 @@ enum ColumnExpression {
 }
 
 #[derive(Debug)]
-enum Value {
+pub enum Value {
     Number(i64),
     String(String),
 }
 
 #[derive(Debug)]
-enum UnaryOp {
+pub enum UnaryOp {
     Plus,
     Negate,
 }
 
 #[derive(Debug)]
-enum BinaryOp {
+pub enum BinaryOp {
     Sum,
     Difference,
     Product,
@@ -41,13 +41,16 @@ enum BinaryOp {
     Equals,
     NotEquals,
     GreaterThan,
+    GreaterThanOrEqual,
     LessThan,
+    LessThanOrEqual,
     LeftBitShift,
     RightBitShift,
+    Remainder,
 }
 
 #[derive(Debug)]
-enum Expression {
+pub enum Expression {
     UnaryOp {
         op: UnaryOp,
         expression: Box<Expression>,
