@@ -60,6 +60,9 @@ pub enum Type {
     Eof,
     And,
     Or,
+    LeftShift,
+    RightShift,
+    Percent,
 }
 
 #[derive(Debug)]
@@ -184,6 +187,7 @@ impl<'a> Lexer<'a> {
             '+' => self.make_token(Type::Plus),
             '/' => self.make_token(Type::Slash),
             '*' => self.make_token(Type::Star),
+            '%' => self.make_token(Type::Percent),
             '!' => {
                 let next = self.check_next('=');
                 self.make_token(if next { Type::BangEqual } else { Type::Bang })
@@ -193,13 +197,23 @@ impl<'a> Lexer<'a> {
                 self.make_token(if next { Type::EqualEqual } else { Type::Equal })
             }
             '<' => {
-                let next = self.check_next('=');
-                self.make_token(if next { Type::LessEqual } else { Type::Less })
+                let next_equal = self.check_next('=');
+                let next_less = self.check_next('<');
+                self.make_token(if next_equal {
+                    Type::LessEqual
+                } else if next_less {
+                    Type::LeftShift
+                } else {
+                    Type::Less
+                })
             }
             '>' => {
-                let next = self.check_next('=');
-                self.make_token(if next {
+                let next_equal = self.check_next('=');
+                let next_greater = self.check_next('>');
+                self.make_token(if next_equal {
                     Type::GreaterEqual
+                } else if next_greater {
+                    Type::RightShift
                 } else {
                     Type::Greater
                 })
