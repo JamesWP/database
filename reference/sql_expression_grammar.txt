@@ -17,6 +17,26 @@ logical_and_expression
     | logical_and_expression AND_OP inclusive_or_expression
     ;
 
+inclusive_or_expression
+    : exclusive_or_expression
+    | inclusive_or_expression '|' exclusive_or_expression
+    ;
+    
+exclusive_or_expression
+    : and_expression
+    | exclusive_or_expression '^' and_expression
+    ;
+
+and_expression
+    : equality_expression
+    | and_expression '&' equality_expression
+    ;
+equality_expression
+    : relational_expression
+    | equality_expression EQ_OP relational_expression
+    | equality_expression NE_OP relational_expression
+    ;
+
 relational_expression
     : shift_expression
     | relational_expression '<' shift_expression
@@ -42,32 +62,6 @@ multiplicative_expression
     | multiplicative_expression '*' cast_expression
     | multiplicative_expression '/' cast_expression
     | multiplicative_expression '%' cast_expression
-    ;
-
-logical_and_expression
-    : inclusive_or_expression
-    | logical_and_expression AND_OP inclusive_or_expression
-    ;
-
-inclusive_or_expression
-    : exclusive_or_expression
-    | inclusive_or_expression '|' exclusive_or_expression
-    ;
-    
-exclusive_or_expression
-    : and_expression
-    | exclusive_or_expression '^' and_expression
-    ;
-
-and_expression
-    : equality_expression
-    | and_expression '&' equality_expression
-    ;
-
-equality_expression
-    : relational_expression
-    | equality_expression EQ_OP relational_expression
-    | equality_expression NE_OP relational_expression
     ;
 
 cast_expression
