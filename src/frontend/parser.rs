@@ -41,7 +41,23 @@ impl ParserInput {
 
     fn expect(&mut self, t: Expect) -> ParseResult<()> {
         match (t, self.peek()) {
-            (Expect::RightParen, lexer::Type::RightParen) => Ok(()),
+            (Expect::RightParen, lexer::Type::RightParen) => {
+                self.advance();
+                Ok(())
+            }
+            (Expect::From, lexer::Type::From) => {
+                self.advance();
+                Ok(())
+            }
+            (Expect::Select, lexer::Type::Select) => {
+                self.advance();
+                Ok(())
+            }
+            /// These expectations are not used with `.expect`
+            (Expect::PrimaryExpression, _) => panic!("Not implemented"),
+            (Expect::Identifier, _) => panic!("Not implemented"),
+
+            /// This is an error, we required a token and we didnt find it
             (expectation, actuality) => Err(ParseError::UnexpectedToken(expectation, actuality)),
         }
     }
@@ -53,6 +69,11 @@ enum BinaryCategory {
     Shift,
     Additive,
     Multiplicative,
+    LogicalOr,
+    LogicalAnd,
+    InclusiveOr,
+    ExclusiveOr,
+    And,
 }
 
 #[derive(Debug)]
@@ -60,14 +81,22 @@ pub enum Expect {
     RightParen,
     PrimaryExpression,
     Identifier,
+    From,
+    Select,
 }
 
 impl lexer::Type {
     fn as_binary(self, category: BinaryCategory) -> Option<ast::BinaryOp> {
         use BinaryCategory::*;
         match (category, self) {
+            (LogicalOr, lexer::Type::Or) => Some(ast::BinaryOp::Or),
+            (LogicalAnd, lexer::Type::And) => Some(ast::BinaryOp::And),
+            (InclusiveOr, lexer::Type::Pipe) => Some(ast::BinaryOp::BinaryOr),
+            (ExclusiveOr, lexer::Type::Caret) => Some(ast::BinaryOp::BinaryExclusiveOr),
+            (And, lexer::Type::Amp) => Some(ast::BinaryOp::BinaryAnd),
             (Equality, lexer::Type::BangEqual) => Some(ast::BinaryOp::NotEquals),
             (Equality, lexer::Type::EqualEqual) => Some(ast::BinaryOp::Equals),
+            (Equality, lexer::Type::Equal) => Some(ast::BinaryOp::Equals),
             (Relational, lexer::Type::Less) => Some(ast::BinaryOp::LessThan),
             (Relational, lexer::Type::LessEqual) => Some(ast::BinaryOp::LessThanOrEqual),
             (Relational, lexer::Type::Greater) => Some(ast::BinaryOp::GreaterThan),
@@ -92,17 +121,212 @@ impl lexer::Type {
     }
 }
 
+/// Parser for statement types
 impl Parser {
-    fn new(tokens: Vec<lexer::Token>) -> Parser {
-        Parser {
-            input: ParserInput { tokens, curent: 0 },
+    fn parse_statement(&mut self) -> ParseResult<ast::Statement> {
+        match self.input.peek() {
+            lexer::Type::Select => Ok(ast::Statement::Select(self.parse_select_statement()?)),
+            _ => todo!(),
         }
     }
 
-    fn parse_expression(&mut self) -> ParseResult<ast::Expression> {
-        self.parse_equality()
+    fn parse_column_expressions(&mut self) -> ParseResult<Vec<ast::ColumnExpression>> {
+        let mut exprs = Vec::new();
+
+        let expr = self.parse_named_column_expression()?;
+        exprs.push(expr);
+
+        loop {
+            match self.input.peek() {
+                lexer::Type::Comma => {
+                    self.input.advance();
+                    let expr = self.parse_named_column_expression()?;
+                    exprs.push(expr);
+                }
+                _ => {
+                    return Ok(exprs);
+                }
+            }
+        }
     }
 
+    fn parse_named_column_expression(&mut self) -> ParseResult<ast::ColumnExpression> {
+        let expr = self.parse_column_expression()?;
+        match self.input.peek() {
+            lexer::Type::As => {
+                self.input.advance();
+                let name = self.parse_identifier()?;
+
+                Ok(ast::ColumnExpression::Named {
+                    name,
+                    expression: Box::new(expr),
+                })
+            }
+            _ => Ok(ast::ColumnExpression::Anonyomous(Box::new(expr))),
+        }
+    }
+
+    fn parse_named_tuple_source(&mut self) -> ParseResult<ast::NamedTupleSource> {
+        let source = self.parse_tuple_source()?;
+
+        match self.input.peek() {
+            lexer::Type::As => {
+                self.input.advance();
+                let alias = self.parse_identifier()?;
+
+                Ok(ast::NamedTupleSource::Named { alias, source })
+            }
+            _ => Ok(ast::NamedTupleSource::Anonyomous(source)),
+        }
+    }
+
+    fn parse_tuple_source(&mut self) -> ParseResult<ast::TupleSource> {
+        match self.input.peek() {
+            lexer::Type::LeftParen => {
+                self.input.advance();
+                let statement = self.parse_select_statement()?;
+                Ok(ast::TupleSource::Subquery(Box::new(statement)))
+            }
+            _ => {
+                let name = self.parse_table_name()?;
+                Ok(ast::TupleSource::Table(name))
+            }
+        }
+    }
+
+    fn parse_table_name(&mut self) -> ParseResult<String> {
+        self.parse_identifier()
+    }
+
+    fn parse_select_statement(&mut self) -> ParseResult<ast::SelectStatement> {
+        self.input.expect(Expect::Select)?;
+        let columns = self.parse_column_expressions()?;
+
+        self.input.expect(Expect::From)?;
+
+        let from = self.parse_named_tuple_source()?;
+
+        let filter = match self.input.peek() {
+            lexer::Type::Where => {
+                self.input.advance();
+                Some(self.parse_filter_expression()?)
+            }
+            _ => None,
+        };
+
+        let limit = match self.input.peek() {
+            lexer::Type::Limit => {
+                self.input.advance();
+                Some(self.parse_limit_expression()?)
+            }
+            _ => None,
+        };
+
+        Ok(ast::SelectStatement {
+            columns,
+            from,
+            filter,
+            limit,
+        })
+    }
+}
+
+/// Parser for expression types
+impl Parser {
+    fn parse_column_expression(&mut self) -> ParseResult<ast::Expression> {
+        self.parse_expression()
+    }
+
+    fn parse_filter_expression(&mut self) -> ParseResult<ast::Expression> {
+        self.parse_expression()
+    }
+
+    fn parse_limit_expression(&mut self) -> ParseResult<ast::Expression> {
+        self.parse_expression()
+    }
+
+    fn parse_expression(&mut self) -> ParseResult<ast::Expression> {
+        self.parse_logical_or()
+    }
+
+    fn parse_logical_or(&mut self) -> ParseResult<ast::Expression> {
+        let mut expr = self.parse_logical_and()?;
+
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::LogicalOr) {
+            self.input.advance();
+            let right = self.parse_logical_and()?;
+            expr = ast::Expression::BinaryOp {
+                op,
+                lhs: Box::new(expr),
+                rhs: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_logical_and(&mut self) -> ParseResult<ast::Expression> {
+        let mut expr = self.parse_inclusive_or()?;
+
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::LogicalAnd) {
+            self.input.advance();
+            let right = self.parse_inclusive_or()?;
+            expr = ast::Expression::BinaryOp {
+                op,
+                lhs: Box::new(expr),
+                rhs: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_inclusive_or(&mut self) -> ParseResult<ast::Expression> {
+        let mut expr = self.parse_exclusive_or()?;
+
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::InclusiveOr) {
+            self.input.advance();
+            let right = self.parse_exclusive_or()?;
+            expr = ast::Expression::BinaryOp {
+                op,
+                lhs: Box::new(expr),
+                rhs: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_exclusive_or(&mut self) -> ParseResult<ast::Expression> {
+        let mut expr = self.parse_and()?;
+
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::ExclusiveOr) {
+            self.input.advance();
+            let right = self.parse_and()?;
+            expr = ast::Expression::BinaryOp {
+                op,
+                lhs: Box::new(expr),
+                rhs: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
+    fn parse_and(&mut self) -> ParseResult<ast::Expression> {
+        let mut expr = self.parse_equality()?;
+
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::And) {
+            self.input.advance();
+            let right = self.parse_equality()?;
+            expr = ast::Expression::BinaryOp {
+                op,
+                lhs: Box::new(expr),
+                rhs: Box::new(right),
+            }
+        }
+
+        Ok(expr)
+    }
     fn parse_equality(&mut self) -> ParseResult<ast::Expression> {
         let mut expr = self.parse_relational()?;
 
@@ -220,10 +444,15 @@ impl Parser {
                 lexer::Type::Dot => {
                     self.input.advance();
                     let identifier = self.parse_identifier()?;
-                    expr = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(Box::new(expr), identifier));
-                },
+                    expr = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
+                        Box::new(expr),
+                        identifier,
+                    ));
+                }
                 lexer::Type::LeftParen => todo!(),
-                _ => { return Ok(expr); }
+                _ => {
+                    return Ok(expr);
+                }
             }
         }
     }
@@ -233,7 +462,7 @@ impl Parser {
                 self.input.advance();
                 Ok(id)
             }
-            t => Err(ParseError::UnexpectedToken(Expect::Identifier, t))
+            t => Err(ParseError::UnexpectedToken(Expect::Identifier, t)),
         }
     }
 
@@ -245,11 +474,15 @@ impl Parser {
             }
             lexer::Type::IntegerNumber(value) => {
                 self.input.advance();
-                Ok(ast::Expression::Value(ast::ScalarValue::IntegerNumber(value)))
+                Ok(ast::Expression::Value(ast::ScalarValue::IntegerNumber(
+                    value,
+                )))
             }
             lexer::Type::FloatingPointNumber(value) => {
                 self.input.advance();
-                Ok(ast::Expression::Value(ast::ScalarValue::FloatingNumber(value)))
+                Ok(ast::Expression::Value(ast::ScalarValue::FloatingNumber(
+                    value,
+                )))
             }
             lexer::Type::LeftParen => {
                 self.input.advance();
@@ -258,8 +491,7 @@ impl Parser {
 
                 Ok(expr)
             }
-            t => Err(ParseError::UnexpectedToken(Expect::PrimaryExpression, t))
-           
+            t => Err(ParseError::UnexpectedToken(Expect::PrimaryExpression, t)),
         }
     }
 }
@@ -274,18 +506,21 @@ mod test {
 
     #[test]
     fn test() {
-        // let input = "select t.col, t.othercol+1, finalcol*2 from tablename as t where col=1 and finalcol>0 limit 23;";
-        let input = "t.othercol+1==44+10";
+        let input = "select t.col as ben, t.othercol+1, finalcol*2 from tablename as t where col=1 and finalcol>0 limit 23;";
+        // let input = "t.othercol+1==44+10";
         let output = lex(input);
+        println!("Lex: {:?}", &output);
 
         let mut p = Parser {
-            input: ParserInput { tokens: output, curent: 0 }
+            input: ParserInput {
+                tokens: output,
+                curent: 0,
+            },
         };
-        let expr = p.parse_expression();
+        let statement = p.parse_statement();
 
-        let expr = expr.unwrap();
+        let statement = statement.unwrap();
 
-        println!("Expr: {:#?}", expr);
-
+        println!("Satement: {:#?}", statement);
     }
 }

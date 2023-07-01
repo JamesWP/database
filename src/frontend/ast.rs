@@ -5,14 +5,14 @@ pub enum Statement {
 
 #[derive(Debug)]
 pub struct SelectStatement {
-    columns: Vec<ColumnExpression>,
-    from: NamedTupleSource,
-    filter: Option<Expression>,
-    limit: Option<Expression>,
+    pub columns: Vec<ColumnExpression>,
+    pub from: NamedTupleSource,
+    pub filter: Option<Expression>,
+    pub limit: Option<Expression>,
 }
 
 #[derive(Debug)]
-enum ColumnExpression {
+pub enum ColumnExpression {
     Named {
         name: String,
         expression: Box<Expression>,
@@ -49,6 +49,11 @@ pub enum BinaryOp {
     LeftBitShift,
     RightBitShift,
     Remainder,
+    Or,
+    And,
+    BinaryOr,
+    BinaryExclusiveOr,
+    BinaryAnd,
 }
 
 #[derive(Debug)]
@@ -66,13 +71,13 @@ pub enum Expression {
 }
 
 #[derive(Debug)]
-enum NamedTupleSource {
+pub enum NamedTupleSource {
     Named { alias: String, source: TupleSource },
     Anonyomous(TupleSource),
 }
 
 #[derive(Debug)]
-enum TupleSource {
+pub enum TupleSource {
     Table(String),
     Subquery(Box<SelectStatement>),
 }

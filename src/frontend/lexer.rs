@@ -68,6 +68,9 @@ pub enum Type {
     LeftShift,
     RightShift,
     Percent,
+    Pipe,
+    Caret,
+    Amp,
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +196,9 @@ impl<'a> Lexer<'a> {
             '/' => self.make_token(Type::Slash),
             '*' => self.make_token(Type::Star),
             '%' => self.make_token(Type::Percent),
+            '|' => self.make_token(Type::Pipe),
+            '^' => self.make_token(Type::Caret),
+            '&' => self.make_token(Type::Amp),
             '!' => {
                 let next = self.check_next('=');
                 self.make_token(if next { Type::BangEqual } else { Type::Bang })
