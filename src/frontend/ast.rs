@@ -21,9 +21,11 @@ enum ColumnExpression {
 }
 
 #[derive(Debug)]
-pub enum Value {
-    Number(i64),
-    String(String),
+pub enum ScalarValue {
+    IntegerNumber(i64),
+    FloatingNumber(f64),
+    Identifier(String),
+    MultiPartIdentifier(Box<Expression>, String),
 }
 
 #[derive(Debug)]
@@ -60,7 +62,7 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
-    Value(Value),
+    Value(ScalarValue),
 }
 
 #[derive(Debug)]

@@ -15,8 +15,13 @@ pub struct Token {
     start: Pos,
     end: Pos,
 }
+impl Token {
+    pub(crate) fn tipe(&self) -> Type {
+        self.tipe.clone()
+    }
+}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Type {
     // Single-character tokens.
     LeftParen,
@@ -65,7 +70,7 @@ pub enum Type {
     Percent,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Error {
     UnterminatedStringLiteral,
     UnknownCharacter(char),

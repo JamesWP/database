@@ -1,5 +1,7 @@
 use proptest::strategy::W;
 
+use crate::frontend::lexer::lex;
+
 use super::{ast, lexer};
 
 struct ParserInput {
@@ -20,7 +22,7 @@ type ParseResult<T> = std::result::Result<T, ParseError>;
 
 impl ParserInput {
     pub fn peek(&mut self) -> lexer::Type {
-        todo!()
+        self.tokens[self.curent].tipe()
     }
     pub fn advance(&mut self) -> &lexer::Token {
         if !self.is_at_end() {
@@ -56,10 +58,12 @@ enum BinaryCategory {
 #[derive(Debug)]
 pub enum Expect {
     RightParen,
+    PrimaryExpression,
+    Identifier,
 }
 
 impl lexer::Type {
-    fn into(self, category: BinaryCategory) -> Option<ast::BinaryOp> {
+    fn as_binary(self, category: BinaryCategory) -> Option<ast::BinaryOp> {
         use BinaryCategory::*;
         match (category, self) {
             (Equality, lexer::Type::BangEqual) => Some(ast::BinaryOp::NotEquals),
@@ -78,6 +82,14 @@ impl lexer::Type {
             _ => None,
         }
     }
+
+    fn as_unary(self) -> Option<ast::UnaryOp> {
+        match self {
+            lexer::Type::Plus => Some(ast::UnaryOp::Plus),
+            lexer::Type::Bang => Some(ast::UnaryOp::Negate),
+            _ => None,
+        }
+    }
 }
 
 impl Parser {
@@ -87,10 +99,14 @@ impl Parser {
         }
     }
 
+    fn parse_expression(&mut self) -> ParseResult<ast::Expression> {
+        self.parse_equality()
+    }
+
     fn parse_equality(&mut self) -> ParseResult<ast::Expression> {
         let mut expr = self.parse_relational()?;
 
-        while let Some(op) = self.input.peek().into(BinaryCategory::Equality) {
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::Equality) {
             self.input.advance();
             let right = self.parse_relational()?;
             expr = ast::Expression::BinaryOp {
@@ -106,7 +122,7 @@ impl Parser {
     fn parse_relational(&mut self) -> ParseResult<ast::Expression> {
         let mut expr = self.parse_shift()?;
 
-        while let Some(op) = self.input.peek().into(BinaryCategory::Relational) {
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::Relational) {
             self.input.advance();
             let right = self.parse_shift()?;
             expr = ast::Expression::BinaryOp {
@@ -122,7 +138,7 @@ impl Parser {
     fn parse_shift(&mut self) -> ParseResult<ast::Expression> {
         let mut expr = self.parse_additive()?;
 
-        while let Some(op) = self.input.peek().into(BinaryCategory::Shift) {
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::Shift) {
             self.input.advance();
             let right = self.parse_additive()?;
             expr = ast::Expression::BinaryOp {
@@ -138,7 +154,7 @@ impl Parser {
     fn parse_additive(&mut self) -> ParseResult<ast::Expression> {
         let mut expr = self.parse_multiplicative()?;
 
-        while let Some(op) = self.input.peek().into(BinaryCategory::Additive) {
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::Additive) {
             self.input.advance();
             let right = self.parse_multiplicative()?;
             expr = ast::Expression::BinaryOp {
@@ -154,7 +170,7 @@ impl Parser {
     fn parse_multiplicative(&mut self) -> ParseResult<ast::Expression> {
         let mut expr = self.parse_unary()?;
 
-        while let Some(op) = self.input.peek().into(BinaryCategory::Multiplicative) {
+        while let Some(op) = self.input.peek().as_binary(BinaryCategory::Multiplicative) {
             self.input.advance();
             let right = self.parse_cast()?;
             expr = ast::Expression::BinaryOp {
@@ -184,26 +200,92 @@ impl Parser {
         todo!()
     }
 
-    fn parse_unary(&self) -> ParseResult<ast::Expression> {
-        todo!()
+    fn parse_unary(&mut self) -> ParseResult<ast::Expression> {
+        if let Some(op) = self.input.peek().as_unary() {
+            self.input.advance();
+            let expr = self.parse_cast()?;
+            Ok(ast::Expression::UnaryOp {
+                op,
+                expression: Box::new(expr),
+            })
+        } else {
+            self.parse_postfix()
+        }
+    }
+
+    fn parse_postfix(&mut self) -> ParseResult<ast::Expression> {
+        let mut expr = self.parse_primary()?;
+        loop {
+            match self.input.peek() {
+                lexer::Type::Dot => {
+                    self.input.advance();
+                    let identifier = self.parse_identifier()?;
+                    expr = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(Box::new(expr), identifier));
+                },
+                lexer::Type::LeftParen => todo!(),
+                _ => { return Ok(expr); }
+            }
+        }
+    }
+    fn parse_identifier(&mut self) -> ParseResult<String> {
+        match self.input.peek() {
+            lexer::Type::Identifier(id) => {
+                self.input.advance();
+                Ok(id)
+            }
+            t => Err(ParseError::UnexpectedToken(Expect::Identifier, t))
+        }
+    }
+
+    fn parse_primary(&mut self) -> ParseResult<ast::Expression> {
+        match self.input.peek() {
+            lexer::Type::Identifier(id) => {
+                self.input.advance();
+                Ok(ast::Expression::Value(ast::ScalarValue::Identifier(id)))
+            }
+            lexer::Type::IntegerNumber(value) => {
+                self.input.advance();
+                Ok(ast::Expression::Value(ast::ScalarValue::IntegerNumber(value)))
+            }
+            lexer::Type::FloatingPointNumber(value) => {
+                self.input.advance();
+                Ok(ast::Expression::Value(ast::ScalarValue::FloatingNumber(value)))
+            }
+            lexer::Type::LeftParen => {
+                self.input.advance();
+                let expr = self.parse_expression()?;
+                self.input.expect(Expect::RightParen)?;
+
+                Ok(expr)
+            }
+            t => Err(ParseError::UnexpectedToken(Expect::PrimaryExpression, t))
+           
+        }
     }
 }
 
-pub fn parse(tokens: &[lexer::Token]) -> ParseResult<ast::Statement> {
+pub fn parse(tokens: Vec<lexer::Token>) -> ParseResult<ast::Statement> {
     todo!()
 }
 
 #[cfg(test)]
 mod test {
-    use crate::frontend::{lexer::lex, parser::parse};
+    use crate::frontend::{lexer::lex, parser::parse, parser::Parser, parser::ParserInput};
 
     #[test]
     fn test() {
-        let input = "select t.col, t.othercol+1, finalcol*2 from tablename as t where col=1 and finalcol>0 limit 23;";
+        // let input = "select t.col, t.othercol+1, finalcol*2 from tablename as t where col=1 and finalcol>0 limit 23;";
+        let input = "t.othercol+1==44+10";
         let output = lex(input);
 
-        let out = parse(output.as_slice()).unwrap();
+        let mut p = Parser {
+            input: ParserInput { tokens: output, curent: 0 }
+        };
+        let expr = p.parse_expression();
 
-        println!("out: {out:?}");
+        let expr = expr.unwrap();
+
+        println!("Expr: {:#?}", expr);
+
     }
 }
