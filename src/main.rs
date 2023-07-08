@@ -34,7 +34,7 @@ mod frontend;
 enum State {
     None,
     Open(Box<btree::BTree>),
-    Cursor(OwningHandle<Box<btree::BTree>, Box<btree::Cursor<&'static mut pager::Pager>>>),
+    Cursor(Box<btree::BTree>, Box<btree::Cursor>),
 }
 
 pub(crate) fn main() {
@@ -101,29 +101,13 @@ pub(crate) fn main() {
                         continue;
                     }
                 };
+                let cursor = btree.open(&tree_name).unwrap();
 
-                let open_cursor = |btree_ptr: *const btree::BTree| {
-                    let btree_ptr: *mut btree::BTree = unsafe { std::mem::transmute(btree_ptr) };
-                    let cursor = unsafe { btree_ptr.as_mut().unwrap().open_readwrite(&tree_name) };
-                    let cursor: Option<btree::Cursor<&'static mut pager::Pager>> =
-                        unsafe { std::mem::transmute(cursor) };
-                    let cursor = match cursor {
-                        Some(cursor) => {
-                            println!("Obtained a readonly cursor for {tree_name}");
-                            cursor
-                        }
-                        None => {
-                            panic!("Unable to open {tree_name}");
-                        }
-                    };
-                    Box::new(cursor)
-                };
-
-                state = State::Cursor(OwningHandle::new_with_fn(btree, open_cursor));
+                state = State::Cursor(btree, Box::new(cursor));
             }
             ["print", "data"] => {
                 let cursor = match &mut state {
-                    State::Cursor(handle) => handle.borrow_mut(),
+                    State::Cursor(_, cursor) => cursor.as_ref(),
                     State::Open(_) => {
                         println!("Open a table before printing");
                         continue;
@@ -155,7 +139,7 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(_, cursor) => cursor.as_ref(),
                 };
 
                 cursor.first();
@@ -170,7 +154,7 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(_, cursor) => cursor.as_ref(),
                 };
 
                 cursor.next();
@@ -185,7 +169,7 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(_, cursor) => cursor.as_ref(),
                 };
 
                 cursor.prev();
@@ -200,7 +184,7 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(_, cursor) => cursor.as_ref(),
                 };
                 let key = u64::from_str_radix(*key, 10).unwrap();
 
@@ -216,7 +200,7 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(_, cursor) => cursor.as_ref(),
                 };
 
                 print_value(cursor.get_entry());
@@ -231,7 +215,7 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(_, cursor) => cursor.as_ref(),
                 };
                 let key: u64 = u64::from_str_radix(*key, 10).unwrap();
                 let value = rest.join(" ");
@@ -247,7 +231,7 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(_, cursor) => cursor.as_ref(),
                 };
 
                 let count = u64::from_str_radix(*count, 10).unwrap();
@@ -278,7 +262,7 @@ pub(crate) fn main() {
 
                 let result = match &state {
                     State::None => panic!(),
-                    State::Cursor(_) => {
+                    State::Cursor(_,_) => {
                         println!("Close open cursor before dumping");
                         continue;
                     }
@@ -300,7 +284,7 @@ pub(crate) fn main() {
             ["verify"] => {
                 let result = match &state {
                     State::None => panic!(),
-                    State::Cursor(c) => c.verify(),
+                    State::Cursor(_, c) => c.verify(),
                     State::Open(db) => db.verify(),
                 };
 
@@ -325,9 +309,9 @@ pub(crate) fn main() {
                         println!("No open cursors");
                         State::Open(btree)
                     }
-                    State::Cursor(cursor) => {
+                    State::Cursor(db, _) => {
                         println!("Closed open cursor");
-                        State::Open(OwningHandle::into_owner(cursor))
+                        State::Open(db)
                     }
                 }
             }
@@ -339,7 +323,7 @@ pub(crate) fn main() {
     }
 }
 
-fn print_value(entry: Option<cell_reader::CellReader<'_>>) -> ControlFlow<()> {
+fn print_value(entry: Option<cell_reader::CellReader>) -> ControlFlow<()> {
     if entry.is_none() {
         println!("Cursor is complete");
         return ControlFlow::Break(());
