@@ -34,7 +34,7 @@ mod frontend;
 enum State {
     None,
     Open(Box<btree::BTree>),
-    Cursor(OwningHandle<Box<btree::BTree>, Box<btree::Cursor<&'static mut pager::Pager>>>),
+    Cursor(Box<btree::BTree>, btree::CursorHandle),
 }
 
 pub(crate) fn main() {
@@ -101,29 +101,22 @@ pub(crate) fn main() {
                         continue;
                     }
                 };
-
-                let open_cursor = |btree_ptr: *const btree::BTree| {
-                    let btree_ptr: *mut btree::BTree = unsafe { std::mem::transmute(btree_ptr) };
-                    let cursor = unsafe { btree_ptr.as_mut().unwrap().open_readwrite(&tree_name) };
-                    let cursor: Option<btree::Cursor<&'static mut pager::Pager>> =
-                        unsafe { std::mem::transmute(cursor) };
-                    let cursor = match cursor {
-                        Some(cursor) => {
-                            println!("Obtained a readonly cursor for {tree_name}");
-                            cursor
-                        }
-                        None => {
-                            panic!("Unable to open {tree_name}");
-                        }
-                    };
-                    Box::new(cursor)
+                let cursor_handle = btree.open(&tree_name);
+                let cursor_handle = match cursor_handle {
+                    Some(cursor) => {
+                        println!("Obtained a readonly cursor for {tree_name}");
+                        cursor
+                    }
+                    None => {
+                        panic!("Unable to open {tree_name}");
+                    }
                 };
 
-                state = State::Cursor(OwningHandle::new_with_fn(btree, open_cursor));
+                state = State::Cursor(btree, cursor_handle);
             }
             ["print", "data"] => {
-                let cursor = match &mut state {
-                    State::Cursor(handle) => handle.borrow_mut(),
+                let mut cursor = match &mut state {
+                    State::Cursor(btree, handle) => handle.open_readonly(),
                     State::Open(_) => {
                         println!("Open a table before printing");
                         continue;
@@ -146,7 +139,7 @@ pub(crate) fn main() {
                 }
             }
             ["first"] => {
-                let cursor = match &mut state {
+                let mut cursor = match &mut state {
                     State::None => {
                         println!("No database open");
                         continue;
@@ -155,13 +148,13 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(_, cursor) => cursor.open_readonly(),
                 };
 
                 cursor.first();
             }
             ["next"] => {
-                let cursor = match &mut state {
+                let mut cursor = match &mut state {
                     State::None => {
                         println!("No database open");
                         continue;
@@ -170,13 +163,13 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(database, cursor) => cursor.open_readonly(),
                 };
 
                 cursor.next();
             }
             ["prev"] => {
-                let cursor = match &mut state {
+                let mut cursor = match &mut state {
                     State::None => {
                         println!("No database open");
                         continue;
@@ -185,13 +178,13 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(database, cursor) => cursor.open_readonly(),
                 };
 
                 cursor.prev();
             }
             ["find", key] => {
-                let cursor = match &mut state {
+                let mut cursor = match &mut state {
                     State::None => {
                         println!("No database open");
                         continue;
@@ -200,7 +193,7 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(database, cursor) => cursor.open_readonly(),
                 };
                 let key = u64::from_str_radix(*key, 10).unwrap();
 
@@ -216,13 +209,13 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(database, cursor) => cursor.open_readonly(),
                 };
 
                 print_value(cursor.get_entry());
             }
             ["insert", key, rest @ ..] => {
-                let cursor = match &mut state {
+                let mut cursor = match &mut state {
                     State::None => {
                         println!("No database open");
                         continue;
@@ -231,14 +224,14 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(database, cursor) => cursor.open_readwrite(),
                 };
                 let key: u64 = u64::from_str_radix(*key, 10).unwrap();
                 let value = rest.join(" ");
                 cursor.insert(key, value.into_bytes());
             }
             ["random", "insert", count, max_size] => {
-                let cursor = match &mut state {
+                let mut cursor = match &mut state {
                     State::None => {
                         println!("No database open");
                         continue;
@@ -247,7 +240,7 @@ pub(crate) fn main() {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(cursor) => cursor.borrow_mut(),
+                    State::Cursor(database, cursor) => cursor.open_readwrite(),
                 };
 
                 let count = u64::from_str_radix(*count, 10).unwrap();
@@ -278,7 +271,7 @@ pub(crate) fn main() {
 
                 let result = match &state {
                     State::None => panic!(),
-                    State::Cursor(_) => {
+                    State::Cursor(_, _) => {
                         println!("Close open cursor before dumping");
                         continue;
                     }
@@ -298,9 +291,9 @@ pub(crate) fn main() {
                 }
             }
             ["verify"] => {
-                let result = match &state {
+                let result = match &mut state {
                     State::None => panic!(),
-                    State::Cursor(c) => c.verify(),
+                    State::Cursor(_, c) => c.open_readonly().verify(),
                     State::Open(db) => db.verify(),
                 };
 
@@ -325,9 +318,9 @@ pub(crate) fn main() {
                         println!("No open cursors");
                         State::Open(btree)
                     }
-                    State::Cursor(cursor) => {
+                    State::Cursor(database, _cursor) => {
                         println!("Closed open cursor");
-                        State::Open(OwningHandle::into_owner(cursor))
+                        State::Open(database)
                     }
                 }
             }

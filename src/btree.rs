@@ -1,4 +1,6 @@
+use std::cell::{RefCell, Ref, RefMut};
 use std::io::Write;
+use std::sync::Arc;
 use std::{
     fmt::{Debug, Display},
     ops::{Deref, DerefMut},
@@ -15,13 +17,34 @@ use crate::{
     pager::{self, Pager},
 };
 
-pub struct Cursor<PagerRef> {
-    pager: PagerRef,
+pub struct CursorState {
     tree_name: String,
 
     /// key for the item pointed to by the cursor
     stack: Vec<InteriorNodeIterator>,
     leaf_iterator: Option<LeafNodeIterator>,
+}
+
+pub struct CursorHandle {
+    pager: Arc<RefCell<Pager>>,
+    state: CursorState
+}
+
+impl CursorHandle {
+    pub fn open_readonly<'a>(&'a mut self) -> Cursor<'a, Ref<'a, Pager>> {
+        let pager = RefCell::borrow(&self.pager);
+        Cursor { pager, cursor_state: &mut self.state }
+    }
+
+    pub fn open_readwrite<'a>(&'a mut self) -> Cursor<'a, RefMut<'a, Pager>> {
+        let pager = RefCell::borrow_mut(&self.pager);
+        Cursor { pager, cursor_state: &mut self.state }
+    }
+}
+
+pub struct Cursor<'a, PagerRef> {
+    pager: PagerRef,
+    cursor_state: &'a mut CursorState,
 }
 
 /// identifies the page index of the interior node and the index of the child curently selected
@@ -34,7 +57,7 @@ const NULL: serde_json::Value = serde_json::Value::Null;
 const CHUNK_THRESHOLD: usize = 55;
 
 /// Mutable cursor implementation
-impl<PagerRef> Cursor<PagerRef>
+impl<'a, PagerRef> Cursor<'a, PagerRef>
 where
     PagerRef: DerefMut<Target = Pager>,
 {
@@ -59,7 +82,7 @@ where
         //   en existing value to replace
         let mut stack = Vec::new();
 
-        let root_page = self.pager.get_root_page(&self.tree_name).unwrap();
+        let root_page = self.pager.get_root_page(&self.cursor_state.tree_name).unwrap();
         stack.push(root_page);
 
         loop {
@@ -167,13 +190,13 @@ where
 
             let root_node_idx = self.pager.allocate();
             self.pager.encode_and_set(root_node_idx, root_node).unwrap();
-            self.pager.set_root_page(&self.tree_name, root_node_idx);
+            self.pager.set_root_page(&self.cursor_state.tree_name, root_node_idx);
         }
     }
 }
 
 /// Imutable cursor implementation
-impl<PagerRef> Cursor<PagerRef>
+impl<'a, PagerRef> Cursor<'a, PagerRef>
 where
     PagerRef: Deref<Target = Pager>,
 {
@@ -184,7 +207,7 @@ where
         // Take the tree identified by the root page number, and find its left most node and
         // find its smallest entry
 
-        let root_page = self.pager.get_root_page(&self.tree_name).unwrap();
+        let root_page = self.pager.get_root_page(&self.cursor_state.tree_name).unwrap();
         self.select_leftmost_of_idx(root_page)
     }
 
@@ -197,11 +220,11 @@ where
                 node::NodePage::Leaf(l) => {
                     // We found the first leaf in the tree.
                     // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
-                    self.leaf_iterator = Some((page_idx, 0));
+                    self.cursor_state.leaf_iterator = Some((page_idx, 0));
                     return;
                 }
                 node::NodePage::Interior(i) => {
-                    self.stack.push((page_idx, 0));
+                    self.cursor_state.stack.push((page_idx, 0));
                     page_idx = i.get_child_page_by_index(0);
                 }
                 NodePage::OverflowPage(_) => panic!(),
@@ -218,11 +241,11 @@ where
                 node::NodePage::Leaf(l) => {
                     // We found the first leaf in the tree.
                     // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
-                    self.leaf_iterator = Some((page_idx, l.num_items() - 1));
+                    self.cursor_state.leaf_iterator = Some((page_idx, l.num_items() - 1));
                     return;
                 }
                 node::NodePage::Interior(i) => {
-                    self.stack.push((page_idx, i.num_edges() - 1));
+                    self.cursor_state.stack.push((page_idx, i.num_edges() - 1));
                     page_idx = i.get_child_page_by_index(i.num_edges() - 1);
                 }
                 NodePage::OverflowPage(_) => panic!(),
@@ -236,7 +259,7 @@ where
     pub fn last(&mut self) {
         // Take the tree identified by the root page number, and find its right most node and
         // find its largest entry.
-        let root_page_idx = self.pager.get_root_page(&self.tree_name).unwrap();
+        let root_page_idx = self.pager.get_root_page(&self.cursor_state.tree_name).unwrap();
         let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
 
         let mut page = root_page;
@@ -246,7 +269,7 @@ where
                 node::NodePage::Leaf(l) => {
                     // We found the first leaf in the tree.
                     // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
-                    self.leaf_iterator = Some((page_idx, l.num_items() - 1));
+                    self.cursor_state.leaf_iterator = Some((page_idx, l.num_items() - 1));
                     return;
                 }
                 node::NodePage::Interior(_i) => todo!(),
@@ -259,7 +282,7 @@ where
     /// This may result in the cursor not pointing to a row if there is no
     /// row found with that key to point to
     pub fn find(&mut self, key: u64) {
-        let root_page_idx = self.pager.get_root_page(&self.tree_name).unwrap();
+        let root_page_idx = self.pager.get_root_page(&self.cursor_state.tree_name).unwrap();
         let mut page_idx = root_page_idx;
 
         loop {
@@ -267,16 +290,16 @@ where
 
             match page.search(&key) {
                 SearchResult::Found(index) => {
-                    self.leaf_iterator = Some((page_idx, index));
+                    self.cursor_state.leaf_iterator = Some((page_idx, index));
                     return;
                 }
                 SearchResult::NotPresent(index) => {
-                    self.leaf_iterator = Some((page_idx, index));
+                    self.cursor_state.leaf_iterator = Some((page_idx, index));
                     // TODO: does the caller need to know this isnt what they were looking for?
                     return;
                 }
                 SearchResult::GoDown(c_idx, c) => {
-                    self.stack.push((page_idx, c_idx));
+                    self.cursor_state.stack.push((page_idx, c_idx));
                     // we should continue searching at the child page below
                     page_idx = c;
                 }
@@ -290,8 +313,8 @@ where
         Some(cell.key())
     }
 
-    pub fn get_entry<'a>(&'a self) -> Option<CellReader<'a>> {
-        let (leaf_page_number, entry_index) = self.leaf_iterator?;
+    pub fn get_entry<'b>(&'b self) -> Option<CellReader<'b>> {
+        let (leaf_page_number, entry_index) = self.cursor_state.leaf_iterator?;
 
         CellReader::new(&self.pager, leaf_page_number, entry_index)
     }
@@ -337,27 +360,27 @@ where
         next_idx: impl Fn(usize, usize) -> Option<usize>,
         select_first_in_direction: impl Fn(&mut Self, u32),
     ) {
-        if self.leaf_iterator.is_none() {
+        if self.cursor_state.leaf_iterator.is_none() {
             return;
         }
-        let (page_number, entry_index) = self.leaf_iterator.unwrap();
+        let (page_number, entry_index) = self.cursor_state.leaf_iterator.unwrap();
         let page: NodePage = self.pager.get_and_decode(page_number);
         let page = page
             .leaf()
             .expect("Values are always supposed to be in leaf pages");
         let num_items_in_leaf = page.num_items();
         if let Some(entry_index) = next_idx(entry_index, num_items_in_leaf) {
-            self.leaf_iterator = Some((page_number, entry_index));
+            self.cursor_state.leaf_iterator = Some((page_number, entry_index));
             return;
         }
         loop {
             // if the stack is empty then we have no more places to go
-            if self.stack.is_empty() {
-                self.leaf_iterator = None;
+            if self.cursor_state.stack.is_empty() {
+                self.cursor_state.leaf_iterator = None;
                 return;
             }
 
-            let (curent_interior_idx, curent_edge) = self.stack.pop().unwrap();
+            let (curent_interior_idx, curent_edge) = self.cursor_state.stack.pop().unwrap();
 
             let curent_interior: NodePage = self.pager.get_and_decode(curent_interior_idx);
 
@@ -369,7 +392,7 @@ where
             // if we there are more edges to the right:
             if let Some(next_edge) = next_idx(curent_edge, edge_count) {
                 // select the next edge in the curent page
-                self.stack.push((curent_interior_idx, next_edge));
+                self.cursor_state.stack.push((curent_interior_idx, next_edge));
 
                 // find the page_idx for the new edge
                 let curent_edge_idx = curent_interior.get_child_page_by_index(next_edge);
@@ -390,7 +413,7 @@ where
     }
 
     pub fn verify(&self) -> Result<(), VerifyError> {
-        btree_verify::verify(&self.pager, &self.tree_name)
+        btree_verify::verify(&self.pager, &self.cursor_state.tree_name)
     }
 }
 
@@ -436,53 +459,47 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
 }
 
 pub struct BTree {
-    pager: pager::Pager,
+    pager: Arc<RefCell<pager::Pager>>,
 }
 
 impl BTree {
     pub fn new(path: &str) -> BTree {
         BTree {
-            pager: Pager::new(path),
+            pager: Arc::new(RefCell::new(Pager::new(path))),
         }
     }
 
-    pub fn open_readonly<'a>(&'a self, tree_name: &str) -> Option<Cursor<&'a Pager>> {
+    pub fn open<'a>(&'a self, tree_name: &str) -> Option<CursorHandle> {
         // Check if the root page actually exists, or return None
-        self.pager.get_root_page(tree_name)?;
+        self.pager.borrow().get_root_page(tree_name)?;
 
-        Some(Cursor {
-            pager: &self.pager,
+        let state = CursorState {
             stack: vec![],
             leaf_iterator: None,
             tree_name: tree_name.to_owned(),
-        })
-    }
+        };
 
-    pub fn open_readwrite<'a>(&'a mut self, tree_name: &str) -> Option<Cursor<&'a mut Pager>> {
-        // Check if the root page actually exists, or return None
-        self.pager.get_root_page(tree_name)?;
-
-        Some(Cursor {
-            pager: &mut self.pager,
-            stack: vec![],
-            leaf_iterator: None,
-            tree_name: tree_name.to_owned(),
+        Some(CursorHandle {
+            pager: self.pager.clone(),
+            state
         })
     }
 
     /// Create a new tree with the given name, tree must not already exist
     pub fn create_tree(&mut self, tree_name: &str) {
-        assert!(self.pager.get_root_page(tree_name).is_none());
-        let idx = self.pager.allocate();
-        self.pager.set_root_page(tree_name, idx);
+        let mut pager = self.pager.borrow_mut();
+
+        assert!(pager.get_root_page(tree_name).is_none());
+        let idx = pager.allocate();
+        pager.set_root_page(tree_name, idx);
         let empty_leaf_node = node::LeafNodePage::default();
         let empty_root_node = node::NodePage::Leaf(empty_leaf_node);
         // Encode and set the empty_root_node in the pager
-        self.pager.encode_and_set(idx, empty_root_node).unwrap();
+        pager.encode_and_set(idx, empty_root_node).unwrap();
     }
 
     pub fn debug(&self, message: &str) {
-        self.pager.debug(message)
+        self.pager.borrow().debug(message)
     }
 
     pub fn dump_to_file(&self, output_path: &std::path::Path) -> std::io::Result<()> {
@@ -498,13 +515,13 @@ impl BTree {
     }
 
     pub fn verify(&self) -> Result<(), VerifyError> {
-        btree_verify::verify_all_trees(&self.pager)
+        btree_verify::verify_all_trees(&self.pager.borrow())
     }
 }
 
 impl Display for BTree {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        btree_graph::dump(f, &self.pager)?;
+        btree_graph::dump(f, &self.pager.borrow())?;
 
         Ok(())
     }
@@ -542,19 +559,20 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
 
-        assert!(btree.open_readonly("testing").is_none());
+        assert!(btree.open("testing").is_none());
 
         btree.create_tree("testing");
 
         // Test we can take two readonly cursors at the same time
         {
-            let mut _cursor1 = btree.open_readonly("testing").unwrap();
-            let mut _cursor2 = btree.open_readonly("testing").unwrap();
+            let mut _cursor1 = btree.open("testing").unwrap();
+            let mut _cursor2 = btree.open("testing").unwrap();
         }
 
         // Test the new table is empty, when using a readonly cursor
         {
-            let mut cursor = btree.open_readonly("testing").unwrap();
+            let mut cursor_handle = btree.open("testing").unwrap();
+            let mut cursor = cursor_handle.open_readonly();
             cursor.first();
 
             assert!(cursor.get_entry().is_none());
@@ -562,7 +580,8 @@ mod test {
 
         // Test the new table is empty, when using a readwrite cursor
         {
-            let mut cursor = btree.open_readwrite("testing").unwrap();
+            let mut cursor_handle = btree.open("testing").unwrap();
+            let mut cursor = cursor_handle.open_readwrite();
 
             cursor.first();
             assert!(cursor.get_entry().is_none());
@@ -574,21 +593,22 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
 
-        assert!(btree.open_readonly("testing").is_none());
+        assert!(btree.open("testing").is_none());
 
         btree.create_tree("testing");
 
         // Test we can insert a value
         {
-            let mut cursor = btree.open_readwrite("testing").unwrap();
+            let mut cursor_handle = btree.open("testing").unwrap();
+            let mut cursor = cursor_handle.open_readwrite();
 
             cursor.insert(42, vec![42, 255, 64]);
         }
 
         // Test we can read out the new value
         {
-            let mut cursor = btree.open_readonly("testing").unwrap();
-
+            let mut cursor_handle = btree.open("testing").unwrap();
+            let mut cursor = cursor_handle.open_readonly();
             cursor.first();
             let mut buf = [0; 3];
             cursor.get_entry().unwrap().read(&mut buf).unwrap();
@@ -603,13 +623,14 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
 
-        assert!(btree.open_readonly("testing").is_none());
+        assert!(btree.open("testing").is_none());
 
         btree.create_tree("testing");
 
         // Test we can insert a value
         {
-            let mut cursor = btree.open_readwrite("testing").unwrap();
+            let mut cursor_handle = btree.open("testing").unwrap();
+            let mut cursor = cursor_handle.open_readwrite();
 
             for i in 1..10u64 {
                 let value = i.to_be_bytes().to_vec();
@@ -619,7 +640,8 @@ mod test {
 
         // Test we can read out the new value
         {
-            let mut cursor = btree.open_readonly("testing").unwrap();
+            let mut cursor_handle = btree.open("testing").unwrap();
+            let mut cursor = cursor_handle.open_readonly();
 
             cursor.first();
             for i in 1..10u64 {
@@ -639,13 +661,14 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
 
-        assert!(btree.open_readonly("testing").is_none());
+        assert!(btree.open("testing").is_none());
 
         btree.create_tree("testing");
 
         // Test we can insert a value
         {
-            let mut cursor = btree.open_readwrite("testing").unwrap();
+            let mut cursor_handle = btree.open("testing").unwrap();
+            let mut cursor = cursor_handle.open_readwrite();
 
             for i in 1..10u64 {
                 let value = i.to_be_bytes().to_vec();
@@ -655,7 +678,8 @@ mod test {
 
         // Test we can read out the new value
         {
-            let mut cursor = btree.open_readonly("testing").unwrap();
+            let mut cursor_handle = btree.open("testing").unwrap();
+            let mut cursor = cursor_handle.open_readonly();
 
             cursor.find(7);
 
@@ -677,11 +701,12 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
 
-        assert!(btree.open_readonly("testing").is_none());
+        assert!(btree.open("testing").is_none());
 
         btree.create_tree("testing");
 
-        let mut cursor = btree.open_readwrite("testing").unwrap();
+        let mut cursor_handle = btree.open("testing").unwrap();
+        let mut cursor = cursor_handle.open_readwrite();
 
         let long_string = |s: &str, num| s.repeat(num).into_bytes();
 
@@ -701,6 +726,10 @@ mod test {
         assert_eq!(11, cursor.row_key().unwrap());
         cursor.next();
         assert!(cursor.row_key().is_none());
+        
+        // Must close cursor or we cant print the btree below
+        drop(cursor);
+        drop(cursor_handle);
 
         println!("{btree}");
     }
@@ -716,7 +745,8 @@ mod test {
 
         my_btree.create_tree("testing");
 
-        let mut cursor = my_btree.open_readwrite("testing").unwrap();
+        let mut cursor_handle = my_btree.open("testing").unwrap();
+        let mut cursor = cursor_handle.open_readwrite();
 
         for (k, (v, len)) in elements.to_owned() {
             cursor.verify().unwrap();
