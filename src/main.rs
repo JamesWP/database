@@ -1,40 +1,19 @@
 use std::{
-    borrow::BorrowMut,
-    cell::{Ref, RefCell},
-    cmp::{max, min},
     io::{Read, Write},
-    ops::ControlFlow,
+    ops::ControlFlow, cmp::max,
 };
 
-use owning_ref::OwningHandle;
-use rand::{
-    distributions::uniform::{UniformInt, UniformSampler},
-    Rng,
-};
-
-mod cell;
-mod cell_reader;
-mod node;
-mod pager;
-
-/// Btree module heavily inspired by the fantastic article: https://cglab.ca/~abeinges/blah/rust-btree-case/
-///
-/// And the btree structures described in: https://www.sqlite.org/fileformat.html
-mod btree;
-
-mod btree_graph;
-mod btree_verify;
-
-mod database {
-    use crate::btree;
-}
+use rand::Rng;
 
 mod frontend;
+mod storage;
+
+use storage::{BTree, CursorHandle, CellReader};
 
 enum State {
     None,
-    Open(Box<btree::BTree>),
-    Cursor(Box<btree::BTree>, btree::CursorHandle),
+    Open(Box<BTree>),
+    Cursor(Box<BTree>, CursorHandle),
 }
 
 pub(crate) fn main() {
@@ -61,7 +40,7 @@ pub(crate) fn main() {
 
     let db_path = db_path.canonicalize().unwrap();
 
-    let btree = Box::new(btree::BTree::new(db_path.to_str().unwrap()));
+    let btree = Box::new(BTree::new(db_path.to_str().unwrap()));
     let mut state = State::Open(btree);
 
     loop {
@@ -332,7 +311,7 @@ pub(crate) fn main() {
     }
 }
 
-fn print_value(entry: Option<cell_reader::CellReader<'_>>) -> ControlFlow<()> {
+fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {
     if entry.is_none() {
         println!("Cursor is complete");
         return ControlFlow::Break(());

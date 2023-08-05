@@ -1,9 +1,9 @@
 use std::fmt::Result;
 use std::fmt::Write;
 
-use crate::node;
-use crate::node::{InteriorNodePage, LeafNodePage, NodePage};
-use crate::pager::Pager;
+use super::node;
+use super::node::NodePage;
+use super::pager::Pager;
 
 /*
 Example of output text:

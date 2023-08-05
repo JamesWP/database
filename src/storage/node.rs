@@ -2,7 +2,7 @@ use std::cmp::Ordering::{Equal, Greater, Less};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cell::{Cell, Key, Value, ValueRef};
+use super::cell::{Cell, Key, Value, ValueRef};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum NodePage {
@@ -345,7 +345,7 @@ impl OverflowPage {
 mod test {
     use std::collections::HashSet;
 
-    use crate::node::Cell;
+    use super::Cell;
 
     use super::{InteriorNodePage, LeafNodePage, SearchResult};
 

@@ -2,9 +2,9 @@ use std::ops::Range;
 use std::pin::Pin;
 use std::ptr::slice_from_raw_parts_mut;
 
-use crate::cell::{Cell, Key, ValueRef};
-use crate::node::{LeafNodePage, NodePage};
-use crate::pager::Pager;
+use super::cell::{Cell, Key, ValueRef};
+use super::node::{LeafNodePage, NodePage};
+use super::pager::Pager;
 
 // TODO: refactor to make this safer
 //       unsafe pointer dereference

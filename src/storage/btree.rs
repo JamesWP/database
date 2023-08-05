@@ -8,14 +8,14 @@ use std::{
 
 use proptest::result;
 
-use crate::{
-    btree_graph,
-    btree_verify::{self, VerifyError},
-    cell::{Cell, Value},
-    cell_reader::CellReader,
-    node::{self, InteriorNodePage, NodePage, OverflowPage, SearchResult},
-    pager::{self, Pager},
-};
+use crate::storage::cell::Cell;
+use crate::storage::node::{NodePage, SearchResult, OverflowPage};
+
+use super::{CellReader, btree_verify, btree_graph};
+use super::btree_verify::VerifyError;
+use super::cell::Value;
+use super::node::{InteriorNodePage, self};
+use super::pager::{Pager, self};
 
 pub struct CursorState {
     tree_name: String,
@@ -534,7 +534,6 @@ mod test {
     use serde_json::json;
     use tempfile::NamedTempFile;
 
-    use crate::btree_graph;
 
     use super::BTree;
 
