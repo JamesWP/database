@@ -7,6 +7,7 @@ use rand::Rng;
 
 mod frontend;
 mod storage;
+mod engine;
 
 use storage::{BTree, CursorHandle, CellReader};
 
