@@ -13,6 +13,7 @@ pub enum Operation {
     IncrementValue(Reg),
     Yield(Vec<Reg>),
     GoTo(usize),
+    GoToIfEqual(usize, Reg, i64),
     Halt
 }
 

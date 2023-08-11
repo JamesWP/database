@@ -31,9 +31,34 @@ impl RegisterValue {
     }
 
     pub(crate) fn scalar_mut(&mut self) -> Option<&mut ScalarValue> {
-        match self {
-            RegisterValue::ScalarValue(ref mut s) => Some(s),
-            _ => None,
+        if let RegisterValue::ScalarValue(ref mut s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    pub fn integer(&self) -> Option<i64> {
+        if let RegisterValue::ScalarValue(scalar_value) = self {
+            if let ScalarValue::Integer(x) = scalar_value {
+                Some(*x)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn integer_mut(&mut self) -> Option<&mut i64> {
+        if let RegisterValue::ScalarValue(ref mut scalar_value) = self {
+            if let ScalarValue::Integer(ref mut x) = scalar_value {
+                Some(x)
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 }
