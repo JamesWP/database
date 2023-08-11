@@ -1,4 +1,4 @@
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reg(usize);
 
 #[derive(Clone, Debug)]
@@ -10,7 +10,9 @@ pub enum ScalarValue {
 #[derive(Clone, Debug)]
 pub enum Operation {
     StoreValue(Reg, ScalarValue),
+    IncrementValue(Reg),
     Yield(Vec<Reg>),
+    GoTo(usize),
     Halt
 }
 
@@ -36,6 +38,10 @@ impl ProgramCode {
     fn curent(&self) -> Operation {
         self.operations.get(self.curent_operation_index).unwrap().clone()
     }
+
+    pub(crate) fn set_next_operation_index(&mut self, index: usize) {
+        self.curent_operation_index = index;
+    }
 }
 
 impl Reg {
@@ -43,5 +49,32 @@ impl Reg {
         let Reg(index) = self;
 
         *index
+    }
+
+    pub fn new(index: usize) -> Reg {
+        Reg(index)
+    }
+}
+
+impl Eq for ScalarValue {
+
+}
+
+/// Only implemented for testing purposes, actual code shouldn't compare these types directly
+#[cfg(test)]
+impl PartialEq for ScalarValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Integer(left), Self::Integer(right)) => left == right,
+            (Self::Floating(left), Self::Floating(right)) => (left - right).abs() < 0.00001,
+            _ => false,
+        }
+    }
+}
+
+#[cfg(not(test))]
+impl PartialEq for ScalarValue {
+    fn eq(&self, _other: &Self) -> bool {
+        panic!("Equality not supported outside of tests");
     }
 }
