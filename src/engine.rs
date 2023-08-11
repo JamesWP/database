@@ -1,23 +1,17 @@
-use crate::storage;
+use crate::{storage, engine::registers::RegisterValue};
 
-use self::program::{ProgramCode, ScalarValue};
+use self::{
+    program::{ProgramCode, ScalarValue},
+    registers::Registers,
+};
 
 mod program;
-
-#[derive(Clone, Debug)]
-enum RegisterValue {
-    ScalarValue(ScalarValue)
-}
+mod registers;
 
 enum StepResult {
     Halt,
     Yield(Vec<ScalarValue>),
     Continue,
-}
-
-#[derive(Clone, Debug)]
-struct Registers {
-    file: Vec<RegisterValue>
 }
 
 struct Engine {
@@ -28,10 +22,31 @@ struct Engine {
 
 impl Engine {
     pub fn new(btree: storage::BTree, registers: Registers, program: ProgramCode) -> Engine {
-        Engine { btree, registers, program }
+        Engine {
+            btree,
+            registers,
+            program,
+        }
     }
 
     pub fn step(&mut self) -> StepResult {
-        todo!()
+        use program::Operation::*;
+
+        match self.program.advance() {
+            StoreValue(reg, scalar) => {
+                *self.registers.get_mut(reg) = RegisterValue::ScalarValue(scalar);
+            },
+            Yield(regs) => {
+                let values = self.registers.get_range(&regs);
+                let values = values.map(RegisterValue::scalar).map(Option::unwrap).cloned().collect();
+                
+                return StepResult::Yield(values);
+            }
+            Halt => {
+                return StepResult::Halt;
+            }
+        };
+
+        StepResult::Continue
     }
 }
