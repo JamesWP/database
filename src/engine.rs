@@ -15,7 +15,6 @@ enum StepSuccess {
     Halt,
     Yield(Vec<ScalarValue>),
     Continue,
-    Error(EngineError),
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -102,108 +101,108 @@ mod test {
 
     use super::{program::Reg, registers::Registers, Engine};
 
+
+    struct TestHarness {
+        engine: Engine,
+        yields: Vec<Vec<ScalarValue>>,
+    }
+
+    impl TestHarness {
+        fn new(operations: &[Operation], num_registers: usize) -> TestHarness {
+            let program: ProgramCode = operations.into();
+            let registers = Registers::new(num_registers);
+            let engine = Engine::new(registers, program);
+
+            TestHarness { engine, yields: Vec::default() }
+        }
+
+        fn run(&mut self) {
+            loop {
+                match self.engine.step() {
+                    Ok(StepSuccess::Continue) => {continue;},
+                    Ok(StepSuccess::Halt) => {break;},
+                    Ok(StepSuccess::Yield(values)) => {
+                        self.yields.push(values);
+                    },
+                    Err(_) => todo!(),
+                };
+            }
+        }
+
+        fn num_yields(&self) -> usize  {
+            self.yields.len()
+        }
+
+        fn value(&self, yeild_index: usize, column_index: usize) -> ScalarValue {
+            self.yields.get(yeild_index).unwrap().get(column_index).unwrap().clone()
+        }
+    }
+
     #[test]
     fn test_simple_program() {
-        let operations = &[
+        let mut harness = TestHarness::new(&[
             Operation::StoreValue(Reg::new(0), ScalarValue::Integer(1)),
             Operation::Yield(vec![Reg::new(0)]),
             Operation::Halt,
-        ];
-        let program: ProgramCode = operations.as_slice().into();
-        let registers = Registers::new(1);
-        let mut engine = Engine::new(registers, program);
+        ], 1);
 
-        assert_eq!(engine.step().unwrap(), StepSuccess::Continue);
-        assert_eq!(
-            engine.step().unwrap(),
-            StepSuccess::Yield(vec![ScalarValue::Integer(1)])
-        );
-        assert_eq!(engine.step().unwrap(), StepSuccess::Halt);
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0,0), ScalarValue::Integer(1));
     }
 
     #[test]
     fn test_increment() {
         let r0 = Reg::new(0);
 
-        let operations = &[
+        let mut harness = TestHarness::new(&[
             Operation::StoreValue(r0, ScalarValue::Integer(1)),
             Operation::IncrementValue(r0),
             Operation::Yield(vec![r0]),
             Operation::Halt,
-        ];
+        ], 1);
 
-        let program: ProgramCode = operations.as_slice().into();
-        let registers = Registers::new(1);
-        let mut engine = Engine::new(registers, program);
+        harness.run();
 
-        assert_eq!(engine.step().unwrap(), StepSuccess::Continue);
-        assert_eq!(engine.step().unwrap(), StepSuccess::Continue);
-        assert_eq!(
-            engine.step().unwrap(),
-            StepSuccess::Yield(vec![ScalarValue::Integer(2)])
-        );
-        assert_eq!(engine.step().unwrap(), StepSuccess::Halt);
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0,0), ScalarValue::Integer(2));
     }
 
     #[test]
     fn test_goto() {
         let r0 = Reg::new(0);
 
-        let operations = &[
+        let mut harness = TestHarness::new(&[
             Operation::StoreValue(r0, ScalarValue::Integer(1)),
             Operation::GoTo(3),
             Operation::IncrementValue(r0),
             Operation::Yield(vec![r0]),
             Operation::Halt,
-        ];
+        ], 1);
 
-        let program: ProgramCode = operations.as_slice().into();
-        let registers = Registers::new(1);
-        let mut engine = Engine::new(registers, program);
+        harness.run();
 
-        assert_eq!(engine.step().unwrap(), StepSuccess::Continue);
-        assert_eq!(engine.step().unwrap(), StepSuccess::Continue);
-        assert_eq!(
-            engine.step().unwrap(),
-            StepSuccess::Yield(vec![ScalarValue::Integer(1)])
-        );
-        assert_eq!(engine.step().unwrap(), StepSuccess::Halt);
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0,0), ScalarValue::Integer(1));
     }
 
     #[test]
     fn test_goto_loop() {
         let r0 = Reg::new(0);
 
-        let operations = &[
+        let mut harness = TestHarness::new(&[
             Operation::StoreValue(r0, ScalarValue::Integer(1)),
             Operation::IncrementValue(r0),
             Operation::GoToIfEqual(4, r0, 10),
             Operation::GoTo(1),
             Operation::Yield(vec![r0]),
             Operation::Halt,
-        ];
+        ], 1);
+        
+        harness.run();
 
-        let program: ProgramCode = operations.as_slice().into();
-        let registers = Registers::new(1);
-        let mut engine = Engine::new(registers, program);
-
-        let mut yielded = false;
-
-        loop {
-            match engine.step() {
-                StepResult::Ok(StepSuccess::Continue) => {}
-                StepResult::Ok(StepSuccess::Yield(values)) => {
-                    assert_eq!(values, &[ScalarValue::Integer(10)]);
-                    yielded = true;
-                }
-                StepResult::Ok(StepSuccess::Halt) => {
-                    assert!(yielded);
-                    break;
-                }
-                _ => {
-                    assert!(false);
-                }
-            }
-        }
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0,0), ScalarValue::Integer(10));
     }
 }
