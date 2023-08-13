@@ -101,7 +101,6 @@ mod test {
 
     use super::{program::Reg, registers::Registers, Engine};
 
-
     struct TestHarness {
         engine: Engine,
         yields: Vec<Vec<ScalarValue>>,
@@ -113,93 +112,124 @@ mod test {
             let registers = Registers::new(num_registers);
             let engine = Engine::new(registers, program);
 
-            TestHarness { engine, yields: Vec::default() }
+            TestHarness {
+                engine,
+                yields: Vec::default(),
+            }
         }
 
         fn run(&mut self) {
             loop {
                 match self.engine.step() {
-                    Ok(StepSuccess::Continue) => {continue;},
-                    Ok(StepSuccess::Halt) => {break;},
+                    Ok(StepSuccess::Continue) => {
+                        continue;
+                    }
+                    Ok(StepSuccess::Halt) => {
+                        break;
+                    }
                     Ok(StepSuccess::Yield(values)) => {
                         self.yields.push(values);
-                    },
+                    }
                     Err(_) => todo!(),
                 };
             }
         }
 
-        fn num_yields(&self) -> usize  {
+        fn num_yields(&self) -> usize {
             self.yields.len()
         }
 
         fn value(&self, yeild_index: usize, column_index: usize) -> ScalarValue {
-            self.yields.get(yeild_index).unwrap().get(column_index).unwrap().clone()
+            self.yields
+                .get(yeild_index)
+                .unwrap()
+                .get(column_index)
+                .unwrap()
+                .clone()
         }
     }
 
     #[test]
     fn test_simple_program() {
-        let mut harness = TestHarness::new(&[
-            Operation::StoreValue(Reg::new(0), ScalarValue::Integer(1)),
-            Operation::Yield(vec![Reg::new(0)]),
-            Operation::Halt,
-        ], 1);
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(Reg::new(0), ScalarValue::Integer(1)),
+                Operation::Yield(vec![Reg::new(0)]),
+                Operation::Halt,
+            ],
+            1,
+        );
 
         harness.run();
 
         assert_eq!(harness.num_yields(), 1);
-        assert_eq!(harness.value(0,0), ScalarValue::Integer(1));
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(1));
     }
 
     #[test]
     fn test_increment() {
         let r0 = Reg::new(0);
 
-        let mut harness = TestHarness::new(&[
-            Operation::StoreValue(r0, ScalarValue::Integer(1)),
-            Operation::IncrementValue(r0),
-            Operation::Yield(vec![r0]),
-            Operation::Halt,
-        ], 1);
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(r0, ScalarValue::Integer(1)),
+                Operation::IncrementValue(r0),
+                Operation::Yield(vec![r0]),
+                Operation::Halt,
+            ],
+            1,
+        );
 
         harness.run();
 
         assert_eq!(harness.num_yields(), 1);
-        assert_eq!(harness.value(0,0), ScalarValue::Integer(2));
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(2));
     }
 
     #[test]
     fn test_goto() {
         let r0 = Reg::new(0);
 
-        let mut harness = TestHarness::new(&[
-            Operation::StoreValue(r0, ScalarValue::Integer(1)),
-            Operation::GoTo(3),
-            Operation::IncrementValue(r0),
-            Operation::Yield(vec![r0]),
-            Operation::Halt,
-        ], 1);
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(r0, ScalarValue::Integer(1)),
+                Operation::GoTo(3),
+                Operation::IncrementValue(r0),
+                Operation::Yield(vec![r0]),
+                Operation::Halt,
+            ],
+            1,
+        );
 
         harness.run();
 
         assert_eq!(harness.num_yields(), 1);
-        assert_eq!(harness.value(0,0), ScalarValue::Integer(1));
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(1));
     }
 
     #[test]
     fn test_goto_loop() {
         let r0 = Reg::new(0);
 
-        let mut harness = TestHarness::new(&[
-            Operation::StoreValue(r0, ScalarValue::Integer(1)),
-            Operation::IncrementValue(r0),
-            Operation::GoToIfEqual(4, r0, 10),
-            Operation::GoTo(1),
-            Operation::Yield(vec![r0]),
-            Operation::Halt,
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(r0, ScalarValue::Integer(1)),
+                Operation::IncrementValue(r0),
+                Operation::GoToIfEqual(4, r0, 10),
+                Operation::GoTo(1),
+                Operation::Yield(vec![r0]),
+                Operation::Halt,
+            ],
+            1,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(10));
+    }
         ], 1);
-        
+
         harness.run();
 
         assert_eq!(harness.num_yields(), 1);
