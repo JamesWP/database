@@ -2,6 +2,7 @@
 pub enum ScalarValue {
     Integer(i64),
     Floating(f64),
+    Boolean(bool),
 }
 
 impl Eq for ScalarValue {}
@@ -29,6 +30,12 @@ macro_rules! core_ops {
                     (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => {
                         ScalarValue::Floating(f_op(lhs, rhs))
                     }
+                    (ScalarValue::Boolean(_), _) => {
+                        panic!()
+                    }
+                    (_, ScalarValue::Boolean(_)) => {
+                        panic!()
+                    }
                 }
             }
         }
@@ -45,6 +52,7 @@ impl PartialEq for ScalarValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Integer(left), Self::Integer(right)) => left == right,
+            (Self::Boolean(left), Self::Boolean(right)) => left == right,
             (Self::Floating(left), Self::Floating(right)) => (left - right).abs() < 0.00001,
             _ => false,
         }

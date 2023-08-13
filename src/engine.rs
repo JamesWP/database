@@ -2,7 +2,8 @@ use crate::{engine::registers::RegisterValue, storage};
 
 use self::{
     program::{ProgramCode, Reg},
-    registers::Registers, scalarvalue::ScalarValue,
+    registers::Registers,
+    scalarvalue::ScalarValue,
 };
 
 mod program;
@@ -81,9 +82,9 @@ impl Engine {
             GoTo(index) => {
                 self.program.set_next_operation_index(index);
             }
-            GoToIfEqual(index, reg, test_value) => {
-                if let Some(reg_value) = self.registers.get(reg).integer() {
-                    if test_value == reg_value {
+            GoToIfEqualValue(index, reg, test_value) => {
+                if let Some(reg_value) = self.registers.get(reg).scalar() {
+                    if reg_value == &test_value {
                         self.program.set_next_operation_index(index);
                     } else {
                         // branch not taken
@@ -229,7 +230,7 @@ mod test {
             &[
                 Operation::StoreValue(r0, ScalarValue::Integer(1)),
                 Operation::IncrementValue(r0),
-                Operation::GoToIfEqual(4, r0, 10),
+                Operation::GoToIfEqualValue(4, r0, ScalarValue::Integer(10)),
                 Operation::GoTo(1),
                 Operation::Yield(vec![r0]),
                 Operation::Halt,

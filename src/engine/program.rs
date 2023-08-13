@@ -1,6 +1,5 @@
 use super::scalarvalue::ScalarValue;
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reg(usize);
 
@@ -12,7 +11,7 @@ pub enum Operation {
     MultiplyValue(Reg, Reg, ScalarValue),
     Yield(Vec<Reg>),
     GoTo(usize),
-    GoToIfEqual(usize, Reg, i64),
+    GoToIfEqualValue(usize, Reg, ScalarValue),
     Halt,
 }
 
