@@ -69,38 +69,35 @@ impl Engine {
             }
             AddValue(dest, lhs, rhs) => {
                 let lhs = self.registers.get(lhs).scalar().unwrap();
-                let value = RegisterValue::ScalarValue(*lhs + rhs);
+                let rhs = self.registers.get(rhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(*lhs + *rhs);
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
             MultiplyValue(dest, lhs, rhs) => {
                 let lhs = self.registers.get(lhs).scalar().unwrap();
-                let value = RegisterValue::ScalarValue(*lhs * rhs);
+                let rhs = self.registers.get(rhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(*lhs * *rhs);
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
             LessThanValue(dest, lhs, rhs) => {
                 let lhs = self.registers.get(lhs).scalar().unwrap();
-                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(*lhs < rhs));
+                let rhs = self.registers.get(rhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(*lhs < *rhs));
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
             GoTo(index) => {
                 self.program.set_next_operation_index(index);
             }
-            GoToIfEqualValue(index, reg, test_value) => {
-                if let Some(reg_value) = self.registers.get(reg).scalar() {
-                    if reg_value == &test_value {
-                        self.program.set_next_operation_index(index);
-                    } else {
-                        // branch not taken
-                    }
+            GoToIfEqualValue(index, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap();
+                let rhs = self.registers.get(rhs).scalar().unwrap();
+                if *lhs == *rhs {
+                    self.program.set_next_operation_index(index);
                 } else {
-                    return StepResult::Err(EngineError::RegisterTypeError(
-                        reg,
-                        "expected integer to compare",
-                        self.registers.get(reg).clone(),
-                    ));
+                    // branch not taken
                 }
             }
             Halt => {
@@ -231,17 +228,19 @@ mod test {
     #[test]
     fn test_goto_loop() {
         let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
 
         let mut harness = TestHarness::new(
             &[
                 Operation::StoreValue(r0, ScalarValue::Integer(1)),
+                Operation::StoreValue(r1, ScalarValue::Integer(10)),
                 Operation::IncrementValue(r0),
-                Operation::GoToIfEqualValue(4, r0, ScalarValue::Integer(10)),
-                Operation::GoTo(1),
+                Operation::GoToIfEqualValue(5, r0, r1),
+                Operation::GoTo(2),
                 Operation::Yield(vec![r0]),
                 Operation::Halt,
             ],
-            1,
+            2,
         );
 
         harness.run();
@@ -256,6 +255,8 @@ mod test {
         let r1 = Reg::new(1);
         let r2 = Reg::new(2);
         let r3 = Reg::new(3);
+        let r4 = Reg::new(4);
+        let r5 = Reg::new(5);
 
         let a = 999;
         let b = 100;
@@ -267,12 +268,14 @@ mod test {
             &[
                 Operation::StoreValue(r0, ScalarValue::Integer(a)),
                 Operation::StoreValue(r1, ScalarValue::Integer(b)),
-                Operation::AddValue(r2, r0, ScalarValue::Integer(1)),
-                Operation::MultiplyValue(r3, r1, ScalarValue::Integer(10)),
+                Operation::StoreValue(r4, ScalarValue::Integer(1)),
+                Operation::StoreValue(r5, ScalarValue::Integer(10)),
+                Operation::AddValue(r2, r0, r4),
+                Operation::MultiplyValue(r3, r1, r5),
                 Operation::Yield(vec![r2, r3]),
                 Operation::Halt,
             ],
-            4,
+            6,
         );
 
         harness.run();
@@ -289,18 +292,26 @@ mod test {
         let r2 = Reg::new(2);
         let r3 = Reg::new(3);
         let r4 = Reg::new(4);
+        let r5 = Reg::new(5);
+        let r6 = Reg::new(6);
+        let r7 = Reg::new(7);
+        let r8 = Reg::new(8);
 
         let mut harness = TestHarness::new(
             &[
                 Operation::StoreValue(r0, ScalarValue::Integer(9999)),
-                Operation::LessThanValue(r1, r0, ScalarValue::Integer(1)),
-                Operation::LessThanValue(r2, r0, ScalarValue::Integer(9999)),
-                Operation::LessThanValue(r3, r0, ScalarValue::Integer(10000)),
-                Operation::LessThanValue(r4, r0, ScalarValue::Integer(-1)),
+                Operation::StoreValue(r5, ScalarValue::Integer(1)),
+                Operation::StoreValue(r6, ScalarValue::Integer(9999)),
+                Operation::StoreValue(r7, ScalarValue::Integer(10000)),
+                Operation::StoreValue(r8, ScalarValue::Integer(-1)),
+                Operation::LessThanValue(r1, r0, r5),
+                Operation::LessThanValue(r2, r0, r6),
+                Operation::LessThanValue(r3, r0, r7),
+                Operation::LessThanValue(r4, r0, r8),
                 Operation::Yield(vec![r1, r2, r3, r4]),
                 Operation::Halt,
             ],
-            5,
+            9,
         );
 
         harness.run();

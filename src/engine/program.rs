@@ -7,12 +7,12 @@ pub struct Reg(usize);
 pub enum Operation {
     StoreValue(Reg, ScalarValue),
     IncrementValue(Reg),
-    AddValue(Reg, Reg, ScalarValue),
-    MultiplyValue(Reg, Reg, ScalarValue),
-    LessThanValue(Reg, Reg, ScalarValue),
+    AddValue(Reg, Reg, Reg),
+    MultiplyValue(Reg, Reg, Reg),
+    LessThanValue(Reg, Reg, Reg),
     Yield(Vec<Reg>),
     GoTo(usize),
-    GoToIfEqualValue(usize, Reg, ScalarValue),
+    GoToIfEqualValue(usize, Reg, Reg),
     Halt,
 }
 
