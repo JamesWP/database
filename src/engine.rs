@@ -1,12 +1,13 @@
 use crate::{engine::registers::RegisterValue, storage};
 
 use self::{
-    program::{ProgramCode, Reg, ScalarValue},
-    registers::Registers,
+    program::{ProgramCode, Reg},
+    registers::Registers, scalarvalue::ScalarValue,
 };
 
 mod program;
 mod registers;
+mod scalarvalue;
 
 type StepResult = std::result::Result<StepSuccess, EngineError>;
 
@@ -107,7 +108,8 @@ impl Engine {
 #[cfg(test)]
 mod test {
     use crate::engine::{
-        program::{Operation, ProgramCode, ScalarValue},
+        program::{Operation, ProgramCode},
+        scalarvalue::ScalarValue,
         StepResult, StepSuccess,
     };
 

@@ -1,4 +1,7 @@
-use super::program::{Reg, ScalarValue};
+use super::{
+    program::Reg,
+    scalarvalue::{self, ScalarValue},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegisterValue {
