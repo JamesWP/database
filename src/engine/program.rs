@@ -67,24 +67,38 @@ impl Reg {
 
 impl Eq for ScalarValue {}
 
+fn impl_op<FnInteger: Fn(i64, i64) -> i64, FnFloat: Fn(f64, f64) -> f64>(
+    i_op: FnInteger,
+    f_op: FnFloat,
+    lhs: ScalarValue,
+    rhs: ScalarValue,
+) -> ScalarValue {
+    match (lhs, rhs) {
+        (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => {
+            ScalarValue::Integer(i_op(lhs, rhs))
+        }
+        (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => {
+            ScalarValue::Floating(f_op(lhs as f64, rhs))
+        }
+        (ScalarValue::Floating(lhs), ScalarValue::Integer(rhs)) => {
+            ScalarValue::Floating(f_op(lhs, rhs as f64))
+        }
+        (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => {
+            ScalarValue::Floating(f_op(lhs, rhs))
+        }
+    }
+}
+
 impl core::ops::Add for ScalarValue {
     type Output = ScalarValue;
 
     fn add(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => {
-                ScalarValue::Integer(lhs + rhs)
-            }
-            (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => {
-                ScalarValue::Floating(lhs as f64 + rhs)
-            }
-            (ScalarValue::Floating(lhs), ScalarValue::Integer(rhs)) => {
-                ScalarValue::Floating(lhs + rhs as f64)
-            }
-            (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => {
-                ScalarValue::Floating(lhs + rhs)
-            }
-        }
+        impl_op(
+            core::ops::Add::<i64>::add,
+            core::ops::Add::<f64>::add,
+            self,
+            rhs,
+        )
     }
 }
 
@@ -92,20 +106,12 @@ impl core::ops::Mul for ScalarValue {
     type Output = ScalarValue;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => {
-                ScalarValue::Integer(lhs * rhs)
-            }
-            (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => {
-                ScalarValue::Floating(lhs as f64 * rhs)
-            }
-            (ScalarValue::Floating(lhs), ScalarValue::Integer(rhs)) => {
-                ScalarValue::Floating(lhs * rhs as f64)
-            }
-            (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => {
-                ScalarValue::Floating(lhs * rhs)
-            }
-        }
+        impl_op(
+            core::ops::Mul::<i64>::mul,
+            core::ops::Mul::<f64>::mul,
+            self,
+            rhs,
+        )
     }
 }
 
