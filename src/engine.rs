@@ -65,6 +65,18 @@ impl Engine {
                     ));
                 }
             }
+            AddValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(*lhs + rhs);
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
+            MultiplyValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(*lhs * rhs);
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
             GoTo(index) => {
                 self.program.set_next_operation_index(index);
             }
@@ -228,11 +240,36 @@ mod test {
         assert_eq!(harness.num_yields(), 1);
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(10));
     }
-        ], 1);
+
+    #[test]
+    fn test() {
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+
+        let a = 999;
+        let b = 100;
+
+        let a_expected = a + 1;
+        let b_expected = b * 10;
+
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(r0, ScalarValue::Integer(a)),
+                Operation::StoreValue(r1, ScalarValue::Integer(b)),
+                Operation::AddValue(r2, r0, ScalarValue::Integer(1)),
+                Operation::MultiplyValue(r3, r1, ScalarValue::Integer(10)),
+                Operation::Yield(vec![r2, r3]),
+                Operation::Halt,
+            ],
+            4,
+        );
 
         harness.run();
 
         assert_eq!(harness.num_yields(), 1);
-        assert_eq!(harness.value(0,0), ScalarValue::Integer(10));
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(a_expected));
+        assert_eq!(harness.value(0, 1), ScalarValue::Integer(b_expected));
     }
 }
