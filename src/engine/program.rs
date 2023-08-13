@@ -33,7 +33,11 @@ impl From<&[Operation]> for ProgramCode {
 impl ProgramCode {
     pub fn advance(&mut self) -> Operation {
         let op = self.curent();
-        self.curent_operation_index += 1;
+
+        match op {
+            Operation::Halt => {}
+            _ => self.curent_operation_index += 1,
+        };
 
         op
     }

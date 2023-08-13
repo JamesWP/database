@@ -56,16 +56,12 @@ impl Engine {
 
                 return StepResult::Ok(StepSuccess::Yield(values));
             }
-            IncrementValue(reg) => {
-                if let Some(value) = self.registers.get_mut(reg).integer_mut() {
-                    *value += 1;
-                } else {
-                    return StepResult::Err(EngineError::RegisterTypeError(
-                        reg,
-                        "expected integer to increment",
-                        self.registers.get(reg).clone(),
-                    ));
-                }
+            IncrementValue(dest) => {
+                let lhs = self.registers.get(dest).scalar().unwrap();
+                let rhs = &ScalarValue::Integer(1);
+                let value = RegisterValue::ScalarValue(*lhs + *rhs);
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
             }
             AddValue(dest, lhs, rhs) => {
                 let lhs = self.registers.get(lhs).scalar().unwrap();
