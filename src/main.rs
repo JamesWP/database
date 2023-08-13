@@ -1,15 +1,16 @@
 use std::{
+    cmp::max,
     io::{Read, Write},
-    ops::ControlFlow, cmp::max,
+    ops::ControlFlow,
 };
 
 use rand::Rng;
 
+mod engine;
 mod frontend;
 mod storage;
-mod engine;
 
-use storage::{BTree, CursorHandle, CellReader};
+use storage::{BTree, CellReader, CursorHandle};
 
 enum State {
     None,

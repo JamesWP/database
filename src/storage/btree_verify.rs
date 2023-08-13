@@ -1,7 +1,9 @@
 use crate::storage::node::NodePage;
 
-use super::{node::{self, LeafNodePage, InteriorNodePage}, pager::Pager};
-
+use super::{
+    node::{self, InteriorNodePage, LeafNodePage},
+    pager::Pager,
+};
 
 #[derive(Debug)]
 pub enum VerifyError {

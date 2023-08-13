@@ -1,4 +1,4 @@
-use std::cell::{RefCell, Ref, RefMut};
+use std::cell::{Ref, RefCell, RefMut};
 use std::io::Write;
 use std::sync::Arc;
 use std::{
@@ -9,13 +9,13 @@ use std::{
 use proptest::result;
 
 use crate::storage::cell::Cell;
-use crate::storage::node::{NodePage, SearchResult, OverflowPage};
+use crate::storage::node::{NodePage, OverflowPage, SearchResult};
 
-use super::{CellReader, btree_verify, btree_graph};
 use super::btree_verify::VerifyError;
 use super::cell::Value;
-use super::node::{InteriorNodePage, self};
-use super::pager::{Pager, self};
+use super::node::{self, InteriorNodePage};
+use super::pager::{self, Pager};
+use super::{btree_graph, btree_verify, CellReader};
 
 pub struct CursorState {
     tree_name: String,
@@ -27,18 +27,24 @@ pub struct CursorState {
 
 pub struct CursorHandle {
     pager: Arc<RefCell<Pager>>,
-    state: CursorState
+    state: CursorState,
 }
 
 impl CursorHandle {
     pub fn open_readonly<'a>(&'a mut self) -> Cursor<'a, Ref<'a, Pager>> {
         let pager = RefCell::borrow(&self.pager);
-        Cursor { pager, cursor_state: &mut self.state }
+        Cursor {
+            pager,
+            cursor_state: &mut self.state,
+        }
     }
 
     pub fn open_readwrite<'a>(&'a mut self) -> Cursor<'a, RefMut<'a, Pager>> {
         let pager = RefCell::borrow_mut(&self.pager);
-        Cursor { pager, cursor_state: &mut self.state }
+        Cursor {
+            pager,
+            cursor_state: &mut self.state,
+        }
     }
 }
 
@@ -82,7 +88,10 @@ where
         //   en existing value to replace
         let mut stack = Vec::new();
 
-        let root_page = self.pager.get_root_page(&self.cursor_state.tree_name).unwrap();
+        let root_page = self
+            .pager
+            .get_root_page(&self.cursor_state.tree_name)
+            .unwrap();
         stack.push(root_page);
 
         loop {
@@ -190,7 +199,8 @@ where
 
             let root_node_idx = self.pager.allocate();
             self.pager.encode_and_set(root_node_idx, root_node).unwrap();
-            self.pager.set_root_page(&self.cursor_state.tree_name, root_node_idx);
+            self.pager
+                .set_root_page(&self.cursor_state.tree_name, root_node_idx);
         }
     }
 }
@@ -207,7 +217,10 @@ where
         // Take the tree identified by the root page number, and find its left most node and
         // find its smallest entry
 
-        let root_page = self.pager.get_root_page(&self.cursor_state.tree_name).unwrap();
+        let root_page = self
+            .pager
+            .get_root_page(&self.cursor_state.tree_name)
+            .unwrap();
         self.select_leftmost_of_idx(root_page)
     }
 
@@ -259,7 +272,10 @@ where
     pub fn last(&mut self) {
         // Take the tree identified by the root page number, and find its right most node and
         // find its largest entry.
-        let root_page_idx = self.pager.get_root_page(&self.cursor_state.tree_name).unwrap();
+        let root_page_idx = self
+            .pager
+            .get_root_page(&self.cursor_state.tree_name)
+            .unwrap();
         let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
 
         let mut page = root_page;
@@ -282,7 +298,10 @@ where
     /// This may result in the cursor not pointing to a row if there is no
     /// row found with that key to point to
     pub fn find(&mut self, key: u64) {
-        let root_page_idx = self.pager.get_root_page(&self.cursor_state.tree_name).unwrap();
+        let root_page_idx = self
+            .pager
+            .get_root_page(&self.cursor_state.tree_name)
+            .unwrap();
         let mut page_idx = root_page_idx;
 
         loop {
@@ -392,7 +411,9 @@ where
             // if we there are more edges to the right:
             if let Some(next_edge) = next_idx(curent_edge, edge_count) {
                 // select the next edge in the curent page
-                self.cursor_state.stack.push((curent_interior_idx, next_edge));
+                self.cursor_state
+                    .stack
+                    .push((curent_interior_idx, next_edge));
 
                 // find the page_idx for the new edge
                 let curent_edge_idx = curent_interior.get_child_page_by_index(next_edge);
@@ -481,7 +502,7 @@ impl BTree {
 
         Some(CursorHandle {
             pager: self.pager.clone(),
-            state
+            state,
         })
     }
 
@@ -533,7 +554,6 @@ mod test {
 
     use serde_json::json;
     use tempfile::NamedTempFile;
-
 
     use super::BTree;
 
@@ -725,7 +745,7 @@ mod test {
         assert_eq!(11, cursor.row_key().unwrap());
         cursor.next();
         assert!(cursor.row_key().is_none());
-        
+
         // Must close cursor or we cant print the btree below
         drop(cursor);
         drop(cursor_handle);

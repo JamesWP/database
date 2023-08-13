@@ -1,17 +1,17 @@
-use super::program::{ScalarValue, Reg};
+use super::program::{Reg, ScalarValue};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegisterValue {
     None,
-    ScalarValue(ScalarValue)
+    ScalarValue(ScalarValue),
 }
 
 #[derive(Clone, Debug)]
 pub struct Registers {
-    file: Vec<RegisterValue>
+    file: Vec<RegisterValue>,
 }
 
-pub struct RegisterIterator<'a, RegIter: Iterator<Item=&'a Reg>> {
+pub struct RegisterIterator<'a, RegIter: Iterator<Item = &'a Reg>> {
     values: &'a [RegisterValue],
     regs: RegIter,
 }
@@ -63,7 +63,7 @@ impl RegisterValue {
     }
 }
 
-impl<'a, RegIter: Iterator<Item=&'a Reg>> Iterator for RegisterIterator<'a, RegIter> {
+impl<'a, RegIter: Iterator<Item = &'a Reg>> Iterator for RegisterIterator<'a, RegIter> {
     type Item = &'a RegisterValue;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -81,8 +81,14 @@ impl Registers {
         self.file.get(reg.index()).unwrap()
     }
 
-    pub fn get_range<'a>(&'a self, regs: &'a [Reg]) -> RegisterIterator<'a, core::slice::Iter<'a, Reg>> {
-        RegisterIterator { values: &self.file, regs: regs.iter()}
+    pub fn get_range<'a>(
+        &'a self,
+        regs: &'a [Reg],
+    ) -> RegisterIterator<'a, core::slice::Iter<'a, Reg>> {
+        RegisterIterator {
+            values: &self.file,
+            regs: regs.iter(),
+        }
     }
 
     pub(crate) fn new(size: usize) -> Registers {
