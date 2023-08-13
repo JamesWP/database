@@ -6,28 +6,6 @@ pub enum ScalarValue {
 
 impl Eq for ScalarValue {}
 
-pub(crate) fn impl_op<FnInteger: Fn(i64, i64) -> i64, FnFloat: Fn(f64, f64) -> f64>(
-    i_op: FnInteger,
-    f_op: FnFloat,
-    lhs: ScalarValue,
-    rhs: ScalarValue,
-) -> ScalarValue {
-    match (lhs, rhs) {
-        (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => {
-            ScalarValue::Integer(i_op(lhs, rhs))
-        }
-        (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => {
-            ScalarValue::Floating(f_op(lhs as f64, rhs))
-        }
-        (ScalarValue::Floating(lhs), ScalarValue::Integer(rhs)) => {
-            ScalarValue::Floating(f_op(lhs, rhs as f64))
-        }
-        (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => {
-            ScalarValue::Floating(f_op(lhs, rhs))
-        }
-    }
-}
-
 macro_rules! core_ops {
     ($treight: path, $function: ident) => {
         impl $treight for ScalarValue {
@@ -35,7 +13,23 @@ macro_rules! core_ops {
 
             fn $function(self, rhs: Self) -> Self::Output {
                 use $treight as t;
-                impl_op(t::<i64>::$function, t::<f64>::$function, self, rhs)
+                let i_op = t::<i64>::$function;
+                let f_op = t::<f64>::$function;
+
+                match (self, rhs) {
+                    (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => {
+                        ScalarValue::Integer(i_op(lhs, rhs))
+                    }
+                    (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => {
+                        ScalarValue::Floating(f_op(lhs as f64, rhs))
+                    }
+                    (ScalarValue::Floating(lhs), ScalarValue::Integer(rhs)) => {
+                        ScalarValue::Floating(f_op(lhs, rhs as f64))
+                    }
+                    (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => {
+                        ScalarValue::Floating(f_op(lhs, rhs))
+                    }
+                }
             }
         }
     };
