@@ -89,31 +89,26 @@ fn impl_op<FnInteger: Fn(i64, i64) -> i64, FnFloat: Fn(f64, f64) -> f64>(
     }
 }
 
-impl core::ops::Add for ScalarValue {
-    type Output = ScalarValue;
+macro_rules! core_ops {
+    ($treight: path, $function: ident) => {
+        impl $treight for ScalarValue {
+            type Output = ScalarValue;
 
-    fn add(self, rhs: Self) -> Self::Output {
-        impl_op(
-            core::ops::Add::<i64>::add,
-            core::ops::Add::<f64>::add,
-            self,
-            rhs,
-        )
-    }
+            fn $function(self, rhs: Self) -> Self::Output {
+                use $treight as t;
+                impl_op(
+                    t::<i64>::$function,
+                    t::<f64>::$function,
+                    self,
+                    rhs,
+                )
+            }
+        }
+    };
 }
 
-impl core::ops::Mul for ScalarValue {
-    type Output = ScalarValue;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        impl_op(
-            core::ops::Mul::<i64>::mul,
-            core::ops::Mul::<f64>::mul,
-            self,
-            rhs,
-        )
-    }
-}
+core_ops!(core::ops::Add, add);
+core_ops!(core::ops::Mul, mul);
 
 /// Only implemented for testing purposes, actual code shouldn't compare these types directly
 #[cfg(test)]
@@ -129,7 +124,10 @@ impl PartialEq for ScalarValue {
 
 #[cfg(not(test))]
 impl PartialEq for ScalarValue {
-    fn eq(&self, _other: &Self) -> bool {
-        panic!("Equality not supported outside of tests");
+    fn eq(&self, right: &Self) -> bool {
+        match (self, right) {
+            (Self::Integer(left), Self::Integer(right)) => left == right,
+            _ => panic!(),
+        }
     }
 }
