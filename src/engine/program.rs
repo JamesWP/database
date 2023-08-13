@@ -9,6 +9,7 @@ pub enum Operation {
     IncrementValue(Reg),
     AddValue(Reg, Reg, ScalarValue),
     MultiplyValue(Reg, Reg, ScalarValue),
+    LessThanValue(Reg, Reg, ScalarValue),
     Yield(Vec<Reg>),
     GoTo(usize),
     GoToIfEqualValue(usize, Reg, ScalarValue),

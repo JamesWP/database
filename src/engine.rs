@@ -79,6 +79,12 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            LessThanValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(*lhs < rhs));
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
             GoTo(index) => {
                 self.program.set_next_operation_index(index);
             }
@@ -245,7 +251,7 @@ mod test {
     }
 
     #[test]
-    fn test() {
+    fn test_arith() {
         let r0 = Reg::new(0);
         let r1 = Reg::new(1);
         let r2 = Reg::new(2);
@@ -274,5 +280,35 @@ mod test {
         assert_eq!(harness.num_yields(), 1);
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(a_expected));
         assert_eq!(harness.value(0, 1), ScalarValue::Integer(b_expected));
+    }
+
+    #[test]
+    fn test_compare() {
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+        let r4 = Reg::new(4);
+
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(r0, ScalarValue::Integer(9999)),
+                Operation::LessThanValue(r1, r0, ScalarValue::Integer(1)),
+                Operation::LessThanValue(r2, r0, ScalarValue::Integer(9999)),
+                Operation::LessThanValue(r3, r0, ScalarValue::Integer(10000)),
+                Operation::LessThanValue(r4, r0, ScalarValue::Integer(-1)),
+                Operation::Yield(vec![r1, r2, r3, r4]),
+                Operation::Halt,
+            ],
+            5,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(false));
+        assert_eq!(harness.value(0, 1), ScalarValue::Boolean(false));
+        assert_eq!(harness.value(0, 2), ScalarValue::Boolean(true));
+        assert_eq!(harness.value(0, 3), ScalarValue::Boolean(false));
     }
 }

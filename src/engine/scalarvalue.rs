@@ -46,6 +46,17 @@ core_ops!(core::ops::Add, add);
 
 core_ops!(core::ops::Mul, mul);
 
+impl PartialOrd for ScalarValue {
+    fn partial_cmp(&self, rhs: &Self) -> Option<std::cmp::Ordering> {
+        match (self, rhs) {
+            (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => lhs.partial_cmp(rhs),
+            (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => lhs.partial_cmp(rhs),
+            (ScalarValue::Boolean(_), ScalarValue::Boolean(_)) => todo!(),
+            (_, _) => todo!(),
+        }
+    }
+}
+
 /// Only implemented for testing purposes, actual code shouldn't compare these types directly
 #[cfg(test)]
 impl PartialEq for ScalarValue {
