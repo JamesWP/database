@@ -2,7 +2,7 @@ use std::cmp::Ordering::{Equal, Greater, Less};
 
 use serde::{Deserialize, Serialize};
 
-use super::cell::{Cell, Key, Value, ValueRef};
+use super::cell::{Cell, Key};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum NodePage {

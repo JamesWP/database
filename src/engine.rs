@@ -107,13 +107,13 @@ impl Engine {
 
 #[cfg(test)]
 mod test {
-    use crate::engine::{
+    use crate::{engine::{
         program::{Operation, ProgramCode},
         scalarvalue::ScalarValue,
         StepResult, StepSuccess,
-    };
+    }, storage::BTree, test::TestDb};
 
-    use super::{program::Reg, registers::Registers, Engine};
+    use super::{program::{Reg, self}, registers::Registers, Engine};
 
     struct TestHarness {
         engine: Engine,
@@ -130,6 +130,14 @@ mod test {
                 engine,
                 yields: Vec::default(),
             }
+        }
+
+        fn new_with_btree(operations: &[Operation],num_registers: usize, btree: BTree) -> TestHarness {
+            let program = operations.into();
+            let registers = Registers::new(num_registers);
+            let mut engine = Engine::new(registers, program);
+            engine.btree = Some(btree);
+            TestHarness { engine: engine, yields: Vec::default() }
         }
 
         fn run(&mut self) {
@@ -317,5 +325,30 @@ mod test {
         assert_eq!(harness.value(0, 1), ScalarValue::Boolean(false));
         assert_eq!(harness.value(0, 2), ScalarValue::Boolean(true));
         assert_eq!(harness.value(0, 3), ScalarValue::Boolean(false));
+    }
+
+    #[test]
+    fn test_btree_open() {
+        let mut test = TestDb::default();
+        let mut btree = test.btree;
+        btree.create_tree("test");
+
+        let mut cursor = btree.open("test").unwrap();
+        let mut cursor = cursor.open_readwrite();
+        cursor.insert(0, vec![0,1,2,3,4]);
+        cursor.insert(1, vec![0,1,2,3,4]);
+        cursor.insert(2, vec![0,1,2,3,4]);
+        cursor.insert(3, vec![0,1,2,3,4]);
+        drop(cursor);
+
+        let harness = TestHarness::new_with_btree(&[
+            // Open Cursor to "test"
+            // Move Cursor to first record
+            // Read Record Key
+            // Yield Record Key
+        ], 1, btree);
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(0));
     }
 }

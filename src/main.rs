@@ -9,6 +9,8 @@ use rand::Rng;
 mod engine;
 mod frontend;
 mod storage;
+#[cfg(test)]
+mod test;
 
 use storage::{BTree, CellReader, CursorHandle};
 

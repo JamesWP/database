@@ -2,11 +2,10 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::io::Write;
 use std::sync::Arc;
 use std::{
-    fmt::{Debug, Display},
+    fmt::Display,
     ops::{Deref, DerefMut},
 };
 
-use proptest::result;
 
 use crate::storage::cell::Cell;
 use crate::storage::node::{NodePage, OverflowPage, SearchResult};
@@ -550,28 +549,13 @@ impl Display for BTree {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::BTreeMap, io::Read};
-
-    use serde_json::json;
-    use tempfile::NamedTempFile;
+    use std::collections::BTreeMap;
+    use std::io::Read;
+    use proptest::prelude::*;
+    use crate::test::TestDb;
+    use super::CellReader;
 
     use super::BTree;
-
-    struct TestDb {
-        btree: BTree,
-        _file: NamedTempFile,
-    }
-
-    impl Default for TestDb {
-        fn default() -> Self {
-            let file = NamedTempFile::new().unwrap();
-            let path = file.path().to_str().unwrap();
-            Self {
-                btree: BTree::new(path),
-                _file: file,
-            }
-        }
-    }
 
     #[test]
     fn test_create_blank() {
@@ -712,8 +696,6 @@ mod test {
 
         btree.debug("");
     }
-
-    use proptest::prelude::*;
 
     #[test]
     fn multi_level_insertion() {
