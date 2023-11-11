@@ -489,7 +489,7 @@ impl BTree {
         }
     }
 
-    pub fn open<'a>(&'a self, tree_name: &str) -> Option<CursorHandle> {
+    pub fn open(&self, tree_name: &str) -> Option<CursorHandle> {
         // Check if the root page actually exists, or return None
         self.pager.borrow().get_root_page(tree_name)?;
 
