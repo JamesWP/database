@@ -42,6 +42,7 @@ impl Default for ZeroPage {
     }
 }
 
+#[derive(Debug)]
 pub struct Pager {
     path: String,
 }

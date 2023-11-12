@@ -6,7 +6,6 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-
 use crate::storage::cell::Cell;
 use crate::storage::node::{NodePage, OverflowPage, SearchResult};
 
@@ -16,6 +15,7 @@ use super::node::{self, InteriorNodePage};
 use super::pager::{self, Pager};
 use super::{btree_graph, btree_verify, CellReader};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CursorState {
     tree_name: String,
 
@@ -24,6 +24,7 @@ pub struct CursorState {
     leaf_iterator: Option<LeafNodeIterator>,
 }
 
+#[derive(Debug, Clone)]
 pub struct CursorHandle {
     pager: Arc<RefCell<Pager>>,
     state: CursorState,
@@ -549,11 +550,11 @@ impl Display for BTree {
 
 #[cfg(test)]
 mod test {
+    use super::CellReader;
+    use crate::test::TestDb;
+    use proptest::prelude::*;
     use std::collections::BTreeMap;
     use std::io::Read;
-    use proptest::prelude::*;
-    use crate::test::TestDb;
-    use super::CellReader;
 
     use super::BTree;
 

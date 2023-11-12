@@ -19,7 +19,7 @@ enum StepSuccess {
     Continue,
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Debug)]
 enum EngineError {
     RegisterTypeError(Reg, &'static str, RegisterValue),
 }
@@ -99,6 +99,49 @@ impl Engine {
             Halt => {
                 return StepResult::Ok(StepSuccess::Halt);
             }
+            Open(reg, name) => {
+                let btree = self.btree.as_ref().unwrap();
+                let cursor = btree.open(&name).unwrap();
+                *self.registers.get_mut(reg) = RegisterValue::CursorHandle(cursor);
+            }
+            MoveCursor(reg, operation) => {
+                let cursor = self.registers.get_mut(reg).cursor_mut().unwrap();
+                let mut cursor = cursor.open_readwrite();
+                match operation {
+                    program::MoveOperation::First => {
+                        cursor.first();
+                    }
+                };
+            }
+            ReadCursor(regs, cursor_reg) => {
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let cursor = cursor.open_readwrite();
+                let mut value = cursor.get_entry().unwrap();
+                let values = value.decode_as_json_array();
+                // we must drop cursror before we can mutate registers
+                drop(cursor);
+
+                for (reg, value) in regs.iter().zip(values) {
+                    match value {
+                        serde_json::Value::Number(n) => {
+                            if n.is_i64() {
+                                let value = ScalarValue::Integer(n.as_i64().unwrap());
+                                *self.registers.get_mut(*reg) = RegisterValue::ScalarValue(value);
+                            } else if n.is_f64() {
+                                let value = ScalarValue::Floating(n.as_f64().unwrap());
+                                *self.registers.get_mut(*reg) = RegisterValue::ScalarValue(value);
+                            } else {
+                                todo!()
+                            }
+                        }
+                        serde_json::Value::Bool(b) => {
+                            let value = ScalarValue::Boolean(b);
+                            *self.registers.get_mut(*reg) = RegisterValue::ScalarValue(value);
+                        }
+                        _ => todo!(),
+                    }
+                }
+            }
         };
 
         StepResult::Ok(StepSuccess::Continue)
@@ -107,13 +150,21 @@ impl Engine {
 
 #[cfg(test)]
 mod test {
-    use crate::{engine::{
-        program::{Operation, ProgramCode},
-        scalarvalue::ScalarValue,
-        StepResult, StepSuccess,
-    }, storage::BTree, test::TestDb};
+    use crate::{
+        engine::{
+            program::{MoveOperation, Operation, ProgramCode},
+            scalarvalue::ScalarValue,
+            StepResult, StepSuccess,
+        },
+        storage::BTree,
+        test::TestDb,
+    };
 
-    use super::{program::{Reg, self}, registers::Registers, Engine};
+    use super::{
+        program::{self, Reg},
+        registers::Registers,
+        Engine,
+    };
 
     struct TestHarness {
         engine: Engine,
@@ -132,12 +183,19 @@ mod test {
             }
         }
 
-        fn new_with_btree(operations: &[Operation],num_registers: usize, btree: BTree) -> TestHarness {
+        fn new_with_btree(
+            operations: &[Operation],
+            num_registers: usize,
+            btree: BTree,
+        ) -> TestHarness {
             let program = operations.into();
             let registers = Registers::new(num_registers);
             let mut engine = Engine::new(registers, program);
             engine.btree = Some(btree);
-            TestHarness { engine: engine, yields: Vec::default() }
+            TestHarness {
+                engine: engine,
+                yields: Vec::default(),
+            }
         }
 
         fn run(&mut self) {
@@ -335,20 +393,36 @@ mod test {
 
         let mut cursor = btree.open("test").unwrap();
         let mut cursor = cursor.open_readwrite();
-        cursor.insert(0, vec![0,1,2,3,4]);
-        cursor.insert(1, vec![0,1,2,3,4]);
-        cursor.insert(2, vec![0,1,2,3,4]);
-        cursor.insert(3, vec![0,1,2,3,4]);
+        cursor.insert(0, b"[12345,6789]".to_vec());
+        cursor.insert(1, b"[12345]".to_vec());
+        cursor.insert(2, b"[12345]".to_vec());
+        cursor.insert(3, b"[12345]".to_vec());
         drop(cursor);
 
-        let harness = TestHarness::new_with_btree(&[
-            // Open Cursor to "test"
-            // Move Cursor to first record
-            // Read Record Key
-            // Yield Record Key
-        ], 1, btree);
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                // Open Cursor to "test"
+                Operation::Open(r0, "test".to_string()),
+                // Move Cursor to first record
+                Operation::MoveCursor(r0, MoveOperation::First),
+                // Read Record Key
+                Operation::ReadCursor(vec![r1, r2], r0),
+                // Yield Record Key
+                Operation::Yield(vec![r1, r2]),
+                Operation::Halt,
+            ],
+            3,
+            btree,
+        );
+
+        harness.run();
 
         assert_eq!(harness.num_yields(), 1);
-        assert_eq!(harness.value(0, 0), ScalarValue::Integer(0));
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(12345));
+        assert_eq!(harness.value(0, 1), ScalarValue::Integer(6789));
     }
 }

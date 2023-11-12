@@ -2,6 +2,8 @@ use std::ops::Range;
 use std::pin::Pin;
 use std::ptr::slice_from_raw_parts_mut;
 
+use serde::Deserialize;
+
 use super::cell::{Cell, Key, ValueRef};
 use super::node::{LeafNodePage, NodePage};
 use super::pager::Pager;
@@ -74,5 +76,11 @@ impl<'a> CellReader<'a> {
 
     pub fn key(&self) -> Key {
         self.key
+    }
+
+    pub fn decode_as_json_array(&mut self) -> Vec<serde_json::Value> {
+        let mut deserializer = serde_json::Deserializer::from_reader(self);
+        let values = Vec::<serde_json::Value>::deserialize(&mut deserializer).unwrap();
+        values
     }
 }

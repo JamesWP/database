@@ -1,12 +1,15 @@
+use crate::storage::CursorHandle;
+
 use super::{
     program::Reg,
     scalarvalue::{self, ScalarValue},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum RegisterValue {
     None,
     ScalarValue(ScalarValue),
+    CursorHandle(CursorHandle),
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +63,21 @@ impl RegisterValue {
             } else {
                 None
             }
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn cursor(&self) -> Option<&CursorHandle> {
+        match self {
+            RegisterValue::CursorHandle(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn cursor_mut(&mut self) -> Option<&mut CursorHandle> {
+        if let RegisterValue::CursorHandle(ref mut c) = self {
+            Some(c)
         } else {
             None
         }

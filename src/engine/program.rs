@@ -4,12 +4,26 @@ use super::scalarvalue::ScalarValue;
 pub struct Reg(usize);
 
 #[derive(Clone, Debug)]
+pub enum MoveOperation {
+    First,
+}
+
+// TODO: switch to using {} and named members
+#[derive(Clone, Debug)]
 pub enum Operation {
+    // Value
     StoreValue(Reg, ScalarValue),
     IncrementValue(Reg),
     AddValue(Reg, Reg, Reg),
     MultiplyValue(Reg, Reg, Reg),
     LessThanValue(Reg, Reg, Reg),
+
+    // Db
+    Open(Reg, String),
+    MoveCursor(Reg, MoveOperation),
+    ReadCursor(Vec<Reg>, Reg), // TODO: allow program to select which columns to read and type check
+
+    // Control Flow
     Yield(Vec<Reg>),
     GoTo(usize),
     GoToIfEqualValue(usize, Reg, Reg),

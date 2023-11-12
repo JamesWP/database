@@ -1,3 +1,4 @@
+//TODO: maybe consider removing boolean and making this type only handle numeric types
 #[derive(Clone, Copy, Debug)]
 pub enum ScalarValue {
     Integer(i64),
