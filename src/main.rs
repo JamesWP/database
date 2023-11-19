@@ -8,7 +8,9 @@ use rand::Rng;
 
 mod engine;
 mod frontend;
+mod planner;
 mod storage;
+
 #[cfg(test)]
 mod test;
 
