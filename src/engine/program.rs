@@ -6,6 +6,7 @@ pub struct Reg(usize);
 #[derive(Clone, Debug)]
 pub enum MoveOperation {
     First,
+    Next,
 }
 
 // TODO: switch to using {} and named members
@@ -13,20 +14,22 @@ pub enum MoveOperation {
 pub enum Operation {
     // Value
     StoreValue(Reg, ScalarValue),
-    IncrementValue(Reg),
-    AddValue(Reg, Reg, Reg),
-    MultiplyValue(Reg, Reg, Reg),
-    LessThanValue(Reg, Reg, Reg),
+    IncrementValue(Reg),          // Reg = Reg + 1
+    AddValue(Reg, Reg, Reg),      // Reg = Reg + Reg
+    MultiplyValue(Reg, Reg, Reg), // Reg = Reg * Reg
+    LessThanValue(Reg, Reg, Reg), // Reg = Reg < Reg
 
     // Db
     Open(Reg, String),
     MoveCursor(Reg, MoveOperation),
     ReadCursor(Vec<Reg>, Reg), // TODO: allow program to select which columns to read and type check
+    CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
 
     // Control Flow
     Yield(Vec<Reg>),
     GoTo(usize),
     GoToIfEqualValue(usize, Reg, Reg),
+    GoToIfFalse(usize, Reg, Reg),
     Halt,
 }
 

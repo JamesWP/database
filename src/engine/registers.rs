@@ -68,6 +68,18 @@ impl RegisterValue {
         }
     }
 
+    pub fn boolean(&self) -> Option<bool> {
+        if let RegisterValue::ScalarValue(scalar_value) = self {
+            if let ScalarValue::Boolean(x) = scalar_value {
+                Some(*x)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn cursor(&self) -> Option<&CursorHandle> {
         match self {
             RegisterValue::CursorHandle(c) => Some(c),

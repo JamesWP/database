@@ -96,6 +96,14 @@ impl Engine {
                     // branch not taken
                 }
             }
+            GoToIfFalse(index, reg, _) => {
+                let reg = self.registers.get(reg).boolean().unwrap();
+                if !reg {
+                    self.program.set_next_operation_index(index);
+                } else {
+                    // branch not taken
+                }
+            }
             Halt => {
                 return StepResult::Ok(StepSuccess::Halt);
             }
@@ -111,7 +119,19 @@ impl Engine {
                     program::MoveOperation::First => {
                         cursor.first();
                     }
+                    program::MoveOperation::Next => {
+                        cursor.next();
+                    }
                 };
+            }
+            CanReadCursor(dest, reg) => {
+                let cursor = self.registers.get_mut(reg).cursor_mut().unwrap();
+                let cursor = cursor.open_readonly();
+                let value = cursor.get_entry().is_some();
+                // we must drop cursror before we can mutate registers
+                drop(cursor);
+                let value = ScalarValue::Boolean(value);
+                *self.registers.get_mut(dest) = RegisterValue::ScalarValue(value);
             }
             ReadCursor(regs, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
@@ -424,5 +444,50 @@ mod test {
         assert_eq!(harness.num_yields(), 1);
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(12345));
         assert_eq!(harness.value(0, 1), ScalarValue::Integer(6789));
+    }
+
+    #[test]
+    fn test_read_all_data() {
+        let mut test = TestDb::default();
+        let mut btree = test.btree;
+        btree.create_tree("test");
+
+        let mut cursor = btree.open("test").unwrap();
+        let mut cursor = cursor.open_readwrite();
+        cursor.insert(0, b"[12345,6789]".to_vec());
+        cursor.insert(1, b"[12345,0]".to_vec());
+        cursor.insert(2, b"[12345,0]".to_vec());
+        cursor.insert(3, b"[12345,0]".to_vec());
+        drop(cursor);
+
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                Operation::Open(r0, "test".to_string()),
+                Operation::MoveCursor(r0, MoveOperation::First),
+                Operation::CanReadCursor(r1, r0),  // Next
+                Operation::GoToIfFalse(8, r1, r0), // Goto End
+                Operation::ReadCursor(vec![r2, r3], r0),
+                Operation::Yield(vec![r2, r3]),
+                Operation::MoveCursor(r0, MoveOperation::Next),
+                Operation::GoTo(2), // Goto Next
+                Operation::Halt,    // End
+            ],
+            4,
+            btree,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 4);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(12345));
+        assert_eq!(harness.value(0, 1), ScalarValue::Integer(6789));
+        assert_eq!(harness.value(1, 0), ScalarValue::Integer(12345));
+        assert_eq!(harness.value(2, 0), ScalarValue::Integer(12345));
+        assert_eq!(harness.value(3, 0), ScalarValue::Integer(12345));
     }
 }
