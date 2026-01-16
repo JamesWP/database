@@ -2,7 +2,7 @@ use crate::storage::CursorHandle;
 
 use super::{
     program::Reg,
-    scalarvalue::{self, ScalarValue},
+    scalarvalue::ScalarValue,
 };
 
 #[derive(Clone, Debug)]

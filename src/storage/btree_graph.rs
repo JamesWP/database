@@ -139,7 +139,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                 // let quoted_label = &label;
                 // writeln!(output, "[label=\"{quoted_label}\"]")?;
 
-                for cell_idx in 0..l.num_items() {
+                for _cell_idx in 0..l.num_items() {
                     //write!(output, "\t")?;
                     //value_edge(output, page_idx, cell_idx)?;
                     //write!(output, " -> ")?;
@@ -176,7 +176,7 @@ pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {
                     writeln!(output, ";")?;
                 }
             }
-            node::NodePage::OverflowPage(o) => {
+            node::NodePage::OverflowPage(_o) => {
                 // write!(output, "\t")?;
                 // node_name(output, page_idx)?;
                 // if let Some(next_page_idx) = o.continuation() {

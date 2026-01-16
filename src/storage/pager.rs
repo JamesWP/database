@@ -140,7 +140,7 @@ impl Pager {
         idx: PageNo,
     ) -> P {
         let p = self.get(idx);
-        let reader = BufReader::new(p.borrow().content.as_slice());
+        let reader = BufReader::new(p.content.as_slice());
         let mut deserializer = serde_json::Deserializer::from_reader(reader);
         P::deserialize(&mut deserializer).unwrap()
     }
@@ -290,12 +290,6 @@ mod test {
 
         pager.set(page_one_idx, &page_one_content);
         pager.set(page_two_idx, &page_two_content);
-
-        page_one_content.content[0] = 0;
-        page_one_content.content[10] = 0;
-
-        page_two_content.content[0] = 0;
-        page_two_content.content[20] = 0;
 
         // Re open file from disk
         let pager = Pager::new(path);

@@ -1,6 +1,4 @@
-use proptest::strategy::W;
 
-use crate::frontend::lexer::lex;
 
 use super::{ast, lexer};
 
@@ -53,11 +51,11 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
-            /// These expectations are not used with `.expect`
+            // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
 
-            /// This is an error, we required a token and we didnt find it
+            // This is an error, we required a token and we didnt find it
             (expectation, actuality) => Err(ParseError::UnexpectedToken(expectation, actuality)),
         }
     }
@@ -411,9 +409,9 @@ impl Parser {
         match self.input.peek() {
             lexer::Type::LeftParen => {
                 self.input.advance();
-                let type_name = self.parse_typename()?;
+                let _type_name = self.parse_typename()?;
                 self.input.expect(Expect::RightParen)?;
-                let expr = self.parse_cast()?;
+                let _expr = self.parse_cast()?;
                 todo!("Casting");
             }
             _ => self.parse_unary(),
@@ -496,13 +494,13 @@ impl Parser {
     }
 }
 
-pub fn parse(tokens: Vec<lexer::Token>) -> ParseResult<ast::Statement> {
+pub fn parse(_tokens: Vec<lexer::Token>) -> ParseResult<ast::Statement> {
     todo!()
 }
 
 #[cfg(test)]
 mod test {
-    use crate::frontend::{lexer::lex, parser::parse, parser::Parser, parser::ParserInput};
+    use crate::frontend::{lexer::lex, parser::Parser, parser::ParserInput};
 
     #[test]
     fn test() {

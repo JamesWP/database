@@ -24,7 +24,7 @@ impl Cell {
         self.key
     }
 
-    pub fn value(&self) -> ValueRef {
+    pub fn value(&self) -> ValueRef<'_> {
         &self.value
     }
 

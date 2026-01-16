@@ -19,7 +19,7 @@ impl From<node::VerifyError> for VerifyError {
     }
 }
 
-fn verify_leaf(pager: &Pager, leaf: LeafNodePage) -> Result<usize, VerifyError> {
+fn verify_leaf(_pager: &Pager, leaf: LeafNodePage) -> Result<usize, VerifyError> {
     // Check each leaf page has keys (unless its a root node)
     assert!(leaf.num_items() > 0);
 

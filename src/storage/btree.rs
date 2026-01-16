@@ -230,7 +230,7 @@ where
         loop {
             let page: NodePage = self.pager.get_and_decode(page_idx);
             match page {
-                node::NodePage::Leaf(l) => {
+                node::NodePage::Leaf(_l) => {
                     // We found the first leaf in the tree.
                     // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
                     self.cursor_state.leaf_iterator = Some((page_idx, 0));
@@ -278,8 +278,8 @@ where
             .unwrap();
         let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
 
-        let mut page = root_page;
-        let mut page_idx = root_page_idx;
+        let page = root_page;
+        let page_idx = root_page_idx;
         loop {
             match page {
                 node::NodePage::Leaf(l) => {
@@ -550,7 +550,7 @@ impl Display for BTree {
 
 #[cfg(test)]
 mod test {
-    use super::CellReader;
+    
     use crate::test::TestDb;
     use proptest::prelude::*;
     use std::collections::BTreeMap;

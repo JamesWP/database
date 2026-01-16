@@ -16,6 +16,7 @@ mod test;
 
 use storage::{BTree, CellReader, CursorHandle};
 
+#[allow(dead_code)]
 enum State {
     None,
     Open(Box<BTree>),
@@ -101,7 +102,7 @@ pub(crate) fn main() {
             }
             ["print", "data"] => {
                 let mut cursor = match &mut state {
-                    State::Cursor(btree, handle) => handle.open_readonly(),
+                    State::Cursor(_btree, handle) => handle.open_readonly(),
                     State::Open(_) => {
                         println!("Open a table before printing");
                         continue;
@@ -129,7 +130,7 @@ pub(crate) fn main() {
                         println!("No database open");
                         continue;
                     }
-                    State::Open(database) => {
+                    State::Open(_database) => {
                         println!("No cursor open");
                         continue;
                     }
@@ -144,11 +145,11 @@ pub(crate) fn main() {
                         println!("No database open");
                         continue;
                     }
-                    State::Open(database) => {
+                    State::Open(_database) => {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(database, cursor) => cursor.open_readonly(),
+                    State::Cursor(_database, cursor) => cursor.open_readonly(),
                 };
 
                 cursor.next();
@@ -159,11 +160,11 @@ pub(crate) fn main() {
                         println!("No database open");
                         continue;
                     }
-                    State::Open(database) => {
+                    State::Open(_database) => {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(database, cursor) => cursor.open_readonly(),
+                    State::Cursor(_database, cursor) => cursor.open_readonly(),
                 };
 
                 cursor.prev();
@@ -174,11 +175,11 @@ pub(crate) fn main() {
                         println!("No database open");
                         continue;
                     }
-                    State::Open(database) => {
+                    State::Open(_database) => {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(database, cursor) => cursor.open_readonly(),
+                    State::Cursor(_database, cursor) => cursor.open_readonly(),
                 };
                 let key = u64::from_str_radix(*key, 10).unwrap();
 
@@ -190,14 +191,14 @@ pub(crate) fn main() {
                         println!("No database open");
                         continue;
                     }
-                    State::Open(database) => {
+                    State::Open(_database) => {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(database, cursor) => cursor.open_readonly(),
+                    State::Cursor(_database, cursor) => cursor.open_readonly(),
                 };
 
-                print_value(cursor.get_entry());
+                let _ = print_value(cursor.get_entry());
             }
             ["insert", key, rest @ ..] => {
                 let mut cursor = match &mut state {
@@ -205,11 +206,11 @@ pub(crate) fn main() {
                         println!("No database open");
                         continue;
                     }
-                    State::Open(database) => {
+                    State::Open(_database) => {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(database, cursor) => cursor.open_readwrite(),
+                    State::Cursor(_database, cursor) => cursor.open_readwrite(),
                 };
                 let key: u64 = u64::from_str_radix(*key, 10).unwrap();
                 let value = rest.join(" ");
@@ -221,11 +222,11 @@ pub(crate) fn main() {
                         println!("No database open");
                         continue;
                     }
-                    State::Open(database) => {
+                    State::Open(_database) => {
                         println!("No cursor open");
                         continue;
                     }
-                    State::Cursor(database, cursor) => cursor.open_readwrite(),
+                    State::Cursor(_database, cursor) => cursor.open_readwrite(),
                 };
 
                 let count = u64::from_str_radix(*count, 10).unwrap();

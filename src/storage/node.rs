@@ -133,7 +133,7 @@ impl LeafNodePage {
         self.cells.insert(index, cell);
     }
 
-    pub fn get_item_at_index<'a>(&'a self, entry_index: usize) -> Option<&Cell> {
+    pub fn get_item_at_index<'a>(&'a self, entry_index: usize) -> Option<&'a Cell> {
         self.cells.get(entry_index)
     }
 
@@ -446,23 +446,23 @@ mod test {
 
           E is no longer required
         */
-        let (W, E, R) = (1, 2, 3);
-        let (A, S, D, F) = (10, 20, 30, 40);
+        let (w, e, r) = (1, 2, 3);
+        let (a, s, d, f) = (10, 20, 30, 40);
 
-        let mut interior_node = InteriorNodePage::new(A, W, S);
-        interior_node.insert_child_page(E, D);
-        interior_node.insert_child_page(R, F);
+        let mut interior_node = InteriorNodePage::new(a, w, s);
+        interior_node.insert_child_page(e, d);
+        interior_node.insert_child_page(r, f);
 
-        assert_eq!(interior_node.edges, &[A, S, D, F]);
-        assert_eq!(interior_node.keys, &[W, E, R]);
+        assert_eq!(interior_node.edges, &[a, s, d, f]);
+        assert_eq!(interior_node.keys, &[w, e, r]);
 
         let (left, right) = interior_node.split();
 
-        assert_eq!(left.edges, &[A, S]);
-        assert_eq!(left.keys, &[W]);
+        assert_eq!(left.edges, &[a, s]);
+        assert_eq!(left.keys, &[w]);
 
-        assert_eq!(right.edges, &[D, F]);
-        assert_eq!(right.keys, &[R]);
+        assert_eq!(right.edges, &[d, f]);
+        assert_eq!(right.keys, &[r]);
     }
 
     proptest! {

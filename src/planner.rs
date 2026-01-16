@@ -1,4 +1,3 @@
-use std::fmt;
 
 use crate::frontend::ast::{
     ColumnExpression, ColumnReference, Expression, NamedTupleSource, Statement, TupleSource,
@@ -112,7 +111,6 @@ mod test {
     use crate::planner::{
         plan,
         schema::{Column, Schema, Table},
-        SelectNode, TableScanNode,
     };
 
     #[test]

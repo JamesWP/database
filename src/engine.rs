@@ -173,15 +173,14 @@ mod test {
     use crate::{
         engine::{
             program::{MoveOperation, Operation, ProgramCode},
-            scalarvalue::ScalarValue,
-            StepResult, StepSuccess,
+            scalarvalue::ScalarValue, StepSuccess,
         },
         storage::BTree,
         test::TestDb,
     };
 
     use super::{
-        program::{self, Reg},
+        program::Reg,
         registers::Registers,
         Engine,
     };
@@ -407,7 +406,7 @@ mod test {
 
     #[test]
     fn test_btree_open() {
-        let mut test = TestDb::default();
+        let test = TestDb::default();
         let mut btree = test.btree;
         btree.create_tree("test");
 
@@ -448,7 +447,7 @@ mod test {
 
     #[test]
     fn test_read_all_data() {
-        let mut test = TestDb::default();
+        let test = TestDb::default();
         let mut btree = test.btree;
         btree.create_tree("test");
 

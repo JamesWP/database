@@ -1,6 +1,6 @@
 use peekmore::{PeekMore, PeekMoreIterator};
 use std::{
-    fmt::{Debug, Display},
+    fmt::Debug,
     str::Chars,
 };
 
@@ -91,7 +91,7 @@ impl Debug for Token {
 }
 
 pub fn lex(input: &str) -> Vec<Token> {
-    let mut l = Lexer::new(input);
+    let l = Lexer::new(input);
     l.lex()
 }
 
@@ -120,7 +120,7 @@ impl<'a> Into<Vec<Token>> for Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(input: &str) -> Lexer {
+    pub fn new(input: &str) -> Lexer<'_> {
         Lexer {
             input: input.chars().peekmore(),
             tokens: Default::default(),
@@ -331,7 +331,7 @@ impl<'a> Lexer<'a> {
         self.advance();
 
         let mut value = String::with_capacity(self.curent_lexeme.len());
-        let mut chars = self.curent_lexeme.chars();
+        let chars = self.curent_lexeme.chars();
 
         // Skip the opening quote
         let mut chars = chars.skip(1).peekable();
@@ -387,7 +387,7 @@ impl<'a> Lexer<'a> {
         if self.curent_lexeme.contains('.') {
             let n = self.curent_lexeme.parse();
             match n {
-                Err(e) => self.make_token(Type::Error(Error::BadFloatingPointNumber(
+                Err(_e) => self.make_token(Type::Error(Error::BadFloatingPointNumber(
                     self.curent_lexeme.to_owned(),
                 ))),
                 Ok(n) => self.make_token(Type::FloatingPointNumber(n)),
@@ -395,7 +395,7 @@ impl<'a> Lexer<'a> {
         } else {
             let n = self.curent_lexeme.parse();
             match n {
-                Err(e) => self.make_token(Type::Error(Error::BadIntegerNumber(
+                Err(_e) => self.make_token(Type::Error(Error::BadIntegerNumber(
                     self.curent_lexeme.to_owned(),
                 ))),
                 Ok(n) => self.make_token(Type::IntegerNumber(n)),
