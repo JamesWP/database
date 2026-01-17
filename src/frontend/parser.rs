@@ -1,21 +1,29 @@
-
-
 use super::{ast, lexer};
 
-// TODO: Create proper public parsing interface
-pub(crate) struct ParserInput {
-    pub(crate) tokens: Vec<lexer::Token>,
-    pub(crate) curent: usize,
-}
-
-// TODO: Create proper public parsing interface
-pub(crate) struct Parser {
-    pub(crate) input: ParserInput,
+/// Parse a SQL string into an AST Statement
+pub fn parse(sql: &str) -> Result<ast::Statement, ParseError> {
+    let tokens = lexer::lex(sql);
+    let mut parser = Parser {
+        input: ParserInput {
+            tokens,
+            curent: 0,
+        },
+    };
+    parser.parse_statement()
 }
 
 #[derive(Debug)]
 pub enum ParseError {
     UnexpectedToken(Expect, lexer::Type),
+}
+
+struct ParserInput {
+    tokens: Vec<lexer::Token>,
+    curent: usize,
+}
+
+struct Parser {
+    input: ParserInput,
 }
 
 type ParseResult<T> = std::result::Result<T, ParseError>;
@@ -496,31 +504,14 @@ impl Parser {
     }
 }
 
-pub fn parse(_tokens: Vec<lexer::Token>) -> ParseResult<ast::Statement> {
-    todo!()
-}
-
 #[cfg(test)]
 mod test {
-    use crate::frontend::{lexer::lex, parser::Parser, parser::ParserInput};
+    use super::parse;
 
     #[test]
-    fn test() {
+    fn test_parse_select() {
         let input = "select t.col as ben, t.othercol+1, finalcol*2 from tablename as t where col=1 and finalcol>0 limit 23;";
-        // let input = "t.othercol+1==44+10";
-        let output = lex(input);
-        println!("Lex: {:?}", &output);
-
-        let mut p = Parser {
-            input: ParserInput {
-                tokens: output,
-                curent: 0,
-            },
-        };
-        let statement = p.parse_statement();
-
-        let statement = statement.unwrap();
-
-        println!("Satement: {:#?}", statement);
+        let statement = parse(input).unwrap();
+        println!("Statement: {:#?}", statement);
     }
 }

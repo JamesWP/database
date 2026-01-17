@@ -170,8 +170,7 @@ pub enum PlanError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frontend::lexer::lex;
-    use crate::frontend::parser::{Parser, ParserInput};
+    use crate::frontend::parse;
 
     fn make_users_schema() -> schema::Schema {
         schema::Schema {
@@ -192,16 +191,8 @@ mod tests {
         }
     }
 
-    // TODO: Replace with proper public parsing interface
-    fn parse(sql: &str) -> Statement {
-        let tokens = lex(sql);
-        let mut parser = Parser {
-            input: ParserInput {
-                tokens,
-                curent: 0,
-            },
-        };
-        parser.parse_statement().expect("Failed to parse SQL")
+    fn parse_sql(sql: &str) -> Statement {
+        parse(sql).expect("Failed to parse SQL")
     }
 
     /// Example 1: Simple SELECT
@@ -213,7 +204,7 @@ mod tests {
     #[test]
     fn test_simple_select() {
         let schema = make_users_schema();
-        let stmt = parse("SELECT id, name FROM users");
+        let stmt = parse_sql("SELECT id, name FROM users");
 
         let plan = plan(stmt, &schema).expect("Planning failed");
 
@@ -241,7 +232,7 @@ mod tests {
     #[test]
     fn test_select_with_where() {
         let schema = make_users_schema();
-        let stmt = parse("SELECT name FROM users WHERE age > 21");
+        let stmt = parse_sql("SELECT name FROM users WHERE age > 21");
 
         let plan = plan(stmt, &schema).expect("Planning failed");
 
@@ -273,7 +264,7 @@ mod tests {
     #[test]
     fn test_select_with_limit() {
         let schema = make_users_schema();
-        let stmt = parse("SELECT name FROM users LIMIT 10");
+        let stmt = parse_sql("SELECT name FROM users LIMIT 10");
 
         let plan = plan(stmt, &schema).expect("Planning failed");
 
@@ -298,7 +289,7 @@ mod tests {
     #[ignore = "parser does not yet support SELECT *"]
     fn test_select_star() {
         let schema = make_users_schema();
-        let stmt = parse("SELECT * FROM users");
+        let stmt = parse_sql("SELECT * FROM users");
 
         let plan = plan(stmt, &schema).expect("Planning failed");
 
@@ -321,7 +312,7 @@ mod tests {
     #[test]
     fn test_table_not_found() {
         let schema = make_users_schema();
-        let stmt = parse("SELECT id FROM nonexistent");
+        let stmt = parse_sql("SELECT id FROM nonexistent");
 
         let result = plan(stmt, &schema);
 
@@ -335,7 +326,7 @@ mod tests {
     #[test]
     fn test_column_not_found() {
         let schema = make_users_schema();
-        let stmt = parse("SELECT nonexistent FROM users");
+        let stmt = parse_sql("SELECT nonexistent FROM users");
 
         let result = plan(stmt, &schema);
 
