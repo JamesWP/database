@@ -36,6 +36,13 @@ pub enum BinaryOp {
     // Logical
     And,
     Or,
+
+    // Bitwise
+    LeftShift,
+    RightShift,
+    BitOr,
+    BitXor,
+    BitAnd,
 }
 
 // ============================================================================
@@ -164,6 +171,123 @@ pub enum PlanError {
 }
 
 // ============================================================================
+// Expression Conversion
+// ============================================================================
+
+use std::collections::HashMap;
+use crate::frontend::ast;
+
+// TODO: For JOIN support, replace ExprContext with a ColumnResolver that handles:
+//
+// 1. Qualified refs (table.column): lookup in specific table
+// 2. Unqualified refs (column): lookup across all tables, error if ambiguous
+//
+// Example: SELECT age, user.name FROM user JOIN relative ON relative.name = user.name
+//   - "age" is allowed if only one table has it (otherwise ambiguous error)
+//   - "user.name" must resolve to the "user" table specifically
+//
+// Data structure:
+//   struct ColumnResolver {
+//       // (table_alias, column_name) → scan output position
+//       qualified: HashMap<(String, String), usize>,
+//       // column_name → Some(position) if unique, None if ambiguous
+//       unqualified: HashMap<String, Option<usize>>,
+//   }
+//
+// Build by iterating all tables: add to qualified map, track ambiguity in unqualified map.
+
+/// Context for expression conversion (single-table queries)
+struct ExprContext<'a> {
+    /// Valid table name or alias for qualified refs (e.g., "u" for "FROM users AS u")
+    table_ref: &'a str,
+    /// Maps column name → position in scan output
+    columns: &'a HashMap<String, usize>,
+}
+
+/// Convert an AST Expression to a PlanExpr
+fn convert_expr(expr: &ast::Expression, ctx: &ExprContext) -> Result<PlanExpr, PlanError> {
+    match expr {
+        ast::Expression::Value(scalar) => convert_scalar(scalar, ctx),
+        ast::Expression::BinaryOp { op, lhs, rhs } => Ok(PlanExpr::BinaryOp {
+            op: convert_binary_op(op),
+            left: Box::new(convert_expr(lhs, ctx)?),
+            right: Box::new(convert_expr(rhs, ctx)?),
+        }),
+        ast::Expression::UnaryOp { op, expression } => Ok(PlanExpr::UnaryOp {
+            op: convert_unary_op(op),
+            operand: Box::new(convert_expr(expression, ctx)?),
+        }),
+    }
+}
+
+fn convert_scalar(scalar: &ast::ScalarValue, ctx: &ExprContext) -> Result<PlanExpr, PlanError> {
+    match scalar {
+        ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
+        ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
+        ast::ScalarValue::Identifier(name) => {
+            let pos = ctx.columns.get(name).ok_or_else(|| PlanError::ColumnNotFound {
+                table: ctx.table_ref.to_string(),
+                column: name.clone(),
+            })?;
+            Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos }))
+        }
+        ast::ScalarValue::MultiPartIdentifier(table_expr, column_name) => {
+            // Extract table name from expression (e.g., "u" from "u.name")
+            let ref_table = extract_identifier(table_expr)?;
+
+            // Validate table reference matches our context
+            if ref_table != ctx.table_ref {
+                return Err(PlanError::TableNotFound(ref_table));
+            }
+
+            let pos = ctx.columns.get(column_name).ok_or_else(|| PlanError::ColumnNotFound {
+                table: ctx.table_ref.to_string(),
+                column: column_name.clone(),
+            })?;
+            Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos }))
+        }
+    }
+}
+
+/// Extract a simple identifier string from an expression
+fn extract_identifier(expr: &ast::Expression) -> Result<String, PlanError> {
+    match expr {
+        ast::Expression::Value(ast::ScalarValue::Identifier(name)) => Ok(name.clone()),
+        _ => Err(PlanError::UnsupportedStatement),
+    }
+}
+
+fn convert_binary_op(op: &ast::BinaryOp) -> BinaryOp {
+    match op {
+        ast::BinaryOp::Sum => BinaryOp::Add,
+        ast::BinaryOp::Difference => BinaryOp::Subtract,
+        ast::BinaryOp::Product => BinaryOp::Multiply,
+        ast::BinaryOp::Quotient => BinaryOp::Divide,
+        ast::BinaryOp::Remainder => BinaryOp::Remainder,
+        ast::BinaryOp::Equals => BinaryOp::Equals,
+        ast::BinaryOp::NotEquals => BinaryOp::NotEquals,
+        ast::BinaryOp::GreaterThan => BinaryOp::GreaterThan,
+        ast::BinaryOp::GreaterThanOrEqual => BinaryOp::GreaterThanOrEqual,
+        ast::BinaryOp::LessThan => BinaryOp::LessThan,
+        ast::BinaryOp::LessThanOrEqual => BinaryOp::LessThanOrEqual,
+        ast::BinaryOp::And => BinaryOp::And,
+        ast::BinaryOp::Or => BinaryOp::Or,
+        ast::BinaryOp::LeftBitShift => BinaryOp::LeftShift,
+        ast::BinaryOp::RightBitShift => BinaryOp::RightShift,
+        ast::BinaryOp::BinaryOr => BinaryOp::BitOr,
+        ast::BinaryOp::BinaryExclusiveOr => BinaryOp::BitXor,
+        ast::BinaryOp::BinaryAnd => BinaryOp::BitAnd,
+    }
+}
+
+fn convert_unary_op(op: &ast::UnaryOp) -> UnaryOp {
+    match op {
+        ast::UnaryOp::Plus => UnaryOp::Plus,
+        ast::UnaryOp::Negate => UnaryOp::Negate,
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -171,6 +295,173 @@ pub enum PlanError {
 mod tests {
     use super::*;
     use crate::frontend::parse;
+
+    // ========================================================================
+    // Expression Converter Tests
+    // ========================================================================
+
+    fn make_column_map() -> HashMap<String, usize> {
+        // Simulates: Scan { columns: [0, 1, 2] } for users(id, name, age)
+        // So id → 0, name → 1, age → 2 in scan output
+        let mut map = HashMap::new();
+        map.insert("id".to_string(), 0);
+        map.insert("name".to_string(), 1);
+        map.insert("age".to_string(), 2);
+        map
+    }
+
+    #[test]
+    fn test_convert_integer_literal() {
+        let columns = make_column_map();
+        let ctx = ExprContext { table_ref: "users", columns: &columns };
+
+        let expr = ast::Expression::Value(ast::ScalarValue::IntegerNumber(42));
+        let result = convert_expr(&expr, &ctx).unwrap();
+
+        assert_eq!(result, PlanExpr::Literal(Literal::Integer(42)));
+    }
+
+    #[test]
+    fn test_convert_float_literal() {
+        let columns = make_column_map();
+        let ctx = ExprContext { table_ref: "users", columns: &columns };
+
+        let expr = ast::Expression::Value(ast::ScalarValue::FloatingNumber(3.14));
+        let result = convert_expr(&expr, &ctx).unwrap();
+
+        assert_eq!(result, PlanExpr::Literal(Literal::Float(3.14)));
+    }
+
+    #[test]
+    fn test_convert_column_ref() {
+        let columns = make_column_map();
+        let ctx = ExprContext { table_ref: "users", columns: &columns };
+
+        let expr = ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()));
+        let result = convert_expr(&expr, &ctx).unwrap();
+
+        assert_eq!(result, PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }));
+    }
+
+    #[test]
+    fn test_convert_qualified_column_ref() {
+        let columns = make_column_map();
+        let ctx = ExprContext { table_ref: "users", columns: &columns };
+
+        // users.name
+        let table_expr = Box::new(ast::Expression::Value(
+            ast::ScalarValue::Identifier("users".to_string())
+        ));
+        let expr = ast::Expression::Value(
+            ast::ScalarValue::MultiPartIdentifier(table_expr, "name".to_string())
+        );
+        let result = convert_expr(&expr, &ctx).unwrap();
+
+        assert_eq!(result, PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }));
+    }
+
+    #[test]
+    fn test_convert_qualified_column_wrong_table() {
+        let columns = make_column_map();
+        let ctx = ExprContext { table_ref: "users", columns: &columns };
+
+        // other.name - should fail because "other" != "users"
+        let table_expr = Box::new(ast::Expression::Value(
+            ast::ScalarValue::Identifier("other".to_string())
+        ));
+        let expr = ast::Expression::Value(
+            ast::ScalarValue::MultiPartIdentifier(table_expr, "name".to_string())
+        );
+        let result = convert_expr(&expr, &ctx);
+
+        assert_eq!(result, Err(PlanError::TableNotFound("other".to_string())));
+    }
+
+    #[test]
+    fn test_convert_column_not_found() {
+        let columns = make_column_map();
+        let ctx = ExprContext { table_ref: "users", columns: &columns };
+
+        let expr = ast::Expression::Value(ast::ScalarValue::Identifier("nonexistent".to_string()));
+        let result = convert_expr(&expr, &ctx);
+
+        assert_eq!(result, Err(PlanError::ColumnNotFound {
+            table: "users".to_string(),
+            column: "nonexistent".to_string(),
+        }));
+    }
+
+    #[test]
+    fn test_convert_binary_comparison() {
+        let columns = make_column_map();
+        let ctx = ExprContext { table_ref: "users", columns: &columns };
+
+        // age > 21
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::GreaterThan,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(21))),
+        };
+        let result = convert_expr(&expr, &ctx).unwrap();
+
+        assert_eq!(result, PlanExpr::BinaryOp {
+            op: BinaryOp::GreaterThan,
+            left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })),
+            right: Box::new(PlanExpr::Literal(Literal::Integer(21))),
+        });
+    }
+
+    #[test]
+    fn test_convert_unary_negate() {
+        let columns = make_column_map();
+        let ctx = ExprContext { table_ref: "users", columns: &columns };
+
+        // -age
+        let expr = ast::Expression::UnaryOp {
+            op: ast::UnaryOp::Negate,
+            expression: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()))),
+        };
+        let result = convert_expr(&expr, &ctx).unwrap();
+
+        assert_eq!(result, PlanExpr::UnaryOp {
+            op: UnaryOp::Negate,
+            operand: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })),
+        });
+    }
+
+    #[test]
+    fn test_convert_nested_expression() {
+        let columns = make_column_map();
+        let ctx = ExprContext { table_ref: "users", columns: &columns };
+
+        // (age + 1) > 21
+        let age_plus_one = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Sum,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(1))),
+        };
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::GreaterThan,
+            lhs: Box::new(age_plus_one),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(21))),
+        };
+        let result = convert_expr(&expr, &ctx).unwrap();
+
+        let expected = PlanExpr::BinaryOp {
+            op: BinaryOp::GreaterThan,
+            left: Box::new(PlanExpr::BinaryOp {
+                op: BinaryOp::Add,
+                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(1))),
+            }),
+            right: Box::new(PlanExpr::Literal(Literal::Integer(21))),
+        };
+        assert_eq!(result, expected);
+    }
+
+    // ========================================================================
+    // Plan Tests
+    // ========================================================================
 
     fn make_users_schema() -> schema::Schema {
         schema::Schema {
