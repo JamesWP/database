@@ -160,7 +160,126 @@ pub mod schema {
 
 /// Convert an AST Statement to a LogicalPlan
 pub fn plan(statement: Statement, schema: &schema::Schema) -> Result<LogicalPlan, PlanError> {
-    todo!()
+    match statement {
+        Statement::Select(select) => plan_select(select, schema),
+    }
+}
+
+fn plan_select(
+    select: ast::SelectStatement,
+    schema: &schema::Schema,
+) -> Result<LogicalPlan, PlanError> {
+    // 1. Extract table info from FROM clause
+    let (table_name, table_ref) = extract_table_info(&select.from)?;
+
+    // 2. Look up table in schema
+    let table = schema
+        .get_table(&table_name)
+        .ok_or_else(|| PlanError::TableNotFound(table_name.clone()))?;
+
+    // 3. Collect all column references from SELECT and WHERE
+    let mut columns_needed = HashSet::new();
+    for col_expr in &select.columns {
+        collect_columns_from_column_expr(col_expr, &mut columns_needed);
+    }
+    if let Some(ref filter) = select.filter {
+        collect_columns(filter, &mut columns_needed);
+    }
+
+    // 4. Build column mapping
+    let mapping = build_column_mapping(&columns_needed, table, &table_ref)?;
+
+    // 5. Build expression context
+    let ctx = ExprContext {
+        table_ref: &table_ref,
+        columns: &mapping.column_map,
+    };
+
+    // 6. Convert SELECT expressions
+    let project_exprs: Vec<PlanExpr> = select
+        .columns
+        .iter()
+        .map(|col_expr| convert_column_expr(col_expr, &ctx))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // 7. Build plan bottom-up: Scan → Filter? → Project → Limit?
+    let mut plan = LogicalPlan::Scan {
+        table: table_name,
+        columns: mapping.scan_columns,
+    };
+
+    // Add Filter if WHERE clause exists
+    if let Some(ref filter) = select.filter {
+        plan = LogicalPlan::Filter {
+            input: Box::new(plan),
+            predicate: convert_expr(filter, &ctx)?,
+        };
+    }
+
+    // Add Project
+    plan = LogicalPlan::Project {
+        input: Box::new(plan),
+        columns: project_exprs,
+    };
+
+    // Add Limit if LIMIT clause exists
+    if let Some(ref limit_expr) = select.limit {
+        let count = extract_limit_value(limit_expr)?;
+        plan = LogicalPlan::Limit {
+            input: Box::new(plan),
+            count,
+        };
+    }
+
+    Ok(plan)
+}
+
+/// Extract table name and reference (alias or table name) from FROM clause
+fn extract_table_info(from: &ast::NamedTupleSource) -> Result<(String, String), PlanError> {
+    match from {
+        ast::NamedTupleSource::Named { alias, source } => {
+            let table_name = extract_table_name(source)?;
+            // The alias is what we use for column references
+            Ok((table_name, alias.clone()))
+        }
+        ast::NamedTupleSource::Anonyomous(source) => {
+            let table_name = extract_table_name(source)?;
+            // No alias, use table name for references
+            Ok((table_name.clone(), table_name))
+        }
+    }
+}
+
+fn extract_table_name(source: &ast::TupleSource) -> Result<String, PlanError> {
+    match source {
+        ast::TupleSource::Table(name) => Ok(name.clone()),
+        ast::TupleSource::Subquery(_) => Err(PlanError::UnsupportedStatement),
+    }
+}
+
+/// Convert a ColumnExpression to a PlanExpr
+fn convert_column_expr(
+    col_expr: &ast::ColumnExpression,
+    ctx: &ExprContext,
+) -> Result<PlanExpr, PlanError> {
+    match col_expr {
+        ast::ColumnExpression::Named { expression, .. } => convert_expr(expression, ctx),
+        ast::ColumnExpression::Anonyomous(expression) => convert_expr(expression, ctx),
+    }
+}
+
+/// Extract limit count from a limit expression (must be an integer literal)
+fn extract_limit_value(expr: &ast::Expression) -> Result<u64, PlanError> {
+    match expr {
+        ast::Expression::Value(ast::ScalarValue::IntegerNumber(n)) => {
+            if *n < 0 {
+                Err(PlanError::UnsupportedStatement)
+            } else {
+                Ok(*n as u64)
+            }
+        }
+        _ => Err(PlanError::UnsupportedStatement),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -255,6 +374,103 @@ fn extract_identifier(expr: &ast::Expression) -> Result<String, PlanError> {
         ast::Expression::Value(ast::ScalarValue::Identifier(name)) => Ok(name.clone()),
         _ => Err(PlanError::UnsupportedStatement),
     }
+}
+
+// ============================================================================
+// Column Collection
+// ============================================================================
+
+use std::collections::HashSet;
+
+/// Collect all column names referenced in an expression
+fn collect_columns(expr: &ast::Expression, columns: &mut HashSet<String>) {
+    match expr {
+        ast::Expression::Value(scalar) => collect_columns_scalar(scalar, columns),
+        ast::Expression::BinaryOp { lhs, rhs, .. } => {
+            collect_columns(lhs, columns);
+            collect_columns(rhs, columns);
+        }
+        ast::Expression::UnaryOp { expression, .. } => {
+            collect_columns(expression, columns);
+        }
+    }
+}
+
+fn collect_columns_scalar(scalar: &ast::ScalarValue, columns: &mut HashSet<String>) {
+    match scalar {
+        ast::ScalarValue::Identifier(name) => {
+            columns.insert(name.clone());
+        }
+        ast::ScalarValue::MultiPartIdentifier(_, column_name) => {
+            // For table.column, we only need the column name
+            columns.insert(column_name.clone());
+        }
+        ast::ScalarValue::IntegerNumber(_) | ast::ScalarValue::FloatingNumber(_) => {
+            // Literals don't reference columns
+        }
+    }
+}
+
+/// Collect columns from a ColumnExpression (SELECT list item)
+fn collect_columns_from_column_expr(col_expr: &ast::ColumnExpression, columns: &mut HashSet<String>) {
+    match col_expr {
+        ast::ColumnExpression::Named { expression, .. } => {
+            collect_columns(expression, columns);
+        }
+        ast::ColumnExpression::Anonyomous(expression) => {
+            collect_columns(expression, columns);
+        }
+    }
+}
+
+// ============================================================================
+// Column Map Building
+// ============================================================================
+
+/// Result of building the column map
+#[derive(Debug, PartialEq)]
+struct ColumnMapping {
+    /// Indices of table columns to read (sorted)
+    scan_columns: Vec<usize>,
+    /// Maps column name → position in scan output
+    column_map: HashMap<String, usize>,
+}
+
+/// Build the column mapping from a set of column names and table schema
+///
+/// Returns the scan columns list and a map from column name to scan output position.
+fn build_column_mapping(
+    columns: &HashSet<String>,
+    table: &schema::Table,
+    table_name: &str,
+) -> Result<ColumnMapping, PlanError> {
+    // Resolve each column name to its table index
+    let mut table_indices: Vec<(String, usize)> = Vec::new();
+    for col_name in columns {
+        let idx = table.get_column_index(col_name).ok_or_else(|| {
+            PlanError::ColumnNotFound {
+                table: table_name.to_string(),
+                column: col_name.clone(),
+            }
+        })?;
+        table_indices.push((col_name.clone(), idx));
+    }
+
+    // Sort by table index to get consistent scan order
+    table_indices.sort_by_key(|(_, idx)| *idx);
+
+    // Build scan_columns and column_map
+    let mut scan_columns = Vec::new();
+    let mut column_map = HashMap::new();
+    for (scan_pos, (col_name, table_idx)) in table_indices.into_iter().enumerate() {
+        scan_columns.push(table_idx);
+        column_map.insert(col_name, scan_pos);
+    }
+
+    Ok(ColumnMapping {
+        scan_columns,
+        column_map,
+    })
 }
 
 fn convert_binary_op(op: &ast::BinaryOp) -> BinaryOp {
@@ -457,6 +673,193 @@ mod tests {
             right: Box::new(PlanExpr::Literal(Literal::Integer(21))),
         };
         assert_eq!(result, expected);
+    }
+
+    // ========================================================================
+    // Column Collection Tests
+    // ========================================================================
+
+    #[test]
+    fn test_collect_simple_column() {
+        let expr = ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()));
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["age".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_qualified_column() {
+        // users.name
+        let table_expr = Box::new(ast::Expression::Value(
+            ast::ScalarValue::Identifier("users".to_string())
+        ));
+        let expr = ast::Expression::Value(
+            ast::ScalarValue::MultiPartIdentifier(table_expr, "name".to_string())
+        );
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["name".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_literal_no_columns() {
+        let expr = ast::Expression::Value(ast::ScalarValue::IntegerNumber(42));
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert!(columns.is_empty());
+    }
+
+    #[test]
+    fn test_collect_binary_expr_columns() {
+        // age > 21
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::GreaterThan,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(21))),
+        };
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["age".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_multiple_columns() {
+        // name = age (contrived but tests collecting from both sides)
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Equals,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier("name".to_string()))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()))),
+        };
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["name".to_string(), "age".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_nested_columns() {
+        // (age + 1) > id
+        let age_plus_one = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Sum,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(1))),
+        };
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::GreaterThan,
+            lhs: Box::new(age_plus_one),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier("id".to_string()))),
+        };
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["age".to_string(), "id".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_from_column_expr_named() {
+        // SELECT age AS user_age
+        let col_expr = ast::ColumnExpression::Named {
+            name: "user_age".to_string(),
+            expression: Box::new(ast::Expression::Value(
+                ast::ScalarValue::Identifier("age".to_string())
+            )),
+        };
+        let mut columns = HashSet::new();
+        collect_columns_from_column_expr(&col_expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["age".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_from_column_expr_anonymous() {
+        // SELECT age + 1
+        let col_expr = ast::ColumnExpression::Anonyomous(Box::new(ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Sum,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(1))),
+        }));
+        let mut columns = HashSet::new();
+        collect_columns_from_column_expr(&col_expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["age".to_string()]));
+    }
+
+    // ========================================================================
+    // Column Mapping Tests
+    // ========================================================================
+
+    fn make_test_table() -> schema::Table {
+        schema::Table {
+            name: "users".to_string(),
+            columns: vec![
+                schema::Column { name: "id".to_string() },
+                schema::Column { name: "name".to_string() },
+                schema::Column { name: "age".to_string() },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_build_column_mapping_simple() {
+        let table = make_test_table();
+        let columns = HashSet::from(["id".to_string(), "name".to_string()]);
+
+        let mapping = build_column_mapping(&columns, &table, "users").unwrap();
+
+        // Scan should read columns [0, 1] (id, name) in table order
+        assert_eq!(mapping.scan_columns, vec![0, 1]);
+        // id is at scan position 0, name is at scan position 1
+        assert_eq!(mapping.column_map.get("id"), Some(&0));
+        assert_eq!(mapping.column_map.get("name"), Some(&1));
+    }
+
+    #[test]
+    fn test_build_column_mapping_reordered() {
+        let table = make_test_table();
+        // Request columns in different order than table schema
+        let columns = HashSet::from(["age".to_string(), "id".to_string()]);
+
+        let mapping = build_column_mapping(&columns, &table, "users").unwrap();
+
+        // Scan should read columns [0, 2] (id, age) in table order
+        assert_eq!(mapping.scan_columns, vec![0, 2]);
+        // id is at scan position 0, age is at scan position 1
+        assert_eq!(mapping.column_map.get("id"), Some(&0));
+        assert_eq!(mapping.column_map.get("age"), Some(&1));
+    }
+
+    #[test]
+    fn test_build_column_mapping_all_columns() {
+        let table = make_test_table();
+        let columns = HashSet::from([
+            "id".to_string(),
+            "name".to_string(),
+            "age".to_string(),
+        ]);
+
+        let mapping = build_column_mapping(&columns, &table, "users").unwrap();
+
+        assert_eq!(mapping.scan_columns, vec![0, 1, 2]);
+        assert_eq!(mapping.column_map.get("id"), Some(&0));
+        assert_eq!(mapping.column_map.get("name"), Some(&1));
+        assert_eq!(mapping.column_map.get("age"), Some(&2));
+    }
+
+    #[test]
+    fn test_build_column_mapping_column_not_found() {
+        let table = make_test_table();
+        let columns = HashSet::from(["nonexistent".to_string()]);
+
+        let result = build_column_mapping(&columns, &table, "users");
+
+        assert_eq!(result, Err(PlanError::ColumnNotFound {
+            table: "users".to_string(),
+            column: "nonexistent".to_string(),
+        }));
     }
 
     // ========================================================================
