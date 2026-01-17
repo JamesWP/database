@@ -2,13 +2,15 @@
 
 use super::{ast, lexer};
 
-struct ParserInput {
-    tokens: Vec<lexer::Token>,
-    curent: usize,
+// TODO: Create proper public parsing interface
+pub(crate) struct ParserInput {
+    pub(crate) tokens: Vec<lexer::Token>,
+    pub(crate) curent: usize,
 }
 
-struct Parser {
-    input: ParserInput,
+// TODO: Create proper public parsing interface
+pub(crate) struct Parser {
+    pub(crate) input: ParserInput,
 }
 
 #[derive(Debug)]
@@ -121,7 +123,7 @@ impl lexer::Type {
 
 /// Parser for statement types
 impl Parser {
-    fn parse_statement(&mut self) -> ParseResult<ast::Statement> {
+    pub(crate) fn parse_statement(&mut self) -> ParseResult<ast::Statement> {
         match self.input.peek() {
             lexer::Type::Select => Ok(ast::Statement::Select(self.parse_select_statement()?)),
             _ => todo!(),

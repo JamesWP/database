@@ -1,3 +1,3 @@
 pub(crate) mod ast;
-mod lexer;
-mod parser;
+pub(crate) mod lexer;
+pub(crate) mod parser;
