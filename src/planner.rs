@@ -1,162 +1,350 @@
+//! Query Planner - Logical Operator Tree (Option A)
+//!
+//! Converts AST to a tree of logical operators (LogicalPlan).
+//! The compiler (future) will convert LogicalPlan to bytecode.
 
-use crate::frontend::ast::{
-    ColumnExpression, ColumnReference, Expression, NamedTupleSource, Statement, TupleSource,
-};
+use crate::frontend::ast::Statement;
 
-pub fn get_expression(columns_expression: ColumnExpression) -> Expression {
-    match columns_expression {
-        ColumnExpression::Named { expression, .. } => *expression,
-        ColumnExpression::Anonyomous(expression) => *expression,
-    }
+// ============================================================================
+// Operators
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnaryOp {
+    Plus,
+    Negate,
+    Not,
 }
 
-pub fn plan(statement: Statement, schema: &schema::Schema) -> Node {
-    match statement {
-        Statement::Select(select) => {
-            let expressions: Vec<Expression> =
-                select.columns.into_iter().map(get_expression).collect();
-            let column_references: Vec<ColumnReference> = expressions
-                .iter()
-                .map(|e| e.get_column_references())
-                .flatten()
-                .collect();
+#[derive(Debug, Clone, PartialEq)]
+pub enum BinaryOp {
+    // Arithmetic
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
 
-            let source = match select.from {
-                NamedTupleSource::Named { source, .. } => match source {
-                    TupleSource::Table(name, ..) => {
-                        let columns_from_this_table = column_references
-                            .iter()
-                            .filter(|c| c.table == name)
-                            .collect();
-                        let columns = schema
-                            .get_table(&name)
-                            .get_column_indexes(columns_from_this_table);
+    // Comparison
+    Equals,
+    NotEquals,
+    GreaterThan,
+    GreaterThanOrEqual,
+    LessThan,
+    LessThanOrEqual,
 
-                        Box::new(Node::TableScan(TableScanNode { name, columns }))
-                    }
-                    _ => todo!(),
-                },
-                _ => todo!(),
-            };
-
-            Node::Select(SelectNode {
-                touple_source: source,
-                columns: expressions,
-            })
-        }
-    }
+    // Logical
+    And,
+    Or,
 }
 
-#[derive(Debug)]
-pub struct TableScanNode {
-    name: String,        // Name of table to read from
-    columns: Vec<usize>, // Columns indexes to produce
+// ============================================================================
+// Plan Types
+// ============================================================================
+
+/// Reference to a column from an input node
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColumnRef {
+    /// Column from a single-input node (Filter, Project, etc.)
+    /// column_idx is the index into the input node's output columns
+    Single { column_idx: usize },
+
+    // Future: Multi { node_idx: usize, column_idx: usize } for JOINs
 }
 
-#[derive(Debug)]
-pub struct SelectNode {
-    touple_source: Box<Node>,
-    columns: Vec<Expression>,
+/// Literal values in expressions
+#[derive(Debug, Clone, PartialEq)]
+pub enum Literal {
+    Integer(i64),
+    Float(f64),
+    String(String),
+    Bool(bool),
+    Null,
 }
 
-#[derive(Debug)]
-pub enum Node {
-    TableScan(TableScanNode),
-    Select(SelectNode),
+/// Planner's expression type - like ast::Expression but with resolved columns
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanExpr {
+    ColumnRef(ColumnRef),
+    Literal(Literal),
+    BinaryOp {
+        op: BinaryOp,
+        left: Box<PlanExpr>,
+        right: Box<PlanExpr>,
+    },
+    UnaryOp {
+        op: UnaryOp,
+        operand: Box<PlanExpr>,
+    },
 }
 
-mod schema {
-    use crate::frontend::ast::ColumnReference;
+/// Logical plan nodes - relational algebra operators
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogicalPlan {
+    /// Scan rows from a table (leaf node, no inputs)
+    /// columns: indices of columns to read from the table schema
+    Scan { table: String, columns: Vec<usize> },
 
+    /// Filter rows based on a predicate (1 input)
+    /// Pass-through: outputs all columns from its child unchanged.
+    /// Only rows where predicate evaluates to true are emitted.
+    Filter {
+        input: Box<LogicalPlan>,
+        predicate: PlanExpr,
+    },
+
+    /// Project specific columns/expressions (1 input)
+    /// Transforms output: produces exactly the columns specified.
+    /// ColumnRefs in expressions refer to positions in the child's output.
+    Project {
+        input: Box<LogicalPlan>,
+        columns: Vec<PlanExpr>,
+    },
+
+    /// Limit output rows (1 input)
+    /// Pass-through: outputs all columns from its child unchanged.
+    /// Only emits up to `count` rows.
+    Limit {
+        input: Box<LogicalPlan>,
+        count: u64,
+    },
+
+    // Future: Join { left: Box<LogicalPlan>, right: Box<LogicalPlan>, ... }
+}
+
+// ============================================================================
+// Schema (for column resolution)
+// ============================================================================
+
+pub mod schema {
+    #[derive(Debug, Clone)]
     pub struct Schema {
-        pub(crate) tables: Vec<Table>,
+        pub tables: Vec<Table>,
     }
 
+    #[derive(Debug, Clone)]
     pub struct Table {
-        pub(crate) name: String,
-        pub(crate) columns: Vec<Column>,
+        pub name: String,
+        pub columns: Vec<Column>,
     }
 
+    #[derive(Debug, Clone)]
     pub struct Column {
-        pub(crate) name: String,
+        pub name: String,
+        // Future: pub data_type: DataType,
     }
 
     impl Schema {
-        pub fn get_table(&self, name: &str) -> &Table {
-            self.tables.iter().find(|t| t.name == name).unwrap()
+        pub fn get_table(&self, name: &str) -> Option<&Table> {
+            self.tables.iter().find(|t| t.name == name)
         }
     }
 
     impl Table {
-        pub fn get_column_indexes(&self, columns: Vec<&ColumnReference>) -> Vec<usize> {
-            columns
-                .iter()
-                .map(|c| {
-                    self.columns
-                        .iter()
-                        .position(|c2| c2.name == c.name)
-                        .unwrap()
-                })
-                .collect()
+        pub fn get_column_index(&self, name: &str) -> Option<usize> {
+            self.columns.iter().position(|c| c.name == name)
         }
     }
 }
 
-#[cfg(test)]
-mod test {
-    use crate::frontend::ast::{
-        ColumnExpression, Expression, NamedTupleSource, ScalarValue, SelectStatement, Statement,
-        TupleSource,
-    };
-    use crate::planner::{
-        plan,
-        schema::{Column, Schema, Table},
-    };
+// ============================================================================
+// Planning
+// ============================================================================
 
-    #[test]
-    fn test_simple_plan() {
-        let schema = Schema {
-            tables: vec![Table {
-                name: "test".to_string(),
+/// Convert an AST Statement to a LogicalPlan
+pub fn plan(statement: Statement, schema: &schema::Schema) -> Result<LogicalPlan, PlanError> {
+    todo!()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanError {
+    TableNotFound(String),
+    ColumnNotFound { table: String, column: String },
+    UnsupportedStatement,
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frontend::lexer::lex;
+    use crate::frontend::parser::{Parser, ParserInput};
+
+    fn make_users_schema() -> schema::Schema {
+        schema::Schema {
+            tables: vec![schema::Table {
+                name: "users".to_string(),
                 columns: vec![
-                    Column {
-                        name: "a".to_string(),
+                    schema::Column {
+                        name: "id".to_string(),
                     },
-                    Column {
-                        name: "b".to_string(),
+                    schema::Column {
+                        name: "name".to_string(),
                     },
-                    Column {
-                        name: "c".to_string(),
+                    schema::Column {
+                        name: "age".to_string(),
                     },
                 ],
             }],
+        }
+    }
+
+    // TODO: Replace with proper public parsing interface
+    fn parse(sql: &str) -> Statement {
+        let tokens = lex(sql);
+        let mut parser = Parser {
+            input: ParserInput {
+                tokens,
+                curent: 0,
+            },
+        };
+        parser.parse_statement().expect("Failed to parse SQL")
+    }
+
+    /// Example 1: Simple SELECT
+    /// SELECT id, name FROM users
+    ///
+    /// Expected LogicalPlan:
+    /// Project { columns: [ColumnRef(0), ColumnRef(1)] }
+    ///   └─ Scan { table: "users", columns: [0, 1] }
+    #[test]
+    fn test_simple_select() {
+        let schema = make_users_schema();
+        let stmt = parse("SELECT id, name FROM users");
+
+        let plan = plan(stmt, &schema).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                table: "users".to_string(),
+                columns: vec![0, 1], // id, name
+            }),
+            columns: vec![
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
+            ],
         };
 
-        let statement = Statement::Select(SelectStatement {
+        assert_eq!(plan, expected);
+    }
+
+    /// Example 2: SELECT with WHERE
+    /// SELECT name FROM users WHERE age > 21
+    ///
+    /// Expected LogicalPlan:
+    /// Project { columns: [ColumnRef(0)] }   // name (position 0 in scan output)
+    ///   └─ Filter { predicate: ColumnRef(1) > 21 }   // age (position 1 in scan output)
+    ///        └─ Scan { table: "users", columns: [1, 2] }   // name, age
+    #[test]
+    fn test_select_with_where() {
+        let schema = make_users_schema();
+        let stmt = parse("SELECT name FROM users WHERE age > 21");
+
+        let plan = plan(stmt, &schema).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Filter {
+                input: Box::new(LogicalPlan::Scan {
+                    table: "users".to_string(),
+                    columns: vec![1, 2], // name, age
+                }),
+                predicate: PlanExpr::BinaryOp {
+                    op: BinaryOp::GreaterThan,
+                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })), // age
+                    right: Box::new(PlanExpr::Literal(Literal::Integer(21))),
+                },
+            }),
+            columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })], // name
+        };
+
+        assert_eq!(plan, expected);
+    }
+
+    /// Example 3: SELECT with LIMIT
+    /// SELECT name FROM users LIMIT 10
+    ///
+    /// Expected LogicalPlan:
+    /// Limit { count: 10 }
+    ///   └─ Project { columns: [ColumnRef(0)] }
+    ///        └─ Scan { table: "users", columns: [1] }
+    #[test]
+    fn test_select_with_limit() {
+        let schema = make_users_schema();
+        let stmt = parse("SELECT name FROM users LIMIT 10");
+
+        let plan = plan(stmt, &schema).expect("Planning failed");
+
+        let expected = LogicalPlan::Limit {
+            input: Box::new(LogicalPlan::Project {
+                input: Box::new(LogicalPlan::Scan {
+                    table: "users".to_string(),
+                    columns: vec![1], // name
+                }),
+                columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })],
+            }),
+            count: 10,
+        };
+
+        assert_eq!(plan, expected);
+    }
+
+    /// SELECT * should expand to all columns
+    /// Scan { columns: [0, 1, 2] } reads all columns
+    /// Project outputs them in order
+    #[test]
+    #[ignore = "parser does not yet support SELECT *"]
+    fn test_select_star() {
+        let schema = make_users_schema();
+        let stmt = parse("SELECT * FROM users");
+
+        let plan = plan(stmt, &schema).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                table: "users".to_string(),
+                columns: vec![0, 1, 2], // all columns
+            }),
             columns: vec![
-                ColumnExpression::Named {
-                    expression: Box::new(Expression::Value(ScalarValue::Identifier(
-                        "a".to_string(),
-                    ))),
-                    name: "a".to_string(),
-                },
-                ColumnExpression::Named {
-                    expression: Box::new(Expression::Value(ScalarValue::Identifier(
-                        "b".to_string(),
-                    ))),
-                    name: "b".to_string(),
-                },
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
             ],
-            from: NamedTupleSource::Named {
-                alias: "test".to_string(),
-                source: TupleSource::Table("test".to_string()),
-            },
-            filter: None,
-            limit: None,
-        });
+        };
 
-        let p = plan(statement, &schema);
+        assert_eq!(plan, expected);
+    }
 
-        println!("Plan: {:?}", p);
+    /// Error case: table not found
+    #[test]
+    fn test_table_not_found() {
+        let schema = make_users_schema();
+        let stmt = parse("SELECT id FROM nonexistent");
+
+        let result = plan(stmt, &schema);
+
+        assert_eq!(
+            result,
+            Err(PlanError::TableNotFound("nonexistent".to_string()))
+        );
+    }
+
+    /// Error case: column not found
+    #[test]
+    fn test_column_not_found() {
+        let schema = make_users_schema();
+        let stmt = parse("SELECT nonexistent FROM users");
+
+        let result = plan(stmt, &schema);
+
+        assert_eq!(
+            result,
+            Err(PlanError::ColumnNotFound {
+                table: "users".to_string(),
+                column: "nonexistent".to_string(),
+            })
+        );
     }
 }

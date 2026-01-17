@@ -95,7 +95,7 @@ pub fn lex(input: &str) -> Vec<Token> {
     l.lex()
 }
 
-struct Lexer<'a> {
+pub(crate) struct Lexer<'a> {
     input: PeekMoreIterator<Chars<'a>>,
 
     // Current position in the input
