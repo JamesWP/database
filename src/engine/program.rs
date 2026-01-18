@@ -3,6 +3,41 @@ use super::scalarvalue::ScalarValue;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reg(usize);
 
+/// A label represents a position in bytecode that can be used as a jump target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Label(pub usize);
+
+/// Represents a jump target that may or may not be resolved yet.
+#[derive(Clone, Debug)]
+pub enum JumpTarget {
+    /// Jump target is not yet known (forward reference)
+    Unresolved(Label),
+    /// Jump target has been resolved to a concrete address
+    Resolved(usize),
+}
+
+impl JumpTarget {
+    /// Create a resolved jump target from a raw address.
+    pub fn addr(address: usize) -> Self {
+        JumpTarget::Resolved(address)
+    }
+
+    /// Create an unresolved jump target from a label.
+    pub fn label(label: Label) -> Self {
+        JumpTarget::Unresolved(label)
+    }
+
+    /// Get the resolved address, panicking if unresolved.
+    pub fn unwrap_resolved(&self) -> usize {
+        match self {
+            JumpTarget::Resolved(addr) => *addr,
+            JumpTarget::Unresolved(label) => {
+                panic!("Jump target for label {:?} was never resolved", label)
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum MoveOperation {
     First,
@@ -40,9 +75,9 @@ pub enum Operation {
 
     // Control Flow
     Yield(Vec<Reg>),
-    GoTo(usize),
-    GoToIfEqualValue(usize, Reg, Reg),
-    GoToIfFalse(usize, Reg, Reg),
+    GoTo(JumpTarget),
+    GoToIfEqualValue(JumpTarget, Reg, Reg),
+    GoToIfFalse(JumpTarget, Reg),
     Halt,
 }
 
