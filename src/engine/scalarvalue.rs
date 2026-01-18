@@ -45,6 +45,7 @@ macro_rules! numeric_ops {
 }
 
 numeric_ops!(core::ops::Mul, mul);
+numeric_ops!(core::ops::Sub, sub);
 
 impl core::ops::Add for ScalarValue {
     type Output = ScalarValue;

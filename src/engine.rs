@@ -70,6 +70,13 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            SubtractValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap().clone();
+                let rhs = self.registers.get(rhs).scalar().unwrap().clone();
+                let value = RegisterValue::ScalarValue(lhs - rhs);
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
             MultiplyValue(dest, lhs, rhs) => {
                 let lhs = self.registers.get(lhs).scalar().unwrap().clone();
                 let rhs = self.registers.get(rhs).scalar().unwrap().clone();
@@ -364,6 +371,42 @@ mod test {
         assert_eq!(harness.num_yields(), 1);
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(a_expected));
         assert_eq!(harness.value(0, 1), ScalarValue::Integer(b_expected));
+    }
+
+    #[test]
+    fn test_subtract() {
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+        let r4 = Reg::new(4);
+        let r5 = Reg::new(5);
+        let r6 = Reg::new(6);
+
+        let mut harness = TestHarness::new(
+            &[
+                // Integer subtraction: 100 - 42 = 58
+                Operation::StoreValue(r0, ScalarValue::Integer(100)),
+                Operation::StoreValue(r1, ScalarValue::Integer(42)),
+                Operation::SubtractValue(r2, r0, r1),
+                // Float subtraction: 10.5 - 3.5 = 7.0
+                Operation::StoreValue(r3, ScalarValue::Floating(10.5)),
+                Operation::StoreValue(r4, ScalarValue::Floating(3.5)),
+                Operation::SubtractValue(r5, r3, r4),
+                // Mixed: integer - float (100 - 0.5 = 99.5)
+                Operation::SubtractValue(r6, r0, r4),
+                Operation::Yield(vec![r2, r5, r6]),
+                Operation::Halt,
+            ],
+            7,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(58));
+        assert_eq!(harness.value(0, 1), ScalarValue::Floating(7.0));
+        assert_eq!(harness.value(0, 2), ScalarValue::Floating(96.5));
     }
 
     #[test]

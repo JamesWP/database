@@ -16,6 +16,7 @@ pub enum Operation {
     StoreValue(Reg, ScalarValue),
     IncrementValue(Reg),          // Reg = Reg + 1
     AddValue(Reg, Reg, Reg),      // Reg = Reg + Reg
+    SubtractValue(Reg, Reg, Reg), // Reg = Reg - Reg
     MultiplyValue(Reg, Reg, Reg), // Reg = Reg * Reg
     LessThanValue(Reg, Reg, Reg), // Reg = Reg < Reg
 
