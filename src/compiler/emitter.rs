@@ -1,29 +1,15 @@
-use crate::engine::program::{Operation, Reg};
-
-/// A label represents a position in the bytecode that can be used as a jump target.
-/// Labels may be created before their position is known (forward references).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Label(usize);
-
-/// Tracks a forward reference that needs to be patched when finalized.
-#[derive(Debug)]
-struct ForwardRef {
-    /// Index of the instruction containing the forward reference
-    instruction_index: usize,
-    /// The label being referenced
-    label: Label,
-}
+use crate::engine::program::{JumpTarget, Label, Operation, Reg};
 
 /// BytecodeEmitter collects bytecode instructions and handles label-based jumps.
-/// It supports forward references through a two-phase approach:
-/// 1. Emit instructions with placeholder addresses for unbound labels
-/// 2. Patch all forward references when finalize() is called
+/// Jump targets are represented using the JumpTarget enum which can be either
+/// Unresolved(Label) or Resolved(usize). During finalization, all unresolved
+/// labels are resolved to concrete addresses.
 pub struct BytecodeEmitter {
     operations: Vec<Operation>,
     /// Maps label IDs to their bound positions (None if not yet bound)
     label_positions: Vec<Option<usize>>,
-    /// Forward references that need patching
-    forward_refs: Vec<ForwardRef>,
+    /// Counter for generating unique label IDs
+    next_label_id: usize,
 }
 
 impl BytecodeEmitter {
@@ -31,13 +17,14 @@ impl BytecodeEmitter {
         BytecodeEmitter {
             operations: Vec::new(),
             label_positions: Vec::new(),
-            forward_refs: Vec::new(),
+            next_label_id: 0,
         }
     }
 
     /// Create a new label that can be bound later.
     pub fn create_label(&mut self) -> Label {
-        let id = self.label_positions.len();
+        let id = self.next_label_id;
+        self.next_label_id += 1;
         self.label_positions.push(None);
         Label(id)
     }
@@ -57,6 +44,16 @@ impl BytecodeEmitter {
         self.operations.len()
     }
 
+    /// Resolve a label to a JumpTarget.
+    /// If the label is already bound, returns Resolved; otherwise Unresolved.
+    fn resolve_label(&self, label: Label) -> JumpTarget {
+        let Label(id) = label;
+        match self.label_positions.get(id).and_then(|pos| *pos) {
+            Some(addr) => JumpTarget::Resolved(addr),
+            None => JumpTarget::Unresolved(label),
+        }
+    }
+
     /// Emit an operation at the current position.
     pub fn emit(&mut self, op: Operation) {
         self.operations.push(op);
@@ -64,72 +61,56 @@ impl BytecodeEmitter {
 
     /// Emit a GoTo instruction to the given label.
     pub fn emit_goto(&mut self, label: Label) {
-        let Label(id) = label;
-        let target = match self.label_positions[id] {
-            Some(pos) => pos,
-            None => {
-                // Forward reference: use placeholder and record for patching
-                self.forward_refs.push(ForwardRef {
-                    instruction_index: self.operations.len(),
-                    label,
-                });
-                0 // placeholder
-            }
-        };
+        let target = self.resolve_label(label);
         self.operations.push(Operation::GoTo(target));
     }
 
     /// Emit a GoToIfFalse instruction: jump to label if register is false.
     pub fn emit_goto_if_false(&mut self, label: Label, reg: Reg) {
-        let Label(id) = label;
-        let target = match self.label_positions[id] {
-            Some(pos) => pos,
-            None => {
-                self.forward_refs.push(ForwardRef {
-                    instruction_index: self.operations.len(),
-                    label,
-                });
-                0 // placeholder
-            }
-        };
-        // Note: The third reg is unused in the current VM implementation
-        self.operations.push(Operation::GoToIfFalse(target, reg, reg));
+        let target = self.resolve_label(label);
+        self.operations.push(Operation::GoToIfFalse(target, reg));
     }
 
     /// Emit a GoToIfEqualValue instruction: jump to label if lhs == rhs.
     pub fn emit_goto_if_equal(&mut self, label: Label, lhs: Reg, rhs: Reg) {
-        let Label(id) = label;
-        let target = match self.label_positions[id] {
-            Some(pos) => pos,
-            None => {
-                self.forward_refs.push(ForwardRef {
-                    instruction_index: self.operations.len(),
-                    label,
-                });
-                0 // placeholder
-            }
-        };
+        let target = self.resolve_label(label);
         self.operations.push(Operation::GoToIfEqualValue(target, lhs, rhs));
     }
 
-    /// Finalize the bytecode by patching all forward references.
+    /// Finalize the bytecode by resolving all jump targets.
     /// Returns the final list of operations.
+    /// Panics if any label was never bound.
     pub fn finalize(mut self) -> Vec<Operation> {
-        for fwd_ref in &self.forward_refs {
-            let Label(id) = fwd_ref.label;
-            let target = self.label_positions[id]
-                .expect("Label was never bound");
+        let label_positions = &self.label_positions;
 
-            // Patch the instruction
-            let op = &mut self.operations[fwd_ref.instruction_index];
+        // Resolve all unresolved jump targets
+        for op in &mut self.operations {
             match op {
-                Operation::GoTo(ref mut addr) => *addr = target,
-                Operation::GoToIfFalse(ref mut addr, _, _) => *addr = target,
-                Operation::GoToIfEqualValue(ref mut addr, _, _) => *addr = target,
-                _ => panic!("Unexpected operation type in forward reference"),
+                Operation::GoTo(ref mut target) => {
+                    *target = resolve_target(target, label_positions);
+                }
+                Operation::GoToIfFalse(ref mut target, _) => {
+                    *target = resolve_target(target, label_positions);
+                }
+                Operation::GoToIfEqualValue(ref mut target, _, _) => {
+                    *target = resolve_target(target, label_positions);
+                }
+                _ => {}
             }
         }
         self.operations
+    }
+}
+
+/// Resolve a JumpTarget, converting Unresolved to Resolved.
+fn resolve_target(target: &JumpTarget, label_positions: &[Option<usize>]) -> JumpTarget {
+    match target {
+        JumpTarget::Resolved(addr) => JumpTarget::Resolved(*addr),
+        JumpTarget::Unresolved(Label(id)) => {
+            let addr = label_positions[*id]
+                .expect("Label was never bound");
+            JumpTarget::Resolved(addr)
+        }
     }
 }
 
@@ -169,7 +150,7 @@ mod tests {
         let ops = emitter.finalize();
         assert_eq!(ops.len(), 2);
         match &ops[1] {
-            Operation::GoTo(addr) => assert_eq!(*addr, 0),
+            Operation::GoTo(target) => assert_eq!(target.unwrap_resolved(), 0),
             _ => panic!("Expected GoTo"),
         }
     }
@@ -191,7 +172,7 @@ mod tests {
         let ops = emitter.finalize();
         assert_eq!(ops.len(), 3);
         match &ops[0] {
-            Operation::GoTo(addr) => assert_eq!(*addr, 2), // Should point to Halt
+            Operation::GoTo(target) => assert_eq!(target.unwrap_resolved(), 2), // Should point to Halt
             _ => panic!("Expected GoTo"),
         }
     }
@@ -213,7 +194,7 @@ mod tests {
         let ops = emitter.finalize();
         assert_eq!(ops.len(), 4);
         match &ops[1] {
-            Operation::GoToIfFalse(addr, _, _) => assert_eq!(*addr, 3),
+            Operation::GoToIfFalse(target, _) => assert_eq!(target.unwrap_resolved(), 3),
             _ => panic!("Expected GoToIfFalse"),
         }
     }
@@ -237,11 +218,11 @@ mod tests {
         assert_eq!(ops.len(), 5);
 
         match &ops[0] {
-            Operation::GoTo(addr) => assert_eq!(*addr, 4),
+            Operation::GoTo(target) => assert_eq!(target.unwrap_resolved(), 4),
             _ => panic!("Expected GoTo"),
         }
         match &ops[2] {
-            Operation::GoTo(addr) => assert_eq!(*addr, 4),
+            Operation::GoTo(target) => assert_eq!(target.unwrap_resolved(), 4),
             _ => panic!("Expected GoTo"),
         }
     }

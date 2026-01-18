@@ -6,9 +6,9 @@ use self::{
     scalarvalue::ScalarValue,
 };
 
-mod program;
+pub mod program;
 mod registers;
-mod scalarvalue;
+pub mod scalarvalue;
 
 type StepResult = std::result::Result<StepSuccess, EngineError>;
 

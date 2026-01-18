@@ -6,6 +6,7 @@ use std::{
 
 use rand::Rng;
 
+mod compiler;
 mod engine;
 mod frontend;
 mod planner;
