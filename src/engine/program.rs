@@ -29,6 +29,8 @@ pub enum Operation {
     AndValue(Reg, Reg, Reg),             // Reg = Reg && Reg
     OrValue(Reg, Reg, Reg),              // Reg = Reg || Reg
     NotValue(Reg, Reg),                  // Reg = !Reg
+    NegateValue(Reg, Reg),               // Reg = -Reg (arithmetic negation)
+    CopyValue(Reg, Reg),                 // Reg = Reg (copy value)
 
     // Db
     Open(Reg, String),
