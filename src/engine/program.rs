@@ -26,6 +26,9 @@ pub enum Operation {
     GreaterThanOrEqualValue(Reg, Reg, Reg), // Reg = Reg >= Reg
     EqualsValue(Reg, Reg, Reg),          // Reg = Reg == Reg
     NotEqualsValue(Reg, Reg, Reg),       // Reg = Reg != Reg
+    AndValue(Reg, Reg, Reg),             // Reg = Reg && Reg
+    OrValue(Reg, Reg, Reg),              // Reg = Reg || Reg
+    NotValue(Reg, Reg),                  // Reg = !Reg
 
     // Db
     Open(Reg, String),
