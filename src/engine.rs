@@ -172,22 +172,22 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
-            GoTo(index) => {
-                self.program.set_next_operation_index(index);
+            GoTo(target) => {
+                self.program.set_next_operation_index(target.unwrap_resolved());
             }
-            GoToIfEqualValue(index, lhs, rhs) => {
+            GoToIfEqualValue(target, lhs, rhs) => {
                 let lhs = self.registers.get(lhs).scalar().unwrap();
                 let rhs = self.registers.get(rhs).scalar().unwrap();
                 if *lhs == *rhs {
-                    self.program.set_next_operation_index(index);
+                    self.program.set_next_operation_index(target.unwrap_resolved());
                 } else {
                     // branch not taken
                 }
             }
-            GoToIfFalse(index, reg, _) => {
+            GoToIfFalse(target, reg) => {
                 let reg = self.registers.get(reg).boolean().unwrap();
                 if !reg {
-                    self.program.set_next_operation_index(index);
+                    self.program.set_next_operation_index(target.unwrap_resolved());
                 } else {
                     // branch not taken
                 }
@@ -260,7 +260,7 @@ impl Engine {
 mod test {
     use crate::{
         engine::{
-            program::{MoveOperation, Operation, ProgramCode},
+            program::{JumpTarget, MoveOperation, Operation, ProgramCode},
             scalarvalue::ScalarValue, StepSuccess,
         },
         storage::BTree,
@@ -380,7 +380,7 @@ mod test {
         let mut harness = TestHarness::new(
             &[
                 Operation::StoreValue(r0, ScalarValue::Integer(1)),
-                Operation::GoTo(3),
+                Operation::GoTo(JumpTarget::addr(3)),
                 Operation::IncrementValue(r0),
                 Operation::Yield(vec![r0]),
                 Operation::Halt,
@@ -404,8 +404,8 @@ mod test {
                 Operation::StoreValue(r0, ScalarValue::Integer(1)),
                 Operation::StoreValue(r1, ScalarValue::Integer(10)),
                 Operation::IncrementValue(r0),
-                Operation::GoToIfEqualValue(5, r0, r1),
-                Operation::GoTo(2),
+                Operation::GoToIfEqualValue(JumpTarget::addr(5), r0, r1),
+                Operation::GoTo(JumpTarget::addr(2)),
                 Operation::Yield(vec![r0]),
                 Operation::Halt,
             ],
@@ -793,11 +793,11 @@ mod test {
                 Operation::Open(r0, "test".to_string()),
                 Operation::MoveCursor(r0, MoveOperation::First),
                 Operation::CanReadCursor(r1, r0),  // Next
-                Operation::GoToIfFalse(8, r1, r0), // Goto End
+                Operation::GoToIfFalse(JumpTarget::addr(8), r1), // Goto End
                 Operation::ReadCursor(vec![r2, r3], r0),
                 Operation::Yield(vec![r2, r3]),
                 Operation::MoveCursor(r0, MoveOperation::Next),
-                Operation::GoTo(2), // Goto Next
+                Operation::GoTo(JumpTarget::addr(2)), // Goto Next
                 Operation::Halt,    // End
             ],
             4,
