@@ -140,6 +140,26 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            AndValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).boolean().unwrap();
+                let rhs = self.registers.get(rhs).boolean().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(lhs && rhs));
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
+            OrValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).boolean().unwrap();
+                let rhs = self.registers.get(rhs).boolean().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(lhs || rhs));
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
+            NotValue(dest, src) => {
+                let src = self.registers.get(src).boolean().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(!src));
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
             GoTo(index) => {
                 self.program.set_next_operation_index(index);
             }
@@ -570,6 +590,56 @@ mod test {
         assert_eq!(harness.value(0, 4), ScalarValue::Boolean(true));  // 5 == 5
         assert_eq!(harness.value(0, 5), ScalarValue::Boolean(true));  // 5 != 10
         assert_eq!(harness.value(0, 6), ScalarValue::Boolean(false)); // 5 == 10
+    }
+
+    #[test]
+    fn test_logical_operations() {
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+        let r4 = Reg::new(4);
+        let r5 = Reg::new(5);
+        let r6 = Reg::new(6);
+        let r7 = Reg::new(7);
+        let r8 = Reg::new(8);
+        let r9 = Reg::new(9);
+
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(r0, ScalarValue::Boolean(true)),
+                Operation::StoreValue(r1, ScalarValue::Boolean(false)),
+                // AND truth table
+                Operation::AndValue(r2, r0, r0), // true && true = true
+                Operation::AndValue(r3, r0, r1), // true && false = false
+                Operation::AndValue(r4, r1, r0), // false && true = false
+                Operation::AndValue(r5, r1, r1), // false && false = false
+                // OR truth table
+                Operation::OrValue(r6, r0, r1),  // true || false = true
+                Operation::OrValue(r7, r1, r1),  // false || false = false
+                // NOT
+                Operation::NotValue(r8, r0),    // !true = false
+                Operation::NotValue(r9, r1),    // !false = true
+                Operation::Yield(vec![r2, r3, r4, r5, r6, r7, r8, r9]),
+                Operation::Halt,
+            ],
+            10,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        // AND
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));  // T && T
+        assert_eq!(harness.value(0, 1), ScalarValue::Boolean(false)); // T && F
+        assert_eq!(harness.value(0, 2), ScalarValue::Boolean(false)); // F && T
+        assert_eq!(harness.value(0, 3), ScalarValue::Boolean(false)); // F && F
+        // OR
+        assert_eq!(harness.value(0, 4), ScalarValue::Boolean(true));  // T || F
+        assert_eq!(harness.value(0, 5), ScalarValue::Boolean(false)); // F || F
+        // NOT
+        assert_eq!(harness.value(0, 6), ScalarValue::Boolean(false)); // !T
+        assert_eq!(harness.value(0, 7), ScalarValue::Boolean(true));  // !F
     }
 
     #[test]
