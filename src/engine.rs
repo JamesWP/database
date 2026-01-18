@@ -105,6 +105,41 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            LessThanOrEqualValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap();
+                let rhs = self.registers.get(rhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(*lhs <= *rhs));
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
+            GreaterThanValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap();
+                let rhs = self.registers.get(rhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(*lhs > *rhs));
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
+            GreaterThanOrEqualValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap();
+                let rhs = self.registers.get(rhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(*lhs >= *rhs));
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
+            EqualsValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap();
+                let rhs = self.registers.get(rhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(*lhs == *rhs));
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
+            NotEqualsValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap();
+                let rhs = self.registers.get(rhs).scalar().unwrap();
+                let value = RegisterValue::ScalarValue(ScalarValue::Boolean(*lhs != *rhs));
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
             GoTo(index) => {
                 self.program.set_next_operation_index(index);
             }
@@ -485,6 +520,56 @@ mod test {
         assert_eq!(harness.num_yields(), 1);
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(1));
         assert_eq!(harness.value(0, 1), ScalarValue::Floating(1.5));
+    }
+
+    #[test]
+    fn test_comparison_operations() {
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+        let r4 = Reg::new(4);
+        let r5 = Reg::new(5);
+        let r6 = Reg::new(6);
+        let r7 = Reg::new(7);
+        let r8 = Reg::new(8);
+        let r9 = Reg::new(9);
+
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(r0, ScalarValue::Integer(5)),
+                Operation::StoreValue(r1, ScalarValue::Integer(10)),
+                Operation::StoreValue(r2, ScalarValue::Integer(5)),
+                // 5 < 10 = true
+                Operation::LessThanValue(r3, r0, r1),
+                // 5 <= 5 = true
+                Operation::LessThanOrEqualValue(r4, r0, r2),
+                // 10 > 5 = true
+                Operation::GreaterThanValue(r5, r1, r0),
+                // 5 >= 5 = true
+                Operation::GreaterThanOrEqualValue(r6, r0, r2),
+                // 5 == 5 = true
+                Operation::EqualsValue(r7, r0, r2),
+                // 5 != 10 = true
+                Operation::NotEqualsValue(r8, r0, r1),
+                // 5 == 10 = false
+                Operation::EqualsValue(r9, r0, r1),
+                Operation::Yield(vec![r3, r4, r5, r6, r7, r8, r9]),
+                Operation::Halt,
+            ],
+            10,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));  // 5 < 10
+        assert_eq!(harness.value(0, 1), ScalarValue::Boolean(true));  // 5 <= 5
+        assert_eq!(harness.value(0, 2), ScalarValue::Boolean(true));  // 10 > 5
+        assert_eq!(harness.value(0, 3), ScalarValue::Boolean(true));  // 5 >= 5
+        assert_eq!(harness.value(0, 4), ScalarValue::Boolean(true));  // 5 == 5
+        assert_eq!(harness.value(0, 5), ScalarValue::Boolean(true));  // 5 != 10
+        assert_eq!(harness.value(0, 6), ScalarValue::Boolean(false)); // 5 == 10
     }
 
     #[test]
