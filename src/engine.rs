@@ -84,6 +84,20 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            DivideValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap().clone();
+                let rhs = self.registers.get(rhs).scalar().unwrap().clone();
+                let value = RegisterValue::ScalarValue(lhs / rhs);
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
+            RemainderValue(dest, lhs, rhs) => {
+                let lhs = self.registers.get(lhs).scalar().unwrap().clone();
+                let rhs = self.registers.get(rhs).scalar().unwrap().clone();
+                let value = RegisterValue::ScalarValue(lhs % rhs);
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
             LessThanValue(dest, lhs, rhs) => {
                 let lhs = self.registers.get(lhs).scalar().unwrap();
                 let rhs = self.registers.get(rhs).scalar().unwrap();
@@ -407,6 +421,70 @@ mod test {
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(58));
         assert_eq!(harness.value(0, 1), ScalarValue::Floating(7.0));
         assert_eq!(harness.value(0, 2), ScalarValue::Floating(96.5));
+    }
+
+    #[test]
+    fn test_divide() {
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+        let r4 = Reg::new(4);
+        let r5 = Reg::new(5);
+
+        let mut harness = TestHarness::new(
+            &[
+                // Integer division: 100 / 3 = 33 (truncated)
+                Operation::StoreValue(r0, ScalarValue::Integer(100)),
+                Operation::StoreValue(r1, ScalarValue::Integer(3)),
+                Operation::DivideValue(r2, r0, r1),
+                // Float division: 10.0 / 4.0 = 2.5
+                Operation::StoreValue(r3, ScalarValue::Floating(10.0)),
+                Operation::StoreValue(r4, ScalarValue::Floating(4.0)),
+                Operation::DivideValue(r5, r3, r4),
+                Operation::Yield(vec![r2, r5]),
+                Operation::Halt,
+            ],
+            6,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(33));
+        assert_eq!(harness.value(0, 1), ScalarValue::Floating(2.5));
+    }
+
+    #[test]
+    fn test_remainder() {
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+        let r4 = Reg::new(4);
+        let r5 = Reg::new(5);
+
+        let mut harness = TestHarness::new(
+            &[
+                // Integer remainder: 100 % 3 = 1
+                Operation::StoreValue(r0, ScalarValue::Integer(100)),
+                Operation::StoreValue(r1, ScalarValue::Integer(3)),
+                Operation::RemainderValue(r2, r0, r1),
+                // Float remainder: 10.5 % 3.0 = 1.5
+                Operation::StoreValue(r3, ScalarValue::Floating(10.5)),
+                Operation::StoreValue(r4, ScalarValue::Floating(3.0)),
+                Operation::RemainderValue(r5, r3, r4),
+                Operation::Yield(vec![r2, r5]),
+                Operation::Halt,
+            ],
+            6,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(1));
+        assert_eq!(harness.value(0, 1), ScalarValue::Floating(1.5));
     }
 
     #[test]

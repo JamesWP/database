@@ -14,11 +14,13 @@ pub enum MoveOperation {
 pub enum Operation {
     // Value
     StoreValue(Reg, ScalarValue),
-    IncrementValue(Reg),          // Reg = Reg + 1
-    AddValue(Reg, Reg, Reg),      // Reg = Reg + Reg
-    SubtractValue(Reg, Reg, Reg), // Reg = Reg - Reg
-    MultiplyValue(Reg, Reg, Reg), // Reg = Reg * Reg
-    LessThanValue(Reg, Reg, Reg), // Reg = Reg < Reg
+    IncrementValue(Reg),            // Reg = Reg + 1
+    AddValue(Reg, Reg, Reg),        // Reg = Reg + Reg
+    SubtractValue(Reg, Reg, Reg),   // Reg = Reg - Reg
+    MultiplyValue(Reg, Reg, Reg),   // Reg = Reg * Reg
+    DivideValue(Reg, Reg, Reg),     // Reg = Reg / Reg
+    RemainderValue(Reg, Reg, Reg),  // Reg = Reg % Reg
+    LessThanValue(Reg, Reg, Reg),   // Reg = Reg < Reg
 
     // Db
     Open(Reg, String),
