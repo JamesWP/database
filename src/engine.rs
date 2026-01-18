@@ -58,22 +58,22 @@ impl Engine {
             }
             IncrementValue(dest) => {
                 let lhs = self.registers.get(dest).scalar().unwrap();
-                let rhs = &ScalarValue::Integer(1);
-                let value = RegisterValue::ScalarValue(*lhs + *rhs);
+                let rhs = ScalarValue::Integer(1);
+                let value = RegisterValue::ScalarValue(lhs.clone() + rhs);
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
             AddValue(dest, lhs, rhs) => {
-                let lhs = self.registers.get(lhs).scalar().unwrap();
-                let rhs = self.registers.get(rhs).scalar().unwrap();
-                let value = RegisterValue::ScalarValue(*lhs + *rhs);
+                let lhs = self.registers.get(lhs).scalar().unwrap().clone();
+                let rhs = self.registers.get(rhs).scalar().unwrap().clone();
+                let value = RegisterValue::ScalarValue(lhs + rhs);
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
             MultiplyValue(dest, lhs, rhs) => {
-                let lhs = self.registers.get(lhs).scalar().unwrap();
-                let rhs = self.registers.get(rhs).scalar().unwrap();
-                let value = RegisterValue::ScalarValue(*lhs * *rhs);
+                let lhs = self.registers.get(lhs).scalar().unwrap().clone();
+                let rhs = self.registers.get(rhs).scalar().unwrap().clone();
+                let value = RegisterValue::ScalarValue(lhs * rhs);
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
