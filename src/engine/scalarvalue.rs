@@ -49,6 +49,20 @@ numeric_ops!(core::ops::Sub, sub);
 numeric_ops!(core::ops::Div, div);
 numeric_ops!(core::ops::Rem, rem);
 
+impl core::ops::Neg for ScalarValue {
+    type Output = ScalarValue;
+
+    fn neg(self) -> Self::Output {
+        match self {
+            ScalarValue::Integer(v) => ScalarValue::Integer(-v),
+            ScalarValue::Floating(v) => ScalarValue::Floating(-v),
+            ScalarValue::Boolean(_) | ScalarValue::String(_) => {
+                panic!("cannot negate non-numeric type")
+            }
+        }
+    }
+}
+
 impl core::ops::Add for ScalarValue {
     type Output = ScalarValue;
 

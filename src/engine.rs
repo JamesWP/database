@@ -160,6 +160,18 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            NegateValue(dest, src) => {
+                let src = self.registers.get(src).scalar().unwrap().clone();
+                let value = RegisterValue::ScalarValue(-src);
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
+            CopyValue(dest, src) => {
+                let src = self.registers.get(src).scalar().unwrap().clone();
+                let value = RegisterValue::ScalarValue(src);
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
             GoTo(index) => {
                 self.program.set_next_operation_index(index);
             }
@@ -640,6 +652,42 @@ mod test {
         // NOT
         assert_eq!(harness.value(0, 6), ScalarValue::Boolean(false)); // !T
         assert_eq!(harness.value(0, 7), ScalarValue::Boolean(true));  // !F
+    }
+
+    #[test]
+    fn test_negate_and_copy() {
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+        let r4 = Reg::new(4);
+        let r5 = Reg::new(5);
+
+        let mut harness = TestHarness::new(
+            &[
+                // Negate integer: -42
+                Operation::StoreValue(r0, ScalarValue::Integer(42)),
+                Operation::NegateValue(r1, r0),
+                // Negate float: -3.14
+                Operation::StoreValue(r2, ScalarValue::Floating(3.14)),
+                Operation::NegateValue(r3, r2),
+                // Copy integer
+                Operation::CopyValue(r4, r0),
+                // Copy float
+                Operation::CopyValue(r5, r2),
+                Operation::Yield(vec![r1, r3, r4, r5]),
+                Operation::Halt,
+            ],
+            6,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(-42));
+        assert_eq!(harness.value(0, 1), ScalarValue::Floating(-3.14));
+        assert_eq!(harness.value(0, 2), ScalarValue::Integer(42));
+        assert_eq!(harness.value(0, 3), ScalarValue::Floating(3.14));
     }
 
     #[test]
