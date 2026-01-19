@@ -1,19 +1,19 @@
 use crate::{engine::registers::RegisterValue, storage};
 
 use self::{
-    program::{ProgramCode, Reg},
+    program::{Operation, ProgramCode, Reg},
     registers::Registers,
     scalarvalue::ScalarValue,
 };
 
 pub mod program;
-mod registers;
+pub(crate) mod registers;
 pub mod scalarvalue;
 
 type StepResult = std::result::Result<StepSuccess, EngineError>;
 
 #[derive(PartialEq, Debug)]
-enum StepSuccess {
+pub(crate) enum StepSuccess {
     Halt,
     Yield(Vec<ScalarValue>),
     Continue,
@@ -24,7 +24,7 @@ enum EngineError {
     RegisterTypeError(Reg, &'static str, RegisterValue),
 }
 
-struct Engine {
+pub(crate) struct Engine {
     btree: Option<storage::BTree>,
     registers: Registers,
     program: ProgramCode,
@@ -37,6 +37,35 @@ impl Engine {
             registers,
             program,
         }
+    }
+
+    /// Create an engine from operations and register count, with a BTree for storage.
+    pub(crate) fn with_program(
+        operations: &[Operation],
+        num_registers: usize,
+        btree: storage::BTree,
+    ) -> Engine {
+        let program: ProgramCode = operations.into();
+        let registers = Registers::new(num_registers);
+        Engine {
+            btree: Some(btree),
+            registers,
+            program,
+        }
+    }
+
+    /// Run the program to completion, returning all yielded rows.
+    pub(crate) fn run(&mut self) -> Vec<Vec<ScalarValue>> {
+        let mut yields = Vec::new();
+        loop {
+            match self.step() {
+                Ok(StepSuccess::Continue) => continue,
+                Ok(StepSuccess::Halt) => break,
+                Ok(StepSuccess::Yield(values)) => yields.push(values),
+                Err(e) => panic!("Engine error: {:?}", e),
+            }
+        }
+        yields
     }
 
     pub fn step(&mut self) -> StepResult {
@@ -812,5 +841,122 @@ mod test {
         assert_eq!(harness.value(1, 0), ScalarValue::Integer(12345));
         assert_eq!(harness.value(2, 0), ScalarValue::Integer(12345));
         assert_eq!(harness.value(3, 0), ScalarValue::Integer(12345));
+    }
+
+    // ========================================================================
+    // Tests for Engine::with_program and Engine::run API
+    // ========================================================================
+
+    #[test]
+    fn test_engine_with_program_simple() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        btree.create_tree("test");
+
+        let r0 = Reg::new(0);
+        let ops = [
+            Operation::StoreValue(r0, ScalarValue::Integer(42)),
+            Operation::Yield(vec![r0]),
+            Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 1, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(42));
+    }
+
+    #[test]
+    fn test_engine_with_program_btree_scan() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        btree.create_tree("test");
+
+        // Insert test data
+        let mut cursor = btree.open("test").unwrap();
+        let mut cursor = cursor.open_readwrite();
+        cursor.insert(0, b"[100, 200]".to_vec());
+        cursor.insert(1, b"[300, 400]".to_vec());
+        drop(cursor);
+
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+
+        let ops = [
+            Operation::Open(r0, "test".to_string()),
+            Operation::MoveCursor(r0, MoveOperation::First),
+            Operation::CanReadCursor(r1, r0),
+            Operation::GoToIfFalse(JumpTarget::addr(8), r1),
+            Operation::ReadCursor(vec![r2, r3], r0),
+            Operation::Yield(vec![r2, r3]),
+            Operation::MoveCursor(r0, MoveOperation::Next),
+            Operation::GoTo(JumpTarget::addr(2)),
+            Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 4, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 2);
+        assert_eq!(yields[0][0], ScalarValue::Integer(100));
+        assert_eq!(yields[0][1], ScalarValue::Integer(200));
+        assert_eq!(yields[1][0], ScalarValue::Integer(300));
+        assert_eq!(yields[1][1], ScalarValue::Integer(400));
+    }
+
+    #[test]
+    fn test_engine_run_empty_table() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        btree.create_tree("test");
+        // No data inserted - empty table
+
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+
+        let ops = [
+            Operation::Open(r0, "test".to_string()),
+            Operation::MoveCursor(r0, MoveOperation::First),
+            Operation::CanReadCursor(r1, r0),
+            Operation::GoToIfFalse(JumpTarget::addr(7), r1),
+            Operation::ReadCursor(vec![r2], r0),
+            Operation::Yield(vec![r2]),
+            Operation::GoTo(JumpTarget::addr(2)),
+            Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 3, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 0);
+    }
+
+    #[test]
+    fn test_engine_run_multiple_yields() {
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let r0 = Reg::new(0);
+        let ops = [
+            Operation::StoreValue(r0, ScalarValue::Integer(1)),
+            Operation::Yield(vec![r0]),
+            Operation::StoreValue(r0, ScalarValue::Integer(2)),
+            Operation::Yield(vec![r0]),
+            Operation::StoreValue(r0, ScalarValue::Integer(3)),
+            Operation::Yield(vec![r0]),
+            Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 1, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0][0], ScalarValue::Integer(1));
+        assert_eq!(yields[1][0], ScalarValue::Integer(2));
+        assert_eq!(yields[2][0], ScalarValue::Integer(3));
     }
 }
