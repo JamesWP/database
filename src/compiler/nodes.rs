@@ -1,8 +1,22 @@
 use crate::engine::program::{JumpTarget, Label, MoveOperation, Operation, Reg};
 use crate::engine::scalarvalue::ScalarValue;
-use crate::planner::LogicalPlan;
+use crate::planner::{Literal, LogicalPlan};
 
 use super::{BytecodeEmitter, RegisterAllocator};
+
+/// Convert a planner Literal to an engine ScalarValue.
+fn literal_to_scalar(lit: &Literal) -> ScalarValue {
+    match lit {
+        Literal::Integer(i) => ScalarValue::Integer(*i),
+        Literal::Float(f) => ScalarValue::Floating(*f),
+        Literal::String(s) => ScalarValue::String(s.clone()),
+        Literal::Bool(b) => ScalarValue::Boolean(*b),
+        Literal::Null => {
+            // TODO: Add proper NULL support to ScalarValue
+            panic!("NULL literals not yet supported")
+        }
+    }
+}
 
 /// Codegen context with two-emitter pattern as per the plan.
 /// Init code and body code are kept separate, then combined at finalization.
@@ -203,6 +217,112 @@ pub fn codegen_count(
     }
 }
 
+/// Generate bytecode for a Values node.
+///
+/// Values emits a fixed set of rows (useful for testing and VALUES clauses).
+///
+/// ```text
+/// INIT (init_emitter):
+///   index = 0
+///   num_rows = N
+///   (store index constants for dispatch)
+///
+/// BODY (body_emitter):
+///   CHECK:    LessThan(flag, index, num_rows); GoToIfFalse(on_done, flag)
+///   DISPATCH: GoToIfEqual(ROW_i, index, i) for each row
+///   ROW_0:    store row 0 values; goto EMIT
+///   ROW_1:    store row 1 values; goto EMIT
+///   ...
+///   EMIT:     index++; goto on_tuple
+/// ```
+pub fn codegen_values(
+    rows: &[Vec<Literal>],
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    let num_rows = rows.len();
+    let num_cols = if num_rows > 0 { rows[0].len() } else { 0 };
+
+    // Handle empty values - just go to done immediately
+    if num_rows == 0 {
+        let check_label = ctx.body_emitter.create_label();
+        ctx.body_emitter.bind_label(check_label);
+        ctx.body_emitter.emit_goto(cont.on_done);
+        return NodeOutput {
+            next: check_label,
+            output_regs: vec![],
+        };
+    }
+
+    // Allocate output registers
+    let output_regs = ctx.registers.alloc_block(num_cols);
+
+    // Allocate index counter and num_rows constant
+    let index_reg = ctx.registers.alloc();
+    let num_rows_reg = ctx.registers.alloc();
+    let cmp_reg = ctx.registers.alloc();
+
+    // INIT: index = 0, num_rows = N
+    ctx.init_emitter
+        .emit(Operation::StoreValue(index_reg, ScalarValue::Integer(0)));
+    ctx.init_emitter
+        .emit(Operation::StoreValue(num_rows_reg, ScalarValue::Integer(num_rows as i64)));
+
+    // Allocate constant registers for each row index (for dispatch comparison)
+    let index_constants: Vec<Reg> = (0..num_rows)
+        .map(|i| {
+            let reg = ctx.registers.alloc();
+            ctx.init_emitter
+                .emit(Operation::StoreValue(reg, ScalarValue::Integer(i as i64)));
+            reg
+        })
+        .collect();
+
+    // Create labels for each row and for emit
+    let row_labels: Vec<Label> = (0..num_rows)
+        .map(|_| ctx.body_emitter.create_label())
+        .collect();
+    let emit_label = ctx.body_emitter.create_label();
+
+    // BODY:
+    // CHECK: if index >= num_rows, goto on_done
+    let check_label = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(check_label);
+    ctx.body_emitter
+        .emit(Operation::LessThanValue(cmp_reg, index_reg, num_rows_reg));
+    ctx.body_emitter.emit_goto_if_false(cont.on_done, cmp_reg);
+
+    // DISPATCH: for each row, check if index == i and jump to that row
+    for (i, row_label) in row_labels.iter().enumerate() {
+        ctx.body_emitter
+            .emit_goto_if_equal(*row_label, index_reg, index_constants[i]);
+    }
+
+    // Fallthrough safety: shouldn't reach here, but go to done
+    ctx.body_emitter.emit_goto(cont.on_done);
+
+    // Emit each row's code
+    for (i, row) in rows.iter().enumerate() {
+        ctx.body_emitter.bind_label(row_labels[i]);
+        for (j, lit) in row.iter().enumerate() {
+            let sv = literal_to_scalar(lit);
+            ctx.body_emitter
+                .emit(Operation::StoreValue(output_regs[j], sv.clone()));
+        }
+        ctx.body_emitter.emit_goto(emit_label);
+    }
+
+    // EMIT: increment index, goto on_tuple
+    ctx.body_emitter.bind_label(emit_label);
+    ctx.body_emitter.emit(Operation::IncrementValue(index_reg));
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    NodeOutput {
+        next: check_label,
+        output_regs,
+    }
+}
+
 /// Main codegen dispatch function.
 /// Routes to the appropriate codegen based on plan type.
 pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenContext) -> NodeOutput {
@@ -212,6 +332,9 @@ pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenCon
         }
         LogicalPlan::Count { input } => {
             codegen_count(input, cont, ctx)
+        }
+        LogicalPlan::Values { rows } => {
+            codegen_values(rows, cont, ctx)
         }
         LogicalPlan::Filter { .. } => {
             // TODO: Implement filter codegen
@@ -376,5 +499,107 @@ mod tests {
         // Second row: [30, 40]
         assert_eq!(yields[1][0], ScalarValue::Integer(30));
         assert_eq!(yields[1][1], ScalarValue::Integer(40));
+    }
+
+    // ========================================================================
+    // Values tests (no btree needed!)
+    // ========================================================================
+
+    /// Test Values emits all rows
+    #[test]
+    fn test_values_basic() {
+        let plan = LogicalPlan::Values {
+            rows: vec![
+                vec![Literal::Integer(1), Literal::Integer(10)],
+                vec![Literal::Integer(2), Literal::Integer(20)],
+                vec![Literal::Integer(3), Literal::Integer(30)],
+            ],
+        };
+
+        let (ops, num_registers) = compile_plan(&plan);
+
+        // Values doesn't need a btree, but Engine::with_program requires one
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0], vec![ScalarValue::Integer(1), ScalarValue::Integer(10)]);
+        assert_eq!(yields[1], vec![ScalarValue::Integer(2), ScalarValue::Integer(20)]);
+        assert_eq!(yields[2], vec![ScalarValue::Integer(3), ScalarValue::Integer(30)]);
+    }
+
+    /// Test Values with empty rows
+    #[test]
+    fn test_values_empty() {
+        let plan = LogicalPlan::Values { rows: vec![] };
+
+        let (ops, num_registers) = compile_plan(&plan);
+
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 0);
+    }
+
+    /// Test Count(Values) - count without btree
+    #[test]
+    fn test_count_values() {
+        let plan = LogicalPlan::Count {
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![
+                    vec![Literal::Integer(1)],
+                    vec![Literal::Integer(2)],
+                    vec![Literal::Integer(3)],
+                    vec![Literal::Integer(4)],
+                    vec![Literal::Integer(5)],
+                ],
+            }),
+        };
+
+        let (ops, num_registers) = compile_plan(&plan);
+
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(5));
+    }
+
+    /// Test Values with different literal types
+    #[test]
+    fn test_values_mixed_types() {
+        let plan = LogicalPlan::Values {
+            rows: vec![
+                vec![
+                    Literal::Integer(42),
+                    Literal::Float(3.14),
+                    Literal::Bool(true),
+                    Literal::String("hello".to_string()),
+                ],
+            ],
+        };
+
+        let (ops, num_registers) = compile_plan(&plan);
+
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(42));
+        assert_eq!(yields[0][1], ScalarValue::Floating(3.14));
+        assert_eq!(yields[0][2], ScalarValue::Boolean(true));
+        assert_eq!(yields[0][3], ScalarValue::String("hello".to_string()));
     }
 }

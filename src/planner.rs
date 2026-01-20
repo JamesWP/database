@@ -121,6 +121,11 @@ pub enum LogicalPlan {
     /// Output: single integer column containing the row count.
     Count { input: Box<LogicalPlan> },
 
+    /// Emit fixed rows (leaf node, no inputs)
+    /// Useful for testing and for VALUES clauses.
+    /// Each inner Vec is a row; all rows must have the same number of columns.
+    Values { rows: Vec<Vec<Literal>> },
+
     // Future: Join { left: Box<LogicalPlan>, right: Box<LogicalPlan>, ... }
 }
 
