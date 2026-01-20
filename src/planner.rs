@@ -116,6 +116,11 @@ pub enum LogicalPlan {
         count: u64,
     },
 
+    /// Count rows from input (1 input)
+    /// Consumes all rows from child and outputs a single row with the count.
+    /// Output: single integer column containing the row count.
+    Count { input: Box<LogicalPlan> },
+
     // Future: Join { left: Box<LogicalPlan>, right: Box<LogicalPlan>, ... }
 }
 

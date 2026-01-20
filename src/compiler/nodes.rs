@@ -1,4 +1,6 @@
 use crate::engine::program::{JumpTarget, Label, MoveOperation, Operation, Reg};
+use crate::engine::scalarvalue::ScalarValue;
+use crate::planner::LogicalPlan;
 
 use super::{BytecodeEmitter, RegisterAllocator};
 
@@ -142,6 +144,119 @@ pub fn codegen_scan(
     }
 }
 
+/// Generate bytecode for a Count node.
+///
+/// Count consumes all rows from its child and outputs a single row
+/// containing the count.
+///
+/// ```text
+/// INIT (init_emitter):
+///   counter = 0
+///   <child init>
+///
+/// BODY (body_emitter):
+///   <child body with our handlers>
+///   child_on_tuple: IncrementValue(counter); GoTo(child.next)
+///   child_on_done:  GoTo(on_tuple)  // count is ready
+///   count_next:     GoTo(on_done)   // after yielding once, we're done
+/// ```
+pub fn codegen_count(
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // Allocate counter register
+    let counter_reg = ctx.registers.alloc();
+
+    // INIT: initialize counter to 0
+    ctx.init_emitter
+        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
+
+    // Create labels for child's continuations
+    let child_on_tuple = ctx.body_emitter.create_label();
+    let child_on_done = ctx.body_emitter.create_label();
+    let child_cont = NodeContinuation {
+        on_tuple: child_on_tuple,
+        on_done: child_on_done,
+    };
+
+    // Compile child
+    let child_output = codegen(input, &child_cont, ctx);
+
+    // child_on_tuple: increment counter, get next from child
+    ctx.body_emitter.bind_label(child_on_tuple);
+    ctx.body_emitter.emit(Operation::IncrementValue(counter_reg));
+    ctx.body_emitter.emit_goto(child_output.next);
+
+    // child_on_done: count is ready, signal our on_tuple
+    ctx.body_emitter.bind_label(child_on_done);
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // count_next: after yielding once, we're done
+    let count_next = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(count_next);
+    ctx.body_emitter.emit_goto(cont.on_done);
+
+    NodeOutput {
+        next: count_next,
+        output_regs: vec![counter_reg],
+    }
+}
+
+/// Main codegen dispatch function.
+/// Routes to the appropriate codegen based on plan type.
+pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenContext) -> NodeOutput {
+    match plan {
+        LogicalPlan::Scan { table, columns } => {
+            codegen_scan(table, columns.len(), cont, ctx)
+        }
+        LogicalPlan::Count { input } => {
+            codegen_count(input, cont, ctx)
+        }
+        LogicalPlan::Filter { .. } => {
+            // TODO: Implement filter codegen
+            panic!("Filter codegen not yet implemented")
+        }
+        LogicalPlan::Project { .. } => {
+            // TODO: Implement project codegen
+            panic!("Project codegen not yet implemented")
+        }
+        LogicalPlan::Limit { .. } => {
+            // TODO: Implement limit codegen
+            panic!("Limit codegen not yet implemented")
+        }
+    }
+}
+
+/// Compile a plan and add root-level handlers (yield on tuple, halt on done).
+/// Returns the finalized bytecode and register count.
+pub fn compile_plan(plan: &LogicalPlan) -> (Vec<Operation>, usize) {
+    let mut ctx = CodegenContext::new();
+
+    // Create root continuation labels
+    let on_tuple = ctx.body_emitter.create_label();
+    let on_done = ctx.body_emitter.create_label();
+    let cont = NodeContinuation { on_tuple, on_done };
+
+    // Compile the plan
+    let output = codegen(plan, &cont, &mut ctx);
+
+    // on_tuple: yield the output registers, then get next
+    ctx.body_emitter.bind_label(on_tuple);
+    ctx.body_emitter
+        .emit(Operation::Yield(output.output_regs.clone()));
+    ctx.body_emitter.emit_goto(output.next);
+
+    // on_done: halt
+    ctx.body_emitter.bind_label(on_done);
+    ctx.body_emitter.emit(Operation::Halt);
+
+    let num_registers = ctx.registers.count();
+    let ops = ctx.finalize();
+
+    (ops, num_registers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,36 +283,18 @@ mod tests {
         assert_eq!(ctx.registers.count(), 4);
     }
 
-    /// Integration test: compile scan, run through engine, verify all rows yielded
+    /// Integration test: Count(Scan) - verify row counting works
     #[test]
-    fn test_scan_execution() {
-        let mut ctx = CodegenContext::new();
+    fn test_count_scan() {
+        // Build plan: Count { Scan { "test", 2 columns } }
+        let plan = LogicalPlan::Count {
+            input: Box::new(LogicalPlan::Scan {
+                table: "test".to_string(),
+                columns: vec![0, 1],
+            }),
+        };
 
-        // Create labels for continuation (in body_emitter)
-        let on_tuple = ctx.body_emitter.create_label();
-        let on_done = ctx.body_emitter.create_label();
-        let cont = NodeContinuation { on_tuple, on_done };
-
-        // Generate scan code
-        let output = codegen_scan("test", 2, &cont, &mut ctx);
-
-        // Allocate a counter register and initialize it (in init_emitter!)
-        let counter_reg = ctx.registers.alloc();
-        ctx.init_emitter
-            .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
-
-        // on_tuple: increment counter and request next row (in body_emitter)
-        ctx.body_emitter.bind_label(on_tuple);
-        ctx.body_emitter.emit(Operation::IncrementValue(counter_reg));
-        ctx.body_emitter.emit_goto(output.next);
-
-        // on_done: yield the counter then halt (in body_emitter)
-        ctx.body_emitter.bind_label(on_done);
-        ctx.body_emitter.emit(Operation::Yield(vec![counter_reg]));
-        ctx.body_emitter.emit(Operation::Halt);
-
-        let num_registers = ctx.registers.count();
-        let ops = ctx.finalize();
+        let (ops, num_registers) = compile_plan(&plan);
 
         // Create test database with 3 rows
         let test = TestDb::default();
@@ -215,39 +312,22 @@ mod tests {
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         let yields = engine.run();
 
-        // Check that counter equals 3 (we processed 3 rows)
+        // Count should yield single row with value 3
         assert_eq!(yields.len(), 1);
         assert_eq!(yields[0][0], ScalarValue::Integer(3));
     }
 
-    /// Test scan with empty table
+    /// Test Count with empty table
     #[test]
-    fn test_scan_empty_table() {
-        let mut ctx = CodegenContext::new();
+    fn test_count_empty_table() {
+        let plan = LogicalPlan::Count {
+            input: Box::new(LogicalPlan::Scan {
+                table: "test".to_string(),
+                columns: vec![0],
+            }),
+        };
 
-        let on_tuple = ctx.body_emitter.create_label();
-        let on_done = ctx.body_emitter.create_label();
-        let cont = NodeContinuation { on_tuple, on_done };
-
-        let output = codegen_scan("test", 1, &cont, &mut ctx);
-
-        // Counter to track if we ever hit on_tuple (init in init_emitter)
-        let counter_reg = ctx.registers.alloc();
-        ctx.init_emitter
-            .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
-
-        // on_tuple: should never be reached for empty table
-        ctx.body_emitter.bind_label(on_tuple);
-        ctx.body_emitter.emit(Operation::IncrementValue(counter_reg));
-        ctx.body_emitter.emit_goto(output.next);
-
-        // on_done: yield counter then halt
-        ctx.body_emitter.bind_label(on_done);
-        ctx.body_emitter.emit(Operation::Yield(vec![counter_reg]));
-        ctx.body_emitter.emit(Operation::Halt);
-
-        let num_registers = ctx.registers.count();
-        let ops = ctx.finalize();
+        let (ops, num_registers) = compile_plan(&plan);
 
         // Create test database with empty table
         let test = TestDb::default();
@@ -258,7 +338,7 @@ mod tests {
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         let yields = engine.run();
 
-        // Counter should be 0 - on_tuple was never reached
+        // Count should yield 0 for empty table
         assert_eq!(yields.len(), 1);
         assert_eq!(yields[0][0], ScalarValue::Integer(0));
     }
@@ -266,27 +346,12 @@ mod tests {
     /// Test that scan actually reads the correct values
     #[test]
     fn test_scan_reads_values() {
-        let mut ctx = CodegenContext::new();
+        let plan = LogicalPlan::Scan {
+            table: "test".to_string(),
+            columns: vec![0, 1],
+        };
 
-        let on_tuple = ctx.body_emitter.create_label();
-        let on_done = ctx.body_emitter.create_label();
-        let cont = NodeContinuation { on_tuple, on_done };
-
-        // Scan with 2 columns
-        let output = codegen_scan("test", 2, &cont, &mut ctx);
-
-        // on_tuple: yield the row values then get next
-        ctx.body_emitter.bind_label(on_tuple);
-        ctx.body_emitter
-            .emit(Operation::Yield(output.output_regs.clone()));
-        ctx.body_emitter.emit_goto(output.next);
-
-        // on_done: halt
-        ctx.body_emitter.bind_label(on_done);
-        ctx.body_emitter.emit(Operation::Halt);
-
-        let num_registers = ctx.registers.count();
-        let ops = ctx.finalize();
+        let (ops, num_registers) = compile_plan(&plan);
 
         // Create test database with data
         let test = TestDb::default();
