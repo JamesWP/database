@@ -435,6 +435,66 @@ pub fn codegen_filter(
     }
 }
 
+/// Generate bytecode for a Project node.
+///
+/// Project transforms input tuples by computing new expressions.
+/// Each output column is the result of evaluating a PlanExpr.
+///
+/// ```text
+/// // Child's on_tuple wired to PROJECT_COMPUTE
+/// // Child's on_done wired to parent's on_done (propagate)
+///
+/// BODY (body_emitter):
+///   PROJECT_COMPUTE: for each expr: compile_expr into output_regs[i]
+///                    GoTo(on_tuple)
+///
+/// next_label = child.next_label  // delegate to child
+/// output_regs = newly allocated registers
+/// ```
+pub fn codegen_project(
+    columns: &[PlanExpr],
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // Create label for project computation
+    let project_compute = ctx.body_emitter.create_label();
+
+    // Child's on_tuple wired to PROJECT_COMPUTE
+    // Child's on_done wired to parent's on_done (propagate exhaustion)
+    let child_cont = NodeContinuation {
+        on_tuple: project_compute,
+        on_done: cont.on_done, // propagate directly
+    };
+
+    // Compile child first
+    let child_output = codegen(input, &child_cont, ctx);
+
+    // PROJECT_COMPUTE: compute each projection expression
+    ctx.body_emitter.bind_label(project_compute);
+
+    // Compile each expression into new output registers
+    let output_regs: Vec<Reg> = columns
+        .iter()
+        .map(|expr| {
+            let mut expr_ctx = ExprContext {
+                emitter: &mut ctx.body_emitter,
+                registers: &mut ctx.registers,
+            };
+            compile_expr(expr, &child_output.output_regs, &mut expr_ctx)
+        })
+        .collect();
+
+    // Emit the transformed tuple
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // Return: delegate to child for next, but with new output registers
+    NodeOutput {
+        next: child_output.next,
+        output_regs,
+    }
+}
+
 /// Main codegen dispatch function.
 /// Routes to the appropriate codegen based on plan type.
 pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenContext) -> NodeOutput {
@@ -451,12 +511,11 @@ pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenCon
         LogicalPlan::Filter { predicate, input } => {
             codegen_filter(predicate, input, cont, ctx)
         }
+        LogicalPlan::Project { columns, input } => {
+            codegen_project(columns, input, cont, ctx)
+        }
         LogicalPlan::Sequence { start, end } => {
             codegen_sequence(*start, *end, cont, ctx)
-        }
-        LogicalPlan::Project { .. } => {
-            // TODO: Implement project codegen
-            panic!("Project codegen not yet implemented")
         }
         LogicalPlan::Limit { .. } => {
             // TODO: Implement limit codegen
@@ -933,5 +992,182 @@ mod tests {
         assert_eq!(yields[0][0], ScalarValue::Integer(4));
         assert_eq!(yields[1][0], ScalarValue::Integer(5));
         assert_eq!(yields[2][0], ScalarValue::Integer(6));
+    }
+
+    // ========================================================================
+    // Project tests
+    // ========================================================================
+
+    /// Test Project that passes through a single column
+    #[test]
+    fn test_project_passthrough() {
+        // Project [col[0]] from Sequence(1..4) -> [1], [2], [3]
+        let plan = LogicalPlan::Project {
+            columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })],
+            input: Box::new(LogicalPlan::Sequence { start: 1, end: 4 }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0][0], ScalarValue::Integer(1));
+        assert_eq!(yields[1][0], ScalarValue::Integer(2));
+        assert_eq!(yields[2][0], ScalarValue::Integer(3));
+    }
+
+    /// Test Project with computed expression (col + 10)
+    #[test]
+    fn test_project_computed() {
+        // Project [col[0] + 10] from Sequence(1..4) -> [11], [12], [13]
+        let plan = LogicalPlan::Project {
+            columns: vec![PlanExpr::BinaryOp {
+                op: BinaryOp::Add,
+                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
+            }],
+            input: Box::new(LogicalPlan::Sequence { start: 1, end: 4 }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0][0], ScalarValue::Integer(11));
+        assert_eq!(yields[1][0], ScalarValue::Integer(12));
+        assert_eq!(yields[2][0], ScalarValue::Integer(13));
+    }
+
+    /// Test Project with multiple columns (col, col * 2)
+    #[test]
+    fn test_project_multiple_columns() {
+        // Project [col[0], col[0] * 2] from Sequence(1..4) -> [1,2], [2,4], [3,6]
+        let plan = LogicalPlan::Project {
+            columns: vec![
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::BinaryOp {
+                    op: BinaryOp::Multiply,
+                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    right: Box::new(PlanExpr::Literal(Literal::Integer(2))),
+                },
+            ],
+            input: Box::new(LogicalPlan::Sequence { start: 1, end: 4 }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0], vec![ScalarValue::Integer(1), ScalarValue::Integer(2)]);
+        assert_eq!(yields[1], vec![ScalarValue::Integer(2), ScalarValue::Integer(4)]);
+        assert_eq!(yields[2], vec![ScalarValue::Integer(3), ScalarValue::Integer(6)]);
+    }
+
+    /// Test Project with literal only (constant column)
+    #[test]
+    fn test_project_constant() {
+        // Project [42] from Sequence(1..4) -> [42], [42], [42]
+        let plan = LogicalPlan::Project {
+            columns: vec![PlanExpr::Literal(Literal::Integer(42))],
+            input: Box::new(LogicalPlan::Sequence { start: 1, end: 4 }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0][0], ScalarValue::Integer(42));
+        assert_eq!(yields[1][0], ScalarValue::Integer(42));
+        assert_eq!(yields[2][0], ScalarValue::Integer(42));
+    }
+
+    /// Test Project with column reordering from multi-column input
+    #[test]
+    fn test_project_reorder() {
+        // Project [col[1], col[0]] from Values [[1, 10], [2, 20]] -> [[10, 1], [20, 2]]
+        let plan = LogicalPlan::Project {
+            columns: vec![
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+            ],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![
+                    vec![Literal::Integer(1), Literal::Integer(10)],
+                    vec![Literal::Integer(2), Literal::Integer(20)],
+                ],
+            }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 2);
+        assert_eq!(yields[0], vec![ScalarValue::Integer(10), ScalarValue::Integer(1)]);
+        assert_eq!(yields[1], vec![ScalarValue::Integer(20), ScalarValue::Integer(2)]);
+    }
+
+    /// Test Filter(Project(...)) - filter on projected output
+    #[test]
+    fn test_filter_project() {
+        // Filter [col[0] > 5] from Project [col[0] * 2] from Sequence(1..5)
+        // Sequence: 1,2,3,4 -> Project: 2,4,6,8 -> Filter >5: 6,8
+        let plan = LogicalPlan::Filter {
+            predicate: PlanExpr::BinaryOp {
+                op: BinaryOp::GreaterThan,
+                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(5))),
+            },
+            input: Box::new(LogicalPlan::Project {
+                columns: vec![PlanExpr::BinaryOp {
+                    op: BinaryOp::Multiply,
+                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    right: Box::new(PlanExpr::Literal(Literal::Integer(2))),
+                }],
+                input: Box::new(LogicalPlan::Sequence { start: 1, end: 5 }),
+            }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 2);
+        assert_eq!(yields[0][0], ScalarValue::Integer(6));
+        assert_eq!(yields[1][0], ScalarValue::Integer(8));
+    }
+
+    /// Test Project(Filter(...)) - project from filtered input
+    #[test]
+    fn test_project_filter() {
+        // Project [col[0] * 10] from Filter [col[0] > 2] from Sequence(1..5)
+        // Sequence: 1,2,3,4 -> Filter >2: 3,4 -> Project: 30,40
+        let plan = LogicalPlan::Project {
+            columns: vec![PlanExpr::BinaryOp {
+                op: BinaryOp::Multiply,
+                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
+            }],
+            input: Box::new(filter_col0(
+                BinaryOp::GreaterThan,
+                2,
+                LogicalPlan::Sequence { start: 1, end: 5 },
+            )),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 2);
+        assert_eq!(yields[0][0], ScalarValue::Integer(30));
+        assert_eq!(yields[1][0], ScalarValue::Integer(40));
+    }
+
+    /// Test Count(Project(...))
+    #[test]
+    fn test_count_project() {
+        // Count from Project [col[0]] from Sequence(1..10) -> 9
+        let plan = LogicalPlan::Count {
+            input: Box::new(LogicalPlan::Project {
+                columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })],
+                input: Box::new(LogicalPlan::Sequence { start: 1, end: 10 }),
+            }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(9));
     }
 }
