@@ -495,6 +495,74 @@ pub fn codegen_project(
     }
 }
 
+/// Generate bytecode for a Limit node.
+///
+/// Limit restricts the number of rows emitted to at most `count`.
+/// It has init code to set up the counter.
+///
+/// ```text
+/// INIT (init_emitter):
+///   StoreValue(counter, count)
+///   StoreValue(zero, 0)
+///
+/// // Child's on_tuple wired to LIMIT_CHECK
+/// // Child's on_done wired to parent's on_done (propagate)
+///
+/// BODY (body_emitter):
+///   LIMIT_CHECK: GoToIfEqualValue(on_done, counter, zero)  // exhausted limit
+///                DecrementValue(counter)
+///                GoTo(on_tuple)
+///
+/// next_label = child.next_label  // delegate to child
+/// output_regs = child.output_regs  // pass through
+/// ```
+pub fn codegen_limit(
+    count: u64,
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // Allocate counter and zero constant
+    let counter_reg = ctx.registers.alloc();
+    let zero_reg = ctx.registers.alloc();
+
+    // INIT: initialize counter to count, zero to 0
+    ctx.init_emitter
+        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(count as i64)));
+    ctx.init_emitter
+        .emit(Operation::StoreValue(zero_reg, ScalarValue::Integer(0)));
+
+    // Create label for limit check
+    let limit_check = ctx.body_emitter.create_label();
+
+    // Child's on_tuple wired to LIMIT_CHECK
+    // Child's on_done wired to parent's on_done (propagate exhaustion)
+    let child_cont = NodeContinuation {
+        on_tuple: limit_check,
+        on_done: cont.on_done, // propagate directly
+    };
+
+    // Compile child first
+    let child_output = codegen(input, &child_cont, ctx);
+
+    // LIMIT_CHECK: check if counter == 0
+    ctx.body_emitter.bind_label(limit_check);
+    ctx.body_emitter
+        .emit_goto_if_equal(cont.on_done, counter_reg, zero_reg);
+
+    // Decrement counter
+    ctx.body_emitter.emit(Operation::DecrementValue(counter_reg));
+
+    // Emit the tuple
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // Return: delegate to child for next, pass through output registers
+    NodeOutput {
+        next: child_output.next,
+        output_regs: child_output.output_regs,
+    }
+}
+
 /// Main codegen dispatch function.
 /// Routes to the appropriate codegen based on plan type.
 pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenContext) -> NodeOutput {
@@ -517,9 +585,8 @@ pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenCon
         LogicalPlan::Sequence { start, end } => {
             codegen_sequence(*start, *end, cont, ctx)
         }
-        LogicalPlan::Limit { .. } => {
-            // TODO: Implement limit codegen
-            panic!("Limit codegen not yet implemented")
+        LogicalPlan::Limit { count, input } => {
+            codegen_limit(*count, input, cont, ctx)
         }
     }
 }
@@ -1169,5 +1236,182 @@ mod tests {
 
         assert_eq!(yields.len(), 1);
         assert_eq!(yields[0][0], ScalarValue::Integer(9));
+    }
+
+    // ========================================================================
+    // Limit tests
+    // ========================================================================
+
+    /// Test Limit returns correct number of rows
+    #[test]
+    fn test_limit_basic() {
+        // Limit 3 from Sequence(1..10) -> [1, 2, 3]
+        let plan = LogicalPlan::Limit {
+            count: 3,
+            input: Box::new(LogicalPlan::Sequence { start: 1, end: 10 }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0][0], ScalarValue::Integer(1));
+        assert_eq!(yields[1][0], ScalarValue::Integer(2));
+        assert_eq!(yields[2][0], ScalarValue::Integer(3));
+    }
+
+    /// Test Limit 0 returns no rows
+    #[test]
+    fn test_limit_zero() {
+        // Limit 0 from Sequence(1..10) -> []
+        let plan = LogicalPlan::Limit {
+            count: 0,
+            input: Box::new(LogicalPlan::Sequence { start: 1, end: 10 }),
+        };
+
+        let yields = run_plan(&plan);
+        assert_eq!(yields.len(), 0);
+    }
+
+    /// Test Limit greater than input returns all rows
+    #[test]
+    fn test_limit_exceeds_input() {
+        // Limit 100 from Sequence(1..4) -> [1, 2, 3]
+        let plan = LogicalPlan::Limit {
+            count: 100,
+            input: Box::new(LogicalPlan::Sequence { start: 1, end: 4 }),
+        };
+
+        let yields = run_plan(&plan);
+        assert_eq!(yields.len(), 3);
+    }
+
+    /// Test Limit 1 (edge case)
+    #[test]
+    fn test_limit_one() {
+        // Limit 1 from Sequence(1..10) -> [1]
+        let plan = LogicalPlan::Limit {
+            count: 1,
+            input: Box::new(LogicalPlan::Sequence { start: 1, end: 10 }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(1));
+    }
+
+    /// Test Limit(Filter(...)) - limit from filtered input
+    #[test]
+    fn test_limit_filter() {
+        // Limit 2 from Filter [col[0] > 5] from Sequence(1..10)
+        // Sequence: 1..9 -> Filter >5: 6,7,8,9 -> Limit 2: 6,7
+        let plan = LogicalPlan::Limit {
+            count: 2,
+            input: Box::new(filter_col0(
+                BinaryOp::GreaterThan,
+                5,
+                LogicalPlan::Sequence { start: 1, end: 10 },
+            )),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 2);
+        assert_eq!(yields[0][0], ScalarValue::Integer(6));
+        assert_eq!(yields[1][0], ScalarValue::Integer(7));
+    }
+
+    /// Test Filter(Limit(...)) - filter from limited input
+    #[test]
+    fn test_filter_limit() {
+        // Filter [col[0] > 2] from Limit 5 from Sequence(1..10)
+        // Sequence: 1..9 -> Limit 5: 1,2,3,4,5 -> Filter >2: 3,4,5
+        let plan = LogicalPlan::Filter {
+            predicate: PlanExpr::BinaryOp {
+                op: BinaryOp::GreaterThan,
+                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(2))),
+            },
+            input: Box::new(LogicalPlan::Limit {
+                count: 5,
+                input: Box::new(LogicalPlan::Sequence { start: 1, end: 10 }),
+            }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0][0], ScalarValue::Integer(3));
+        assert_eq!(yields[1][0], ScalarValue::Integer(4));
+        assert_eq!(yields[2][0], ScalarValue::Integer(5));
+    }
+
+    /// Test Limit(Project(...)) - limit from projected input
+    #[test]
+    fn test_limit_project() {
+        // Limit 2 from Project [col[0] * 10] from Sequence(1..10)
+        // Sequence: 1..9 -> Project: 10,20,30,... -> Limit 2: 10,20
+        let plan = LogicalPlan::Limit {
+            count: 2,
+            input: Box::new(LogicalPlan::Project {
+                columns: vec![PlanExpr::BinaryOp {
+                    op: BinaryOp::Multiply,
+                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
+                }],
+                input: Box::new(LogicalPlan::Sequence { start: 1, end: 10 }),
+            }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 2);
+        assert_eq!(yields[0][0], ScalarValue::Integer(10));
+        assert_eq!(yields[1][0], ScalarValue::Integer(20));
+    }
+
+    /// Test Count(Limit(...))
+    #[test]
+    fn test_count_limit() {
+        // Count from Limit 5 from Sequence(1..100) -> 5
+        let plan = LogicalPlan::Count {
+            input: Box::new(LogicalPlan::Limit {
+                count: 5,
+                input: Box::new(LogicalPlan::Sequence { start: 1, end: 100 }),
+            }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(5));
+    }
+
+    /// Test complex combination: Limit(Project(Filter(Sequence)))
+    #[test]
+    fn test_limit_project_filter_sequence() {
+        // Limit 2 from Project [col[0] * 10] from Filter [col[0] > 5] from Sequence(1..20)
+        // Sequence: 1..19 -> Filter >5: 6,7,8,... -> Project: 60,70,80,... -> Limit 2: 60,70
+        let plan = LogicalPlan::Limit {
+            count: 2,
+            input: Box::new(LogicalPlan::Project {
+                columns: vec![PlanExpr::BinaryOp {
+                    op: BinaryOp::Multiply,
+                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
+                }],
+                input: Box::new(filter_col0(
+                    BinaryOp::GreaterThan,
+                    5,
+                    LogicalPlan::Sequence { start: 1, end: 20 },
+                )),
+            }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 2);
+        assert_eq!(yields[0][0], ScalarValue::Integer(60));
+        assert_eq!(yields[1][0], ScalarValue::Integer(70));
     }
 }
