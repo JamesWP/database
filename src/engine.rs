@@ -92,6 +92,13 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            DecrementValue(dest) => {
+                let lhs = self.registers.get(dest).scalar().unwrap();
+                let rhs = ScalarValue::Integer(1);
+                let value = RegisterValue::ScalarValue(lhs.clone() - rhs);
+                let dest = self.registers.get_mut(dest);
+                *dest = value;
+            }
             AddValue(dest, lhs, rhs) => {
                 let lhs = self.registers.get(lhs).scalar().unwrap().clone();
                 let rhs = self.registers.get(rhs).scalar().unwrap().clone();
@@ -400,6 +407,51 @@ mod test {
 
         assert_eq!(harness.num_yields(), 1);
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(2));
+    }
+
+    #[test]
+    fn test_decrement() {
+        let r0 = Reg::new(0);
+
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(r0, ScalarValue::Integer(10)),
+                Operation::DecrementValue(r0),
+                Operation::Yield(vec![r0]),
+                Operation::Halt,
+            ],
+            1,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(9));
+    }
+
+    #[test]
+    fn test_decrement_to_zero() {
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+
+        let mut harness = TestHarness::new(
+            &[
+                Operation::StoreValue(r0, ScalarValue::Integer(3)),
+                Operation::StoreValue(r1, ScalarValue::Integer(0)),
+                // Loop: decrement until zero
+                Operation::GoToIfEqualValue(JumpTarget::addr(5), r0, r1),
+                Operation::DecrementValue(r0),
+                Operation::GoTo(JumpTarget::addr(2)),
+                Operation::Yield(vec![r0]),
+                Operation::Halt,
+            ],
+            2,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(0));
     }
 
     #[test]
