@@ -1,8 +1,8 @@
 use crate::engine::program::{JumpTarget, Label, MoveOperation, Operation, Reg};
 use crate::engine::scalarvalue::ScalarValue;
-use crate::planner::{Literal, LogicalPlan};
+use crate::planner::{Literal, LogicalPlan, PlanExpr};
 
-use super::{BytecodeEmitter, RegisterAllocator};
+use super::{compile_expr, BytecodeEmitter, ExprContext, RegisterAllocator};
 
 /// Convert a planner Literal to an engine ScalarValue.
 fn literal_to_scalar(lit: &Literal) -> ScalarValue {
@@ -323,6 +323,118 @@ pub fn codegen_values(
     }
 }
 
+/// Generate bytecode for a Sequence node.
+///
+/// Sequence generates integers from start to end-1 (exclusive upper bound).
+///
+/// ```text
+/// INIT (init_emitter):
+///   value = start
+///   end_val = end
+///
+/// BODY (body_emitter):
+///   CHECK: LessThan(flag, value, end_val); GoToIfFalse(on_done, flag)
+///   EMIT:  CopyValue(output, value); IncrementValue(value); GoTo(on_tuple)
+/// ```
+pub fn codegen_sequence(
+    start: i64,
+    end: i64,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // Allocate registers
+    let value_reg = ctx.registers.alloc();
+    let end_reg = ctx.registers.alloc();
+    let flag_reg = ctx.registers.alloc();
+    let output_reg = ctx.registers.alloc();
+
+    // INIT: initialize value and end
+    ctx.init_emitter
+        .emit(Operation::StoreValue(value_reg, ScalarValue::Integer(start)));
+    ctx.init_emitter
+        .emit(Operation::StoreValue(end_reg, ScalarValue::Integer(end)));
+
+    // BODY:
+    // CHECK: if value >= end, goto on_done
+    let check_label = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(check_label);
+    ctx.body_emitter
+        .emit(Operation::LessThanValue(flag_reg, value_reg, end_reg));
+    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
+
+    // EMIT: copy value to output, increment, goto on_tuple
+    ctx.body_emitter
+        .emit(Operation::CopyValue(output_reg, value_reg));
+    ctx.body_emitter.emit(Operation::IncrementValue(value_reg));
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    NodeOutput {
+        next: check_label,
+        output_regs: vec![output_reg],
+    }
+}
+
+/// Generate bytecode for a Filter node.
+///
+/// Filter is a pass-through node that evaluates a predicate for each input tuple.
+/// Tuples where the predicate is false are skipped.
+///
+/// ```text
+/// // Child's on_tuple wired to FILTER_CHECK
+/// // Child's on_done wired to parent's on_done (propagate)
+///
+/// BODY (body_emitter):
+///   FILTER_CHECK: <compile predicate into pred_reg>
+///                 GoToIfFalse(child.next_label, pred_reg)  // reject → get next
+///                 GoTo(on_tuple)  // accept → emit
+///
+/// next_label = child.next_label  // delegate to child
+/// output_regs = child.output_regs  // pass through
+/// ```
+pub fn codegen_filter(
+    predicate: &PlanExpr,
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // Create label for our filter check
+    let filter_check = ctx.body_emitter.create_label();
+
+    // Child's on_tuple wired to FILTER_CHECK
+    // Child's on_done wired to parent's on_done (propagate exhaustion)
+    let child_cont = NodeContinuation {
+        on_tuple: filter_check,
+        on_done: cont.on_done, // propagate directly
+    };
+
+    // Compile child first
+    let child_output = codegen(input, &child_cont, ctx);
+
+    // FILTER_CHECK: compile predicate and check
+    ctx.body_emitter.bind_label(filter_check);
+
+    // Compile the predicate expression
+    let pred_reg = {
+        let mut expr_ctx = ExprContext {
+            emitter: &mut ctx.body_emitter,
+            registers: &mut ctx.registers,
+        };
+        compile_expr(predicate, &child_output.output_regs, &mut expr_ctx)
+    };
+
+    // If predicate is false, get next from child (reject)
+    ctx.body_emitter.emit_goto_if_false(child_output.next, pred_reg);
+
+    // If predicate is true (fall through), emit the tuple
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // Return: delegate to child for next, pass through output registers
+    NodeOutput {
+        next: child_output.next,
+        output_regs: child_output.output_regs,
+    }
+}
+
 /// Main codegen dispatch function.
 /// Routes to the appropriate codegen based on plan type.
 pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenContext) -> NodeOutput {
@@ -336,9 +448,11 @@ pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenCon
         LogicalPlan::Values { rows } => {
             codegen_values(rows, cont, ctx)
         }
-        LogicalPlan::Filter { .. } => {
-            // TODO: Implement filter codegen
-            panic!("Filter codegen not yet implemented")
+        LogicalPlan::Filter { predicate, input } => {
+            codegen_filter(predicate, input, cont, ctx)
+        }
+        LogicalPlan::Sequence { start, end } => {
+            codegen_sequence(*start, *end, cont, ctx)
         }
         LogicalPlan::Project { .. } => {
             // TODO: Implement project codegen
@@ -385,6 +499,7 @@ mod tests {
     use super::*;
     use crate::engine::scalarvalue::ScalarValue;
     use crate::engine::Engine;
+    use crate::planner::{BinaryOp, ColumnRef, PlanExpr};
     use crate::test::TestDb;
 
     /// Test that codegen_scan produces correct bytecode structure
@@ -601,5 +716,222 @@ mod tests {
         assert_eq!(yields[0][1], ScalarValue::Floating(3.14));
         assert_eq!(yields[0][2], ScalarValue::Boolean(true));
         assert_eq!(yields[0][3], ScalarValue::String("hello".to_string()));
+    }
+
+    // ========================================================================
+    // Sequence tests
+    // ========================================================================
+
+    /// Test Sequence generates correct range
+    #[test]
+    fn test_sequence_basic() {
+        let plan = LogicalPlan::Sequence { start: 1, end: 4 };
+
+        let (ops, num_registers) = compile_plan(&plan);
+
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0][0], ScalarValue::Integer(1));
+        assert_eq!(yields[1][0], ScalarValue::Integer(2));
+        assert_eq!(yields[2][0], ScalarValue::Integer(3));
+    }
+
+    /// Test empty Sequence (start == end)
+    #[test]
+    fn test_sequence_empty() {
+        let plan = LogicalPlan::Sequence { start: 5, end: 5 };
+
+        let (ops, num_registers) = compile_plan(&plan);
+
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 0);
+    }
+
+    /// Test Count(Sequence)
+    #[test]
+    fn test_count_sequence() {
+        let plan = LogicalPlan::Count {
+            input: Box::new(LogicalPlan::Sequence { start: 0, end: 100 }),
+        };
+
+        let (ops, num_registers) = compile_plan(&plan);
+
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(100));
+    }
+
+    // ========================================================================
+    // Filter tests (using Sequence for cleaner tests)
+    // ========================================================================
+
+    /// Helper to create a filter on col[0] with a binary op
+    fn filter_col0(op: BinaryOp, value: i64, input: LogicalPlan) -> LogicalPlan {
+        LogicalPlan::Filter {
+            predicate: PlanExpr::BinaryOp {
+                op,
+                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(value))),
+            },
+            input: Box::new(input),
+        }
+    }
+
+    /// Helper to run a plan and return yields
+    fn run_plan(plan: &LogicalPlan) -> Vec<Vec<ScalarValue>> {
+        let (ops, num_registers) = compile_plan(plan);
+        let test = TestDb::default();
+        let btree = test.btree;
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        engine.run()
+    }
+
+    /// Test Filter with equality predicate
+    #[test]
+    fn test_filter_equality() {
+        // Filter col[0] == 5 from Sequence(1..10)
+        let plan = filter_col0(
+            BinaryOp::Equals,
+            5,
+            LogicalPlan::Sequence { start: 1, end: 10 },
+        );
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(5));
+    }
+
+    /// Test Filter with greater-than predicate
+    #[test]
+    fn test_filter_greater_than() {
+        // Filter col[0] > 7 from Sequence(1..10) -> [8, 9]
+        let plan = filter_col0(
+            BinaryOp::GreaterThan,
+            7,
+            LogicalPlan::Sequence { start: 1, end: 10 },
+        );
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 2);
+        assert_eq!(yields[0][0], ScalarValue::Integer(8));
+        assert_eq!(yields[1][0], ScalarValue::Integer(9));
+    }
+
+    /// Test Filter that rejects all rows
+    #[test]
+    fn test_filter_rejects_all() {
+        // Filter col[0] > 100 from Sequence(1..10) -> []
+        let plan = filter_col0(
+            BinaryOp::GreaterThan,
+            100,
+            LogicalPlan::Sequence { start: 1, end: 10 },
+        );
+
+        let yields = run_plan(&plan);
+        assert_eq!(yields.len(), 0);
+    }
+
+    /// Test Filter that accepts all rows
+    #[test]
+    fn test_filter_accepts_all() {
+        // Filter col[0] > 0 from Sequence(1..4) -> [1, 2, 3]
+        let plan = filter_col0(
+            BinaryOp::GreaterThan,
+            0,
+            LogicalPlan::Sequence { start: 1, end: 4 },
+        );
+
+        let yields = run_plan(&plan);
+        assert_eq!(yields.len(), 3);
+    }
+
+    /// Test Filter with multi-column rows (using Values since Sequence is single-column)
+    #[test]
+    fn test_filter_multi_column() {
+        // Filter on second column: col[1] == 20
+        let plan = LogicalPlan::Filter {
+            predicate: PlanExpr::BinaryOp {
+                op: BinaryOp::Equals,
+                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(20))),
+            },
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![
+                    vec![Literal::Integer(1), Literal::Integer(10)],
+                    vec![Literal::Integer(2), Literal::Integer(20)],
+                    vec![Literal::Integer(3), Literal::Integer(30)],
+                ],
+            }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(2));
+        assert_eq!(yields[0][1], ScalarValue::Integer(20));
+    }
+
+    /// Test Count(Filter(Sequence))
+    #[test]
+    fn test_count_filter_sequence() {
+        // Count { Filter { col[0] > 50, Sequence(1..100) } } -> 49 values (51..99)
+        let plan = LogicalPlan::Count {
+            input: Box::new(filter_col0(
+                BinaryOp::GreaterThan,
+                50,
+                LogicalPlan::Sequence { start: 1, end: 100 },
+            )),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(49)); // 51..99 = 49 values
+    }
+
+    /// Test Filter with AND predicate
+    #[test]
+    fn test_filter_and_predicate() {
+        // Filter col[0] > 3 AND col[0] < 7 from Sequence(1..10) -> [4, 5, 6]
+        let plan = LogicalPlan::Filter {
+            predicate: PlanExpr::BinaryOp {
+                op: BinaryOp::And,
+                left: Box::new(PlanExpr::BinaryOp {
+                    op: BinaryOp::GreaterThan,
+                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    right: Box::new(PlanExpr::Literal(Literal::Integer(3))),
+                }),
+                right: Box::new(PlanExpr::BinaryOp {
+                    op: BinaryOp::LessThan,
+                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    right: Box::new(PlanExpr::Literal(Literal::Integer(7))),
+                }),
+            },
+            input: Box::new(LogicalPlan::Sequence { start: 1, end: 10 }),
+        };
+
+        let yields = run_plan(&plan);
+
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0][0], ScalarValue::Integer(4));
+        assert_eq!(yields[1][0], ScalarValue::Integer(5));
+        assert_eq!(yields[2][0], ScalarValue::Integer(6));
     }
 }

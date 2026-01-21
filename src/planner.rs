@@ -126,6 +126,11 @@ pub enum LogicalPlan {
     /// Each inner Vec is a row; all rows must have the same number of columns.
     Values { rows: Vec<Vec<Literal>> },
 
+    /// Generate a sequence of integers (leaf node, no inputs)
+    /// Useful for testing. Generates rows [start], [start+1], ..., [end-1]
+    /// Output: single integer column
+    Sequence { start: i64, end: i64 },
+
     // Future: Join { left: Box<LogicalPlan>, right: Box<LogicalPlan>, ... }
 }
 
