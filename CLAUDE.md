@@ -45,21 +45,59 @@ SQL Input → Frontend (Lexer/Parser/AST) → Planner → Engine (VM) → Storag
 - `node.rs` - Leaf and interior node structures
 - `cell.rs`, `cell_reader.rs` - Key-value cell storage with overflow support for large values
 
+**REPL** (`src/repl/`): Mode-based interactive CLI
+- `mod.rs` - Main REPL loop and mode switching
+- `mode.rs` - Mode trait and types
+- `modes/` - Individual mode implementations (btree, parser, planner, engine)
+
 ### Key References
 
 - B-tree design inspired by: https://cglab.ca/~abeinges/blah/rust-btree-case/
 - File format based on: https://www.sqlite.org/fileformat.html
 
-## Interactive CLI Commands
+## Interactive CLI
 
-When running with `cargo run -- <db_file>`:
-- `create table <name>` - Create a new table (B-tree)
-- `read table <name>` - Open a cursor on a table
-- `insert <key> <value>` - Insert key-value pair
-- `first`/`next`/`prev`/`find <key>` - Navigate cursor
-- `print data` - Print all entries
-- `verify` - Verify B-tree integrity
-- `dump <path>` - Export B-tree as graphviz dot file
+The REPL uses a mode-based architecture. Run with `cargo run -- <db_file>`:
+
+```
+db> modes              # List available modes
+db> enter <mode>       # Enter a mode
+db> back               # Return to root mode
+db> exit               # Exit REPL
+```
+
+### Modes
+
+**btree** - B-tree storage operations
+```
+btree> create table <name>     # Create a new table
+btree> open <name>             # Open cursor on table
+btree> insert <key> <value>    # Insert key-value pair
+btree> first/next/prev/find    # Navigate cursor
+btree> print / print data      # Print current/all entries
+btree> verify                  # Verify B-tree integrity
+btree> dump <path>             # Export as graphviz dot
+```
+
+**parser** - SQL lexer and parser inspection
+```
+parser> tokenize <sql>         # Show lexer tokens
+parser> parse <sql>            # Show AST
+parser> both <sql>             # Show tokens and AST
+```
+
+**planner** - Query planning
+```
+planner> mock schema           # Create test schema (users table)
+planner> schema                # Show current schema
+planner> plan <sql>            # Show logical plan
+```
+
+**engine** - Bytecode compilation
+```
+engine> compile <sql>          # Compile SQL to bytecode
+engine> program                # Show bytecode listing
+```
 
 ## Makefile Targets
 

@@ -15,6 +15,7 @@ use crate::engine::program::Operation;
 use crate::planner::LogicalPlan;
 
 /// A compiled program ready for execution by the VM.
+#[derive(Debug)]
 pub struct CompiledProgram {
     /// The bytecode operations
     pub operations: Vec<Operation>,

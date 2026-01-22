@@ -9,8 +9,8 @@ PROG=target/release/database
 
 %.dot : %.db $(PROG)
 	rm -f $@
-	echo "dump $@" | $(PROG) $<
+	echo "enter btree\ndump $@" | $(PROG) $<
 
 big.db:
 	rm -f $@
-	echo "create table a\nread table a\nrandom insert 1000000 250" | $(PROG) $@
+	echo "enter btree\ncreate table a\nread table a\nrandom insert 1000000 250" | $(PROG) $@
