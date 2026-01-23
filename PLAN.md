@@ -53,3 +53,100 @@ This is the core of the change.
 
 - All tests that currently use `btree.create_tree("test")` will be refactored.
 - The test setup will now involve bootstrapping the database with a `db_schema` table that already contains the definition for the `"test"` table. This ensures the tests can run against the new catalog-based lookup mechanism.
+
+## 6. Query Execution Flow Diagram
+
+```
+                         ┌─────────────────────────────────┐
+                         │  SELECT name, age FROM users    │
+                         └─────────────────┬───────────────┘
+                                           │
+                                           ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              PLANNER                                         │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ 1. Generate Meta-Query                                                 │  │
+│  │    SELECT rootpage, sql FROM db_schema WHERE name = 'users'            │  │
+│  └───────────────────────────────┬────────────────────────────────────────┘  │
+│                                  │                                           │
+│                                  ▼                                           │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ 2. Execute Meta-Query (hardcoded: db_schema at page 1)                 │  │
+│  │    Result: rootpage=5, sql="CREATE TABLE users (id, name, age)"        │  │
+│  └───────────────────────────────┬────────────────────────────────────────┘  │
+│                                  │                                           │
+│                                  ▼                                           │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ 3. Parse DDL → Build Schema                                            │  │
+│  │    "CREATE TABLE users (id, name, age)" → {id:0, name:1, age:2}        │  │
+│  └───────────────────────────────┬────────────────────────────────────────┘  │
+│                                  │                                           │
+│                                  ▼                                           │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ 4. Generate LogicalPlan                                                │  │
+│  │    Scan { rootpage: 5, columns: [1, 2] }  ← (name=1, age=2)            │  │
+│  └───────────────────────────────┬────────────────────────────────────────┘  │
+└──────────────────────────────────┼───────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              COMPILER                                        │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ 5. codegen_scan(rootpage=5, columns=[1,2])                             │  │
+│  │                                                                        │  │
+│  │    Bytecode:                                                           │  │
+│  │      0: Open       cursor=0, rootpage=5                                │  │
+│  │      1: MoveCursor cursor=0, First                                     │  │
+│  │      2: ReadCursor cursor=0, col=1, reg=0   ← name                     │  │
+│  │      3: ReadCursor cursor=0, col=2, reg=1   ← age                      │  │
+│  │      4: Yield                                                          │  │
+│  │      5: MoveCursor cursor=0, Next                                      │  │
+│  │      6: GoTo       2                                                   │  │
+│  │      7: Halt                                                           │  │
+│  └───────────────────────────────┬────────────────────────────────────────┘  │
+└──────────────────────────────────┼───────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                               ENGINE (VM)                                    │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ 6. Execute Bytecode                                                    │  │
+│  │                                                                        │  │
+│  │    Open → BTree::open(rootpage=5)                                      │  │
+│  │           │                                                            │  │
+│  │           ▼                                                            │  │
+│  │    ┌─────────────────────────────────────────────────────────────────┐ │  │
+│  │    │              STORAGE (B-Tree)                                   │ │  │
+│  │    │                                                                 │ │  │
+│  │    │   Page 5 (root of 'users' table)                                │ │  │
+│  │    │      ┌───┬─────┬───┐                                            │ │  │
+│  │    │      │id │name │age│  ← cursor reads cols                       │ │  │
+│  │    │      ├───┼─────┼───┤                                            │ │  │
+│  │    │      │ 1 │Bob  │ 25│                                            │ │  │
+│  │    │      │ 2 │Alice│ 30│                                            │ │  │
+│  │    │      └───┴─────┴───┘                                            │ │  │
+│  │    └─────────────────────────────────────────────────────────────────┘ │  │
+│  │                                                                        │  │
+│  │    Yield → Output row: ("Bob", 25)                                     │  │
+│  │    Yield → Output row: ("Alice", 30)                                   │  │
+│  │    Halt  → Done                                                        │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+                         ┌─────────────────────────────────┐
+                         │  Result:                        │
+                         │    name  | age                  │
+                         │    ------+-----                 │
+                         │    Bob   | 25                   │
+                         │    Alice | 30                   │
+                         └─────────────────────────────────┘
+```
+
+**Key changes from the refactor:**
+
+1. **Planner** now queries `db_schema` (at fixed page 1) to find table metadata
+2. **DDL parsing** extracts column names/indices from the stored `CREATE TABLE` statement
+3. **LogicalPlan** uses `rootpage: u32` instead of `table: String`
+4. **Open instruction** takes a page number directly, not a table name
+5. **BTree::open()** accepts `rootpage` directly, no name-based lookup in Pager
