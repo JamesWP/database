@@ -132,6 +132,18 @@ impl PartialEq for ScalarValue {
     }
 }
 
+impl std::fmt::Display for ScalarValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use colored::Colorize;
+        match self {
+            ScalarValue::Integer(i) => write!(f, "{}", i.to_string().green()),
+            ScalarValue::Floating(fl) => write!(f, "{}", fl.to_string().green()),
+            ScalarValue::Boolean(b) => write!(f, "{}", b.to_string().green()),
+            ScalarValue::String(s) => write!(f, "{}", format!("\"{}\"", s).green()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

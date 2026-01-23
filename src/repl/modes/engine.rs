@@ -1,3 +1,5 @@
+use colored::Colorize;
+
 use crate::compiler::{compile, CompiledProgram};
 use crate::frontend::parse;
 use crate::planner::plan;
@@ -59,7 +61,7 @@ impl Mode for EngineMode {
             }
 
             // Program inspection
-            ["program"] | ["show"] => match &self.program {
+            ["program"] | ["show"] | ["list"] => match &self.program {
                 Some(p) => {
                     let mut output = format!(
                         "Program ({} ops, {} regs):\n",
@@ -67,7 +69,7 @@ impl Mode for EngineMode {
                         p.num_registers
                     );
                     for (i, op) in p.operations.iter().enumerate() {
-                        output += &format!("{:4}: {:?}\n", i, op);
+                        output += &format!("{}  {}\n", format!("{:4}", i).dimmed(), op);
                     }
                     CommandResult::Message(output)
                 }
@@ -87,9 +89,9 @@ impl Mode for EngineMode {
 
     fn help(&self) -> String {
         r#"Engine/VM mode commands:
-  compile <sql>   Compile SQL to bytecode (requires schema from planner mode)
-  program/show    Show compiled bytecode listing
-  clear/reset     Clear compiled program
+  compile <sql>       Compile SQL to bytecode (requires schema from planner mode)
+  program/show/list   Show compiled bytecode listing
+  clear/reset         Clear compiled program
 
 Note: Full VM execution requires btree integration (future work)"#
             .to_string()
