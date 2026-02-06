@@ -39,14 +39,17 @@ impl Mode for BTreeMode {
 
     fn execute(&mut self, tokens: &[&str], shared: &mut SharedState) -> CommandResult {
         match tokens {
+            // TODO: Update to use db_schema catalog instead of pager name-based lookup
             // Table management
             ["create", "table", rest @ ..] => {
                 let name = rest.join(" ");
                 if name.is_empty() {
                     return CommandResult::Error("Usage: create table <name>".to_string());
                 }
-                shared.btree.create_tree(&name);
-                CommandResult::Message(format!("Created table '{}'", name))
+                let root_page = shared.btree.create_tree();
+                // Temporarily use pager's name-based tracking until catalog is in place
+                shared.btree.register_tree(&name, root_page);
+                CommandResult::Message(format!("Created table '{}' at page {}", name, root_page))
             }
 
             // Cursor operations
@@ -62,8 +65,10 @@ impl Mode for BTreeMode {
                     );
                 }
 
-                match shared.btree.open(&name) {
-                    Some(handle) => {
+                // Temporarily use pager's name-based lookup until catalog is in place
+                match shared.btree.get_root_page(&name) {
+                    Some(root_page) => {
+                        let handle = shared.btree.open(root_page);
                         self.cursor = Some(CursorState {
                             table_name: name.clone(),
                             handle,
@@ -180,15 +185,16 @@ impl Mode for BTreeMode {
             }
 
             // Debug operations
+            // TODO: Re-add verify-all by querying db_schema for all root pages
             ["verify"] => {
-                let result = match &mut self.cursor {
-                    None => shared.btree.verify(),
-                    Some(cursor) => cursor.handle.open_readonly().verify(),
-                };
-
-                match result {
-                    Ok(_) => CommandResult::Message("Verify success!".to_string()),
-                    Err(e) => CommandResult::Error(format!("Verify failed: {:?}", e)),
+                match &mut self.cursor {
+                    None => CommandResult::Error("No cursor open. Use 'open <table>' first.".to_string()),
+                    Some(cursor) => {
+                        match cursor.handle.open_readonly().verify() {
+                            Ok(_) => CommandResult::Message("Verify success!".to_string()),
+                            Err(e) => CommandResult::Error(format!("Verify failed: {:?}", e)),
+                        }
+                    }
                 }
             }
 

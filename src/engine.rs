@@ -233,7 +233,9 @@ impl Engine {
             }
             Open(reg, name) => {
                 let btree = self.btree.as_ref().unwrap();
-                let cursor = btree.open(&name).unwrap();
+                // TODO: Operation::Open will take a u32 rootpage directly (Task #4)
+                let root_page = btree.get_root_page(&name).unwrap();
+                let cursor = btree.open(root_page);
                 *self.registers.get_mut(reg) = RegisterValue::CursorHandle(cursor);
             }
             MoveCursor(reg, operation) => {
@@ -813,9 +815,10 @@ mod test {
     fn test_btree_open() {
         let test = TestDb::default();
         let mut btree = test.btree;
-        btree.create_tree("test");
+        let root = btree.create_tree();
+        btree.register_tree("test", root);
 
-        let mut cursor = btree.open("test").unwrap();
+        let mut cursor = btree.open(root);
         let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[12345,6789]".to_vec());
         cursor.insert(1, b"[12345]".to_vec());
@@ -854,9 +857,10 @@ mod test {
     fn test_read_all_data() {
         let test = TestDb::default();
         let mut btree = test.btree;
-        btree.create_tree("test");
+        let root = btree.create_tree();
+        btree.register_tree("test", root);
 
-        let mut cursor = btree.open("test").unwrap();
+        let mut cursor = btree.open(root);
         let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[12345,6789]".to_vec());
         cursor.insert(1, b"[12345,0]".to_vec());
@@ -903,7 +907,8 @@ mod test {
     fn test_engine_with_program_simple() {
         let test = TestDb::default();
         let mut btree = test.btree;
-        btree.create_tree("test");
+        let root = btree.create_tree();
+        btree.register_tree("test", root);
 
         let r0 = Reg::new(0);
         let ops = [
@@ -923,10 +928,11 @@ mod test {
     fn test_engine_with_program_btree_scan() {
         let test = TestDb::default();
         let mut btree = test.btree;
-        btree.create_tree("test");
+        let root = btree.create_tree();
+        btree.register_tree("test", root);
 
         // Insert test data
-        let mut cursor = btree.open("test").unwrap();
+        let mut cursor = btree.open(root);
         let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[100, 200]".to_vec());
         cursor.insert(1, b"[300, 400]".to_vec());
@@ -963,7 +969,8 @@ mod test {
     fn test_engine_run_empty_table() {
         let test = TestDb::default();
         let mut btree = test.btree;
-        btree.create_tree("test");
+        let root = btree.create_tree();
+        btree.register_tree("test", root);
         // No data inserted - empty table
 
         let r0 = Reg::new(0);

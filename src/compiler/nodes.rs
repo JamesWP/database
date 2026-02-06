@@ -663,9 +663,10 @@ mod tests {
         // Create test database with 3 rows
         let test = TestDb::default();
         let mut btree = test.btree;
-        btree.create_tree("test");
+        let root = btree.create_tree();
+        btree.register_tree("test", root);
 
-        let mut cursor = btree.open("test").unwrap();
+        let mut cursor = btree.open(root);
         let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[1, 100]".to_vec());
         cursor.insert(1, b"[2, 200]".to_vec());
@@ -696,7 +697,8 @@ mod tests {
         // Create test database with empty table
         let test = TestDb::default();
         let mut btree = test.btree;
-        btree.create_tree("test");
+        let root = btree.create_tree();
+        btree.register_tree("test", root);
 
         // Run through engine
         let mut engine = Engine::with_program(&ops, num_registers, btree);
@@ -720,9 +722,10 @@ mod tests {
         // Create test database with data
         let test = TestDb::default();
         let mut btree = test.btree;
-        btree.create_tree("test");
+        let root = btree.create_tree();
+        btree.register_tree("test", root);
 
-        let mut cursor = btree.open("test").unwrap();
+        let mut cursor = btree.open(root);
         let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[10, 20]".to_vec());
         cursor.insert(1, b"[30, 40]".to_vec());

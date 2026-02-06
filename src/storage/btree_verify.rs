@@ -86,8 +86,7 @@ fn verify_node(pager: &Pager, node: NodePage) -> Result<usize, VerifyError> {
     }
 }
 
-pub fn verify(pager: &Pager, tree_name: &str) -> Result<(), VerifyError> {
-    let root_page_idx = pager.get_root_page(tree_name).unwrap();
+pub fn verify(pager: &Pager, root_page_idx: u32) -> Result<(), VerifyError> {
     let root_page: NodePage = pager.get_and_decode(root_page_idx);
 
     match root_page {
@@ -106,10 +105,3 @@ pub fn verify(pager: &Pager, tree_name: &str) -> Result<(), VerifyError> {
     Ok(())
 }
 
-pub fn verify_all_trees(pager: &Pager) -> Result<(), VerifyError> {
-    let tree_names = pager.get_tree_names();
-    for tree_name in tree_names {
-        verify(pager, &tree_name)?;
-    }
-    Ok(())
-}

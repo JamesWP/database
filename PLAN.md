@@ -24,15 +24,24 @@ The primary goal is to enable the query planner to find table metadata (specific
   2. Manually adding rows to this B-Tree to describe itself and any other built-in or test tables. For example, to make the old `"test"` table available, we will add a row to `db_schema` like:
      `('table', 'test', 'test', <rootpage_for_test_table>, 'CREATE TABLE test (col1, col2);')`
 
-## 3. Remove Name-based Lookups from Pager
+## 3. Root Page Tracking Strategy
+
+When a B-tree root splits, the root page number changes. Tracking this is split across two levels:
+
+- **ZeroPage** stores a single `schema_root_page: u32` field (replacing the old `root_pages: HashMap<String, u32>`). This tracks only where the `db_schema` catalog's root currently lives. Initially page 1, but may change if the catalog grows.
+- **db_schema catalog** stores `rootpage` for every other table. When a table's root splits, the **caller** (engine/planner) is responsible for updating the corresponding `db_schema` row.
+- **CursorHandle** exposes `root_page() -> u32` so callers can detect when a root page changed after an insert. The cursor's `CursorState` stores `root_page: u32` (replacing the old `tree_name: String`) and updates it during `split_page` when a new root is created.
+
+## 4. Remove Name-based Lookups from Pager
 
 - The following methods, which rely on string names, will be removed from `src/storage/pager.rs`:
   - `get_root_page(tree_name: &str)`
   - `set_root_page(tree_name: &str, page_idx: u32)`
+- The `root_pages: HashMap<String, u32>` in `ZeroPage` will be replaced with `schema_root_page: u32`.
 - The `BTree::open(tree_name: &str)` method will be changed to `BTree::open(root_page: u32)`, accepting a page number directly.
 - The `BTree::create_tree` method will be removed for now, as table creation will eventually be handled by the engine, not directly in the storage layer.
 
-## 4. Refactor Query Execution Flow
+## 5. Refactor Query Execution Flow
 
 This is the core of the change.
 
@@ -49,12 +58,12 @@ This is the core of the change.
   - The `Operation::Open` bytecode instruction will be changed to take a `u32` root page number instead of a `String` table name.
   - The `Engine`'s handler for `Operation::Open` will now receive a page number and pass it directly to a new `BTree::open(rootpage: u32)` method.
 
-## 5. Update Tests
+## 6. Update Tests
 
 - All tests that currently use `btree.create_tree("test")` will be refactored.
 - The test setup will now involve bootstrapping the database with a `db_schema` table that already contains the definition for the `"test"` table. This ensures the tests can run against the new catalog-based lookup mechanism.
 
-## 6. Query Execution Flow Diagram
+## 7. Query Execution Flow Diagram
 
 ```
                          ┌─────────────────────────────────┐
