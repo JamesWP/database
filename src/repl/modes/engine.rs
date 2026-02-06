@@ -32,18 +32,8 @@ impl Mode for EngineMode {
                     return CommandResult::Error("Usage: compile <sql>".to_string());
                 }
 
-                let schema = match &shared.schema {
-                    Some(s) => s,
-                    None => {
-                        return CommandResult::Error(
-                            "No schema defined. Use planner mode to 'mock schema' first."
-                                .to_string(),
-                        )
-                    }
-                };
-
                 match parse(&sql) {
-                    Ok(stmt) => match plan(stmt, schema) {
+                    Ok(stmt) => match plan(stmt, &shared.btree) {
                         Ok(logical_plan) => {
                             let compiled = compile(&logical_plan);
                             let msg = format!(

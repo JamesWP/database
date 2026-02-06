@@ -3,7 +3,9 @@
 //! Converts AST to a tree of logical operators (LogicalPlan).
 //! The compiler (future) will convert LogicalPlan to bytecode.
 
-use crate::frontend::ast::Statement;
+use crate::frontend::ast::{self, Statement};
+use crate::frontend::parse;
+use crate::storage::BTree;
 
 // ============================================================================
 // Operators
@@ -175,25 +177,50 @@ pub mod schema {
 // Planning
 // ============================================================================
 
-/// Convert an AST Statement to a LogicalPlan
-pub fn plan(statement: Statement, schema: &schema::Schema) -> Result<LogicalPlan, PlanError> {
+/// Convert an AST Statement to a LogicalPlan by querying the db_schema catalog.
+pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
     match statement {
-        Statement::Select(select) => plan_select(select, schema),
+        Statement::Select(select) => plan_select(select, btree),
         Statement::CreateTable(_) => Err(PlanError::UnsupportedStatement),
     }
 }
 
+/// Resolve a table name to a schema::Table by querying the db_schema catalog
+/// and parsing the stored DDL.
+fn resolve_table(table_name: &str, btree: &BTree) -> Result<schema::Table, PlanError> {
+    let (rootpage, sql) = btree
+        .lookup_table(table_name)
+        .ok_or_else(|| PlanError::TableNotFound(table_name.to_string()))?;
+
+    // Parse the stored CREATE TABLE DDL to extract column definitions
+    let stmt = parse(&sql).map_err(|_| PlanError::UnsupportedStatement)?;
+    let create = match stmt {
+        Statement::CreateTable(c) => c,
+        _ => return Err(PlanError::UnsupportedStatement),
+    };
+
+    let columns = create
+        .columns
+        .into_iter()
+        .map(|col| schema::Column { name: col.name })
+        .collect();
+
+    Ok(schema::Table {
+        name: table_name.to_string(),
+        rootpage,
+        columns,
+    })
+}
+
 fn plan_select(
     select: ast::SelectStatement,
-    schema: &schema::Schema,
+    btree: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     // 1. Extract table info from FROM clause
     let (table_name, table_ref) = extract_table_info(&select.from)?;
 
-    // 2. Look up table in schema
-    let table = schema
-        .get_table(&table_name)
-        .ok_or_else(|| PlanError::TableNotFound(table_name.clone()))?;
+    // 2. Look up table in catalog
+    let table = resolve_table(&table_name, btree)?;
 
     // 3. Collect all column references from SELECT and WHERE
     let mut columns_needed = HashSet::new();
@@ -205,7 +232,7 @@ fn plan_select(
     }
 
     // 4. Build column mapping
-    let mapping = build_column_mapping(&columns_needed, table, &table_ref)?;
+    let mapping = build_column_mapping(&columns_needed, &table, &table_ref)?;
 
     // 5. Build expression context
     let ctx = ExprContext {
@@ -312,7 +339,6 @@ pub enum PlanError {
 // ============================================================================
 
 use std::collections::HashMap;
-use crate::frontend::ast;
 
 // TODO: For JOIN support, replace ExprContext with a ColumnResolver that handles:
 //
@@ -529,6 +555,7 @@ fn convert_unary_op(op: &ast::UnaryOp) -> UnaryOp {
 mod tests {
     use super::*;
     use crate::frontend::parse;
+    use crate::test::TestDb;
 
     // ========================================================================
     // Expression Converter Tests
@@ -885,24 +912,20 @@ mod tests {
     // Plan Tests
     // ========================================================================
 
-    fn make_users_schema() -> schema::Schema {
-        schema::Schema {
-            tables: vec![schema::Table {
-                name: "users".to_string(),
-                rootpage: 5,
-                columns: vec![
-                    schema::Column {
-                        name: "id".to_string(),
-                    },
-                    schema::Column {
-                        name: "name".to_string(),
-                    },
-                    schema::Column {
-                        name: "age".to_string(),
-                    },
-                ],
-            }],
-        }
+    /// Create a test database with a "users" table (id, name, age) registered in the catalog.
+    /// Returns (TestDb, users_rootpage) - TestDb must be kept alive for the BTree.
+    fn make_users_db() -> (TestDb, u32) {
+        let mut test = TestDb::default();
+        let users_root = test.btree.create_tree();
+        test.btree.insert_schema_entry(
+            1,
+            "table",
+            "users",
+            "users",
+            users_root,
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+        );
+        (test, users_root)
     }
 
     fn parse_sql(sql: &str) -> Statement {
@@ -917,14 +940,14 @@ mod tests {
     ///   └─ Scan { table: "users", columns: [0, 1] }
     #[test]
     fn test_simple_select() {
-        let schema = make_users_schema();
+        let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT id, name FROM users");
 
-        let plan = plan(stmt, &schema).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
-                rootpage: 5,
+                rootpage: users_root,
                 columns: vec![0, 1], // id, name
             }),
             columns: vec![
@@ -945,15 +968,15 @@ mod tests {
     ///        └─ Scan { table: "users", columns: [1, 2] }   // name, age
     #[test]
     fn test_select_with_where() {
-        let schema = make_users_schema();
+        let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT name FROM users WHERE age > 21");
 
-        let plan = plan(stmt, &schema).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Filter {
                 input: Box::new(LogicalPlan::Scan {
-                    rootpage: 5,
+                    rootpage: users_root,
                     columns: vec![1, 2], // name, age
                 }),
                 predicate: PlanExpr::BinaryOp {
@@ -977,15 +1000,15 @@ mod tests {
     ///        └─ Scan { table: "users", columns: [1] }
     #[test]
     fn test_select_with_limit() {
-        let schema = make_users_schema();
+        let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT name FROM users LIMIT 10");
 
-        let plan = plan(stmt, &schema).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Limit {
             input: Box::new(LogicalPlan::Project {
                 input: Box::new(LogicalPlan::Scan {
-                    rootpage: 5,
+                    rootpage: users_root,
                     columns: vec![1], // name
                 }),
                 columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })],
@@ -1002,14 +1025,14 @@ mod tests {
     #[test]
     #[ignore = "parser does not yet support SELECT *"]
     fn test_select_star() {
-        let schema = make_users_schema();
+        let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT * FROM users");
 
-        let plan = plan(stmt, &schema).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
-                rootpage: 5,
+                rootpage: users_root,
                 columns: vec![0, 1, 2], // all columns
             }),
             columns: vec![
@@ -1025,10 +1048,10 @@ mod tests {
     /// Error case: table not found
     #[test]
     fn test_table_not_found() {
-        let schema = make_users_schema();
+        let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT id FROM nonexistent");
 
-        let result = plan(stmt, &schema);
+        let result = plan(stmt, &test.btree);
 
         assert_eq!(
             result,
@@ -1039,10 +1062,10 @@ mod tests {
     /// Error case: column not found
     #[test]
     fn test_column_not_found() {
-        let schema = make_users_schema();
+        let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT nonexistent FROM users");
 
-        let result = plan(stmt, &schema);
+        let result = plan(stmt, &test.btree);
 
         assert_eq!(
             result,

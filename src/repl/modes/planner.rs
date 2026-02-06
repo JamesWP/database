@@ -1,5 +1,5 @@
 use crate::frontend::parse;
-use crate::planner::{plan, schema, LogicalPlan};
+use crate::planner::{plan, LogicalPlan};
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
 
 /// Planner mode - for inspecting query plans
@@ -23,24 +23,28 @@ impl Mode for PlannerMode {
     fn execute(&mut self, tokens: &[&str], shared: &mut SharedState) -> CommandResult {
         match tokens {
             // Schema management
-            ["schema"] => match &shared.schema {
-                Some(s) => CommandResult::Message(format!("Schema:\n{:#?}", s)),
-                None => CommandResult::Message(
-                    "No schema defined. Use 'mock schema' to create a test schema.".to_string(),
-                ),
-            },
-
-            ["mock", "schema"] => {
-                shared.schema = Some(create_mock_schema());
-                CommandResult::Message(
-                    "Created mock schema with 'users' table (id, name, age)".to_string(),
-                )
+            ["schema"] => {
+                // List all tables in the catalog
+                match shared.btree.lookup_table("db_schema") {
+                    Some((_, sql)) => CommandResult::Message(format!("Catalog DDL: {}", sql)),
+                    None => CommandResult::Message("No catalog found".to_string()),
+                }
             }
 
-            ["clear", "schema"] => {
-                shared.schema = None;
-                self.last_plan = None;
-                CommandResult::Message("Schema cleared".to_string())
+            ["mock", "schema"] => {
+                let users_root = shared.btree.create_tree();
+                shared.btree.insert_schema_entry(
+                    1,
+                    "table",
+                    "users",
+                    "users",
+                    users_root,
+                    "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+                );
+                CommandResult::Message(format!(
+                    "Created 'users' table (id, name, age) at page {}",
+                    users_root
+                ))
             }
 
             // Planning
@@ -50,17 +54,8 @@ impl Mode for PlannerMode {
                     return CommandResult::Error("Usage: plan <sql>".to_string());
                 }
 
-                let schema = match &shared.schema {
-                    Some(s) => s,
-                    None => {
-                        return CommandResult::Error(
-                            "No schema defined. Use 'mock schema' first.".to_string(),
-                        )
-                    }
-                };
-
                 match parse(&sql) {
-                    Ok(stmt) => match plan(stmt, schema) {
+                    Ok(stmt) => match plan(stmt, &shared.btree) {
                         Ok(logical_plan) => {
                             let msg = format!("LogicalPlan:\n{:#?}", logical_plan);
                             self.last_plan = Some(logical_plan);
@@ -85,31 +80,10 @@ impl Mode for PlannerMode {
 
     fn help(&self) -> String {
         r#"Planner mode commands:
-  schema          Show current schema
-  mock schema     Create a mock schema (users table with id, name, age)
-  clear schema    Remove schema
+  schema          Show catalog DDL
+  mock schema     Create a mock 'users' table in the catalog
   plan <sql>      Parse and plan SQL query, show logical plan
   last            Show last planned query"#
             .to_string()
-    }
-}
-
-fn create_mock_schema() -> schema::Schema {
-    schema::Schema {
-        tables: vec![schema::Table {
-            name: "users".to_string(),
-            rootpage: 1, // mock root page for testing
-            columns: vec![
-                schema::Column {
-                    name: "id".to_string(),
-                },
-                schema::Column {
-                    name: "name".to_string(),
-                },
-                schema::Column {
-                    name: "age".to_string(),
-                },
-            ],
-        }],
     }
 }
