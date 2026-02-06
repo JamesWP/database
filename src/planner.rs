@@ -89,8 +89,9 @@ pub enum PlanExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
     /// Scan rows from a table (leaf node, no inputs)
+    /// rootpage: the B-tree root page number for this table
     /// columns: indices of columns to read from the table schema
-    Scan { table: String, columns: Vec<usize> },
+    Scan { rootpage: u32, columns: Vec<usize> },
 
     /// Filter rows based on a predicate (1 input)
     /// Pass-through: outputs all columns from its child unchanged.
@@ -147,6 +148,7 @@ pub mod schema {
     #[derive(Debug, Clone)]
     pub struct Table {
         pub name: String,
+        pub rootpage: u32,
         pub columns: Vec<Column>,
     }
 
@@ -220,7 +222,7 @@ fn plan_select(
 
     // 7. Build plan bottom-up: Scan → Filter? → Project → Limit?
     let mut plan = LogicalPlan::Scan {
-        table: table_name,
+        rootpage: table.rootpage,
         columns: mapping.scan_columns,
     };
 
@@ -811,6 +813,7 @@ mod tests {
     fn make_test_table() -> schema::Table {
         schema::Table {
             name: "users".to_string(),
+            rootpage: 5,
             columns: vec![
                 schema::Column { name: "id".to_string() },
                 schema::Column { name: "name".to_string() },
@@ -886,6 +889,7 @@ mod tests {
         schema::Schema {
             tables: vec![schema::Table {
                 name: "users".to_string(),
+                rootpage: 5,
                 columns: vec![
                     schema::Column {
                         name: "id".to_string(),
@@ -920,7 +924,7 @@ mod tests {
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
-                table: "users".to_string(),
+                rootpage: 5,
                 columns: vec![0, 1], // id, name
             }),
             columns: vec![
@@ -949,7 +953,7 @@ mod tests {
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Filter {
                 input: Box::new(LogicalPlan::Scan {
-                    table: "users".to_string(),
+                    rootpage: 5,
                     columns: vec![1, 2], // name, age
                 }),
                 predicate: PlanExpr::BinaryOp {
@@ -981,7 +985,7 @@ mod tests {
         let expected = LogicalPlan::Limit {
             input: Box::new(LogicalPlan::Project {
                 input: Box::new(LogicalPlan::Scan {
-                    table: "users".to_string(),
+                    rootpage: 5,
                     columns: vec![1], // name
                 }),
                 columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })],
@@ -1005,7 +1009,7 @@ mod tests {
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
-                table: "users".to_string(),
+                rootpage: 5,
                 columns: vec![0, 1, 2], // all columns
             }),
             columns: vec![

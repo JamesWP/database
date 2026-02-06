@@ -231,11 +231,9 @@ impl Engine {
             Halt => {
                 return StepResult::Ok(StepSuccess::Halt);
             }
-            Open(reg, name) => {
+            Open(reg, rootpage) => {
                 let btree = self.btree.as_ref().unwrap();
-                // TODO: Operation::Open will take a u32 rootpage directly (Task #4)
-                let root_page = btree.get_root_page(&name).unwrap();
-                let cursor = btree.open(root_page);
+                let cursor = btree.open(rootpage);
                 *self.registers.get_mut(reg) = RegisterValue::CursorHandle(cursor);
             }
             MoveCursor(reg, operation) => {
@@ -816,8 +814,6 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
-        btree.register_tree("test", root);
-
         let mut cursor = btree.open(root);
         let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[12345,6789]".to_vec());
@@ -832,8 +828,8 @@ mod test {
 
         let mut harness = TestHarness::new_with_btree(
             &[
-                // Open Cursor to "test"
-                Operation::Open(r0, "test".to_string()),
+                // Open Cursor to test table
+                Operation::Open(r0, root),
                 // Move Cursor to first record
                 Operation::MoveCursor(r0, MoveOperation::First),
                 // Read Record Key
@@ -858,7 +854,6 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
-        btree.register_tree("test", root);
 
         let mut cursor = btree.open(root);
         let mut cursor = cursor.open_readwrite();
@@ -875,7 +870,7 @@ mod test {
 
         let mut harness = TestHarness::new_with_btree(
             &[
-                Operation::Open(r0, "test".to_string()),
+                Operation::Open(r0, root),
                 Operation::MoveCursor(r0, MoveOperation::First),
                 Operation::CanReadCursor(r1, r0),  // Next
                 Operation::GoToIfFalse(JumpTarget::addr(8), r1), // Goto End
@@ -906,9 +901,7 @@ mod test {
     #[test]
     fn test_engine_with_program_simple() {
         let test = TestDb::default();
-        let mut btree = test.btree;
-        let root = btree.create_tree();
-        btree.register_tree("test", root);
+        let btree = test.btree;
 
         let r0 = Reg::new(0);
         let ops = [
@@ -929,7 +922,6 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
-        btree.register_tree("test", root);
 
         // Insert test data
         let mut cursor = btree.open(root);
@@ -944,7 +936,7 @@ mod test {
         let r3 = Reg::new(3);
 
         let ops = [
-            Operation::Open(r0, "test".to_string()),
+            Operation::Open(r0, root),
             Operation::MoveCursor(r0, MoveOperation::First),
             Operation::CanReadCursor(r1, r0),
             Operation::GoToIfFalse(JumpTarget::addr(8), r1),
@@ -970,7 +962,6 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
-        btree.register_tree("test", root);
         // No data inserted - empty table
 
         let r0 = Reg::new(0);
@@ -978,7 +969,7 @@ mod test {
         let r2 = Reg::new(2);
 
         let ops = [
-            Operation::Open(r0, "test".to_string()),
+            Operation::Open(r0, root),
             Operation::MoveCursor(r0, MoveOperation::First),
             Operation::CanReadCursor(r1, r0),
             Operation::GoToIfFalse(JumpTarget::addr(7), r1),

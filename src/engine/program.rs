@@ -69,7 +69,7 @@ pub enum Operation {
     CopyValue(Reg, Reg),                 // Reg = Reg (copy value)
 
     // Db
-    Open(Reg, String),
+    Open(Reg, u32),
     MoveCursor(Reg, MoveOperation),
     ReadCursor(Vec<Reg>, Reg), // TODO: allow program to select which columns to read and type check
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
@@ -186,9 +186,9 @@ impl std::fmt::Display for Operation {
             CopyValue(d, s) => write!(f, "{:10} {}, {}", "Copy".cyan().bold(), d, s),
 
             // Database operations
-            Open(r, table) => {
+            Open(r, rootpage) => {
                 use colored::Colorize;
-                write!(f, "{:10} {}, {}", "Open".cyan().bold(), r, format!("\"{}\"", table).green())
+                write!(f, "{:10} {}, {}", "Open".cyan().bold(), r, format!("page:{}", rootpage).green())
             }
             MoveCursor(r, op) => write!(f, "{:10} {}, {}", "MoveCursor".cyan().bold(), r, op),
             ReadCursor(regs, cursor) => {

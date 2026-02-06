@@ -117,7 +117,7 @@ pub struct NodeOutput {
 ///   EMIT:    GoTo(on_tuple)
 /// ```
 pub fn codegen_scan(
-    table: &str,
+    rootpage: u32,
     num_columns: usize,
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
@@ -129,7 +129,7 @@ pub fn codegen_scan(
 
     // INIT (init_emitter): Open cursor and move to first row
     ctx.init_emitter
-        .emit(Operation::Open(cursor_reg, table.to_string()));
+        .emit(Operation::Open(cursor_reg, rootpage));
     ctx.init_emitter
         .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
 
@@ -567,8 +567,8 @@ pub fn codegen_limit(
 /// Routes to the appropriate codegen based on plan type.
 pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenContext) -> NodeOutput {
     match plan {
-        LogicalPlan::Scan { table, columns } => {
-            codegen_scan(table, columns.len(), cont, ctx)
+        LogicalPlan::Scan { rootpage, columns } => {
+            codegen_scan(*rootpage, columns.len(), cont, ctx)
         }
         LogicalPlan::Count { input } => {
             codegen_count(input, cont, ctx)
@@ -638,7 +638,7 @@ mod tests {
         let on_done = ctx.body_emitter.create_label();
         let cont = NodeContinuation { on_tuple, on_done };
 
-        let output = codegen_scan("test_table", 2, &cont, &mut ctx);
+        let output = codegen_scan(42, 2, &cont, &mut ctx);
 
         // Check that we got 2 output registers
         assert_eq!(output.output_regs.len(), 2);
@@ -650,21 +650,10 @@ mod tests {
     /// Integration test: Count(Scan) - verify row counting works
     #[test]
     fn test_count_scan() {
-        // Build plan: Count { Scan { "test", 2 columns } }
-        let plan = LogicalPlan::Count {
-            input: Box::new(LogicalPlan::Scan {
-                table: "test".to_string(),
-                columns: vec![0, 1],
-            }),
-        };
-
-        let (ops, num_registers) = compile_plan(&plan);
-
         // Create test database with 3 rows
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
-        btree.register_tree("test", root);
 
         let mut cursor = btree.open(root);
         let mut cursor = cursor.open_readwrite();
@@ -672,6 +661,16 @@ mod tests {
         cursor.insert(1, b"[2, 200]".to_vec());
         cursor.insert(2, b"[3, 300]".to_vec());
         drop(cursor);
+
+        // Build plan: Count { Scan { rootpage, 2 columns } }
+        let plan = LogicalPlan::Count {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: root,
+                columns: vec![0, 1],
+            }),
+        };
+
+        let (ops, num_registers) = compile_plan(&plan);
 
         // Run through engine
         let mut engine = Engine::with_program(&ops, num_registers, btree);
@@ -685,20 +684,19 @@ mod tests {
     /// Test Count with empty table
     #[test]
     fn test_count_empty_table() {
+        // Create test database with empty table
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
         let plan = LogicalPlan::Count {
             input: Box::new(LogicalPlan::Scan {
-                table: "test".to_string(),
+                rootpage: root,
                 columns: vec![0],
             }),
         };
 
         let (ops, num_registers) = compile_plan(&plan);
-
-        // Create test database with empty table
-        let test = TestDb::default();
-        let mut btree = test.btree;
-        let root = btree.create_tree();
-        btree.register_tree("test", root);
 
         // Run through engine
         let mut engine = Engine::with_program(&ops, num_registers, btree);
@@ -712,24 +710,23 @@ mod tests {
     /// Test that scan actually reads the correct values
     #[test]
     fn test_scan_reads_values() {
-        let plan = LogicalPlan::Scan {
-            table: "test".to_string(),
-            columns: vec![0, 1],
-        };
-
-        let (ops, num_registers) = compile_plan(&plan);
-
         // Create test database with data
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
-        btree.register_tree("test", root);
 
         let mut cursor = btree.open(root);
         let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[10, 20]".to_vec());
         cursor.insert(1, b"[30, 40]".to_vec());
         drop(cursor);
+
+        let plan = LogicalPlan::Scan {
+            rootpage: root,
+            columns: vec![0, 1],
+        };
+
+        let (ops, num_registers) = compile_plan(&plan);
 
         // Run through engine
         let mut engine = Engine::with_program(&ops, num_registers, btree);

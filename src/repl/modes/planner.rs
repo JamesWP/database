@@ -98,6 +98,7 @@ fn create_mock_schema() -> schema::Schema {
     schema::Schema {
         tables: vec![schema::Table {
             name: "users".to_string(),
+            rootpage: 1, // mock root page for testing
             columns: vec![
                 schema::Column {
                     name: "id".to_string(),
