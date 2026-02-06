@@ -177,6 +177,7 @@ pub mod schema {
 pub fn plan(statement: Statement, schema: &schema::Schema) -> Result<LogicalPlan, PlanError> {
     match statement {
         Statement::Select(select) => plan_select(select, schema),
+        Statement::CreateTable(_) => Err(PlanError::UnsupportedStatement),
     }
 }
 

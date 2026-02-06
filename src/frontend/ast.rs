@@ -1,6 +1,27 @@
 #[derive(Debug)]
 pub enum Statement {
     Select(SelectStatement),
+    CreateTable(CreateTableStatement),
+}
+
+#[derive(Debug)]
+pub struct CreateTableStatement {
+    pub table_name: String,
+    pub columns: Vec<ColumnDef>,
+}
+
+#[derive(Debug)]
+pub struct ColumnDef {
+    pub name: String,
+    pub type_name: Option<DataType>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DataType {
+    Integer,
+    Text,
+    Real,
+    Blob,
 }
 
 #[derive(Debug)]

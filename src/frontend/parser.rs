@@ -53,11 +53,23 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::LeftParen, lexer::Type::LeftParen) => {
+                self.advance();
+                Ok(())
+            }
             (Expect::From, lexer::Type::From) => {
                 self.advance();
                 Ok(())
             }
             (Expect::Select, lexer::Type::Select) => {
+                self.advance();
+                Ok(())
+            }
+            (Expect::Create, lexer::Type::Create) => {
+                self.advance();
+                Ok(())
+            }
+            (Expect::Table, lexer::Type::Table) => {
                 self.advance();
                 Ok(())
             }
@@ -86,11 +98,14 @@ enum BinaryCategory {
 
 #[derive(Debug)]
 pub enum Expect {
+    LeftParen,
     RightParen,
     PrimaryExpression,
     Identifier,
     From,
     Select,
+    Create,
+    Table,
 }
 
 impl lexer::Type {
@@ -134,7 +149,45 @@ impl Parser {
     pub(crate) fn parse_statement(&mut self) -> ParseResult<ast::Statement> {
         match self.input.peek() {
             lexer::Type::Select => Ok(ast::Statement::Select(self.parse_select_statement()?)),
+            lexer::Type::Create => Ok(ast::Statement::CreateTable(self.parse_create_table_statement()?)),
             _ => todo!(),
+        }
+    }
+
+    fn parse_create_table_statement(&mut self) -> ParseResult<ast::CreateTableStatement> {
+        self.input.expect(Expect::Create)?;
+        self.input.expect(Expect::Table)?;
+        let table_name = self.parse_identifier()?;
+        self.input.expect(Expect::LeftParen)?;
+
+        let mut columns = Vec::new();
+        columns.push(self.parse_column_def()?);
+        while let lexer::Type::Comma = self.input.peek() {
+            self.input.advance();
+            columns.push(self.parse_column_def()?);
+        }
+
+        self.input.expect(Expect::RightParen)?;
+
+        Ok(ast::CreateTableStatement {
+            table_name,
+            columns,
+        })
+    }
+
+    fn parse_column_def(&mut self) -> ParseResult<ast::ColumnDef> {
+        let name = self.parse_identifier()?;
+        let type_name = self.parse_optional_data_type();
+        Ok(ast::ColumnDef { name, type_name })
+    }
+
+    fn parse_optional_data_type(&mut self) -> Option<ast::DataType> {
+        match self.input.peek() {
+            lexer::Type::Integer => { self.input.advance(); Some(ast::DataType::Integer) }
+            lexer::Type::Text => { self.input.advance(); Some(ast::DataType::Text) }
+            lexer::Type::Real => { self.input.advance(); Some(ast::DataType::Real) }
+            lexer::Type::Blob => { self.input.advance(); Some(ast::DataType::Blob) }
+            _ => None,
         }
     }
 
@@ -507,11 +560,76 @@ impl Parser {
 #[cfg(test)]
 mod test {
     use super::parse;
+    use crate::frontend::ast;
 
     #[test]
     fn test_parse_select() {
         let input = "select t.col as ben, t.othercol+1, finalcol*2 from tablename as t where col=1 and finalcol>0 limit 23;";
         let statement = parse(input).unwrap();
         println!("Statement: {:#?}", statement);
+    }
+
+    #[test]
+    fn test_parse_create_table_with_types() {
+        let stmt = parse("CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)").unwrap();
+        match stmt {
+            ast::Statement::CreateTable(ct) => {
+                assert_eq!(ct.table_name, "users");
+                assert_eq!(ct.columns.len(), 3);
+                assert_eq!(ct.columns[0].name, "id");
+                assert_eq!(ct.columns[0].type_name, Some(ast::DataType::Integer));
+                assert_eq!(ct.columns[1].name, "name");
+                assert_eq!(ct.columns[1].type_name, Some(ast::DataType::Text));
+                assert_eq!(ct.columns[2].name, "age");
+                assert_eq!(ct.columns[2].type_name, Some(ast::DataType::Integer));
+            }
+            _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_table_without_types() {
+        let stmt = parse("CREATE TABLE test (col1, col2)").unwrap();
+        match stmt {
+            ast::Statement::CreateTable(ct) => {
+                assert_eq!(ct.table_name, "test");
+                assert_eq!(ct.columns.len(), 2);
+                assert_eq!(ct.columns[0].name, "col1");
+                assert_eq!(ct.columns[0].type_name, None);
+                assert_eq!(ct.columns[1].name, "col2");
+                assert_eq!(ct.columns[1].type_name, None);
+            }
+            _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_table_mixed_types() {
+        let stmt = parse("CREATE TABLE mixed (id INTEGER, label, score REAL, data BLOB)").unwrap();
+        match stmt {
+            ast::Statement::CreateTable(ct) => {
+                assert_eq!(ct.table_name, "mixed");
+                assert_eq!(ct.columns.len(), 4);
+                assert_eq!(ct.columns[0].type_name, Some(ast::DataType::Integer));
+                assert_eq!(ct.columns[1].type_name, None);
+                assert_eq!(ct.columns[2].type_name, Some(ast::DataType::Real));
+                assert_eq!(ct.columns[3].type_name, Some(ast::DataType::Blob));
+            }
+            _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_table_single_column() {
+        let stmt = parse("CREATE TABLE simple (value INTEGER)").unwrap();
+        match stmt {
+            ast::Statement::CreateTable(ct) => {
+                assert_eq!(ct.table_name, "simple");
+                assert_eq!(ct.columns.len(), 1);
+                assert_eq!(ct.columns[0].name, "value");
+                assert_eq!(ct.columns[0].type_name, Some(ast::DataType::Integer));
+            }
+            _ => panic!("Expected CreateTable statement"),
+        }
     }
 }

@@ -59,6 +59,12 @@ pub enum Type {
     False,
     True,
     Null,
+    Create,
+    Table,
+    Integer,
+    Text,
+    Real,
+    Blob,
 
     Error(Error),
 
@@ -422,16 +428,25 @@ impl<'a> Lexer<'a> {
                 Some('n') => match_reserved(ident, "and", Type::And),
                 _ => Type::Identifier(ident.to_owned()),
             },
+            'b' => match_reserved(ident, "blob", Type::Blob),
+            'c' => match_reserved(ident, "create", Type::Create),
             'f' => match ident.chars().nth(1) {
                 Some('r') => match_reserved(ident, "from", Type::From),
                 Some('a') => match_reserved(ident, "false", Type::False),
                 _ => Type::Identifier(ident.to_owned()),
             },
-            'w' => match_reserved(ident, "where", Type::Where),
-            'o' => match_reserved(ident, "or", Type::Or),
+            'i' => match_reserved(ident, "integer", Type::Integer),
             'l' => match_reserved(ident, "limit", Type::Limit),
-            't' => match_reserved(ident, "true", Type::True),
             'n' => match_reserved(ident, "null", Type::Null),
+            'o' => match_reserved(ident, "or", Type::Or),
+            'r' => match_reserved(ident, "real", Type::Real),
+            't' => match ident.chars().nth(1) {
+                Some('r') => match_reserved(ident, "true", Type::True),
+                Some('a') => match_reserved(ident, "table", Type::Table),
+                Some('e') => match_reserved(ident, "text", Type::Text),
+                _ => Type::Identifier(ident.to_owned()),
+            },
+            'w' => match_reserved(ident, "where", Type::Where),
             _ => Type::Identifier(ident.to_owned()),
         };
 
