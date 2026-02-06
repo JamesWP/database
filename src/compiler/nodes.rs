@@ -656,11 +656,9 @@ mod tests {
         let root = btree.create_tree();
 
         let mut cursor = btree.open(root);
-        let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[1, 100]".to_vec());
         cursor.insert(1, b"[2, 200]".to_vec());
         cursor.insert(2, b"[3, 300]".to_vec());
-        drop(cursor);
 
         // Build plan: Count { Scan { rootpage, 2 columns } }
         let plan = LogicalPlan::Count {
@@ -716,10 +714,8 @@ mod tests {
         let root = btree.create_tree();
 
         let mut cursor = btree.open(root);
-        let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[10, 20]".to_vec());
         cursor.insert(1, b"[30, 40]".to_vec());
-        drop(cursor);
 
         let plan = LogicalPlan::Scan {
             rootpage: root,

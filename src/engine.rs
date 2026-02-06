@@ -815,12 +815,10 @@ mod test {
         let mut btree = test.btree;
         let root = btree.create_tree();
         let mut cursor = btree.open(root);
-        let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[12345,6789]".to_vec());
         cursor.insert(1, b"[12345]".to_vec());
         cursor.insert(2, b"[12345]".to_vec());
         cursor.insert(3, b"[12345]".to_vec());
-        drop(cursor);
 
         let r0 = Reg::new(0);
         let r1 = Reg::new(1);
@@ -856,12 +854,10 @@ mod test {
         let root = btree.create_tree();
 
         let mut cursor = btree.open(root);
-        let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[12345,6789]".to_vec());
         cursor.insert(1, b"[12345,0]".to_vec());
         cursor.insert(2, b"[12345,0]".to_vec());
         cursor.insert(3, b"[12345,0]".to_vec());
-        drop(cursor);
 
         let r0 = Reg::new(0);
         let r1 = Reg::new(1);
@@ -925,10 +921,8 @@ mod test {
 
         // Insert test data
         let mut cursor = btree.open(root);
-        let mut cursor = cursor.open_readwrite();
         cursor.insert(0, b"[100, 200]".to_vec());
         cursor.insert(1, b"[300, 400]".to_vec());
-        drop(cursor);
 
         let r0 = Reg::new(0);
         let r1 = Reg::new(1);

@@ -145,8 +145,8 @@ impl Mode for BTreeMode {
                     Err(_) => return CommandResult::Error("Invalid key (must be u64)".to_string()),
                 };
                 let value = rest.join(" ");
-                self.with_cursor_mut(|cursor| {
-                    cursor.handle.open_readwrite().insert(key, value.into_bytes());
+                self.with_cursor(|cursor| {
+                    cursor.handle.insert(key, value.into_bytes());
                     CommandResult::Message(format!("Inserted key {}", key))
                 })
             }
@@ -168,8 +168,7 @@ impl Mode for BTreeMode {
                 let max_size = max(11usize, max_size as usize);
                 let count = max(11usize, count as usize);
 
-                self.with_cursor_mut(|cursor| {
-                    let mut rw_cursor = cursor.handle.open_readwrite();
+                self.with_cursor(|cursor| {
                     for _ in 0..count {
                         let mut rng = rand::thread_rng();
                         let size = rng.sample(rand::distributions::Uniform::new(10, max_size));
@@ -179,7 +178,7 @@ impl Mode for BTreeMode {
                         let key =
                             rng.sample(rand::distributions::Uniform::new(1 << 10, 1u64 << 32));
 
-                        rw_cursor.insert(key, bytes);
+                        cursor.handle.insert(key, bytes);
                     }
                     CommandResult::Message(format!(
                         "Inserted {} items with random size up to {}",
@@ -258,15 +257,6 @@ impl BTreeMode {
         }
     }
 
-    fn with_cursor_mut<F>(&mut self, f: F) -> CommandResult
-    where
-        F: FnOnce(&mut CursorState) -> CommandResult,
-    {
-        match &mut self.cursor {
-            None => CommandResult::Error("No cursor open. Use 'open <table>' first.".to_string()),
-            Some(cursor) => f(cursor),
-        }
-    }
 }
 
 fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {

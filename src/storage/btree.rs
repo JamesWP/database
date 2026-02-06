@@ -50,6 +50,18 @@ impl CursorHandle {
             cursor_state: &mut self.state,
         }
     }
+
+    /// Insert a key-value pair, automatically propagating root splits to the catalog.
+    /// If the root page changes due to a split, the db_schema entry for this table
+    /// is updated to reflect the new root page.
+    pub fn insert(&mut self, key: u64, value: Vec<u8>) {
+        let initial_root = self.state.root_page;
+        self.open_readwrite().insert(key, value);
+        if self.state.root_page != initial_root {
+            let btree = BTree { pager: self.pager.clone() };
+            btree.update_schema_rootpage_by_rootpage(initial_root, self.state.root_page);
+        }
+    }
 }
 
 pub struct Cursor<'a, PagerRef> {
@@ -71,7 +83,7 @@ impl<'a, PagerRef> Cursor<'a, PagerRef>
 where
     PagerRef: DerefMut<Target = Pager>,
 {
-    pub fn insert(&mut self, key: u64, value: Value) {
+    fn insert(&mut self, key: u64, value: Value) {
         assert!(value.len() > 0);
 
         // values must be small enough so that a few can fit on each page
@@ -540,6 +552,9 @@ impl BTree {
     /// Insert a row into the db_schema catalog table.
     /// `key` is the B-tree key for the catalog row (caller manages key allocation).
     /// The row is stored as a JSON array: [type, name, tbl_name, rootpage, sql].
+    ///
+    /// If the insert causes the catalog's root page to split, the new root
+    /// is automatically persisted to ZeroPage.
     pub fn insert_schema_entry(
         &self,
         key: u64,
@@ -555,7 +570,7 @@ impl BTree {
         ]))
         .unwrap();
         let mut cursor = self.open(schema_root);
-        cursor.open_readwrite().insert(key, row);
+        cursor.insert(key, row);
     }
 
     /// Look up a table's root page and DDL by scanning db_schema for a matching name.
@@ -577,6 +592,9 @@ impl BTree {
                         let name = values[1].as_str().unwrap_or("");
                         if obj_type == "table" && name == table_name {
                             let rootpage = values[3].as_u64().unwrap() as u32;
+                            // For db_schema, ZeroPage is the authoritative source
+                            // (the self-reference row may be stale after catalog root splits)
+                            let rootpage = if name == "db_schema" { schema_root } else { rootpage };
                             let sql = values[4].as_str().unwrap_or("").to_string();
                             return Some((rootpage, sql));
                         }
@@ -587,6 +605,51 @@ impl BTree {
         }
     }
 
+    /// Update a table's rootpage in the db_schema catalog, finding the entry
+    /// by its current rootpage value. Used by CursorHandle::insert to propagate
+    /// root splits without needing to know the table name.
+    fn update_schema_rootpage_by_rootpage(&self, old_rootpage: u32, new_rootpage: u32) {
+        let schema_root = self.schema_root_page().expect("db_schema not bootstrapped");
+
+        // If this is the schema table itself, update ZeroPage directly
+        if old_rootpage == schema_root {
+            self.pager.borrow_mut().set_schema_root_page(new_rootpage);
+            return;
+        }
+
+        // Scan catalog for the entry with the old rootpage
+        let (key, obj_type, name, tbl_name, sql) = {
+            let mut cursor = self.open(schema_root);
+            let mut c = cursor.open_readonly();
+            c.first();
+            loop {
+                match c.get_entry() {
+                    None => panic!(
+                        "No catalog entry found with rootpage {}",
+                        old_rootpage
+                    ),
+                    Some(mut reader) => {
+                        let key = reader.key();
+                        let values = reader.decode_as_json_array();
+                        if values.len() >= 5 {
+                            let rp = values[3].as_u64().unwrap() as u32;
+                            if rp == old_rootpage {
+                                let obj_type = values[0].as_str().unwrap_or("").to_string();
+                                let name = values[1].as_str().unwrap_or("").to_string();
+                                let tbl_name =
+                                    values[2].as_str().unwrap_or("").to_string();
+                                let sql = values[4].as_str().unwrap_or("").to_string();
+                                break (key, obj_type, name, tbl_name, sql);
+                            }
+                        }
+                    }
+                }
+                c.next();
+            }
+        }; // cursor dropped here
+
+        self.insert_schema_entry(key, &obj_type, &name, &tbl_name, new_rootpage, &sql);
+    }
 
     pub fn debug(&self, message: &str) {
         self.pager.borrow().debug(message)
@@ -977,5 +1040,82 @@ mod test {
         // db_schema still works
         let (rp, _) = btree.lookup_table("db_schema").unwrap();
         assert_eq!(rp, btree.schema_root_page().unwrap());
+    }
+
+    #[test]
+    fn test_catalog_root_split_propagates() {
+        // Insert enough schema entries to force the db_schema B-tree root to split.
+        // After the split, schema_root_page() must return the new root, and
+        // all entries must still be accessible via lookup_table().
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let initial_root = btree.schema_root_page().unwrap();
+
+        let mut roots = Vec::new();
+        for i in 0..40 {
+            let name = format!("table_{:03}", i);
+            let ddl = format!("CREATE TABLE {} (id INTEGER, data TEXT)", name);
+            let root = btree.create_tree();
+            roots.push((name.clone(), root));
+            btree.insert_schema_entry(i + 100, "table", &name, &name, root, &ddl);
+        }
+
+        // The root should have split at some point
+        let final_root = btree.schema_root_page().unwrap();
+        assert_ne!(
+            initial_root, final_root,
+            "Expected catalog root to split after many inserts"
+        );
+
+        // All entries should still be accessible
+        for (name, root) in &roots {
+            let result = btree.lookup_table(name);
+            assert!(result.is_some(), "Failed to find table '{}'", name);
+            let (rp, _) = result.unwrap();
+            assert_eq!(rp, *root, "Wrong rootpage for table '{}'", name);
+        }
+
+        // db_schema self-reference should still work
+        let (rp, _) = btree.lookup_table("db_schema").unwrap();
+        assert_eq!(rp, final_root);
+    }
+
+    #[test]
+    fn test_cursor_insert_propagates_root_split() {
+        // CursorHandle::insert should automatically update the catalog when a root splits.
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let initial_root = btree.create_tree();
+        btree.insert_schema_entry(
+            1,
+            "table",
+            "big_table",
+            "big_table",
+            initial_root,
+            "CREATE TABLE big_table (id INTEGER, data TEXT)",
+        );
+
+        // Insert enough rows via CursorHandle::insert to force a root split
+        let mut cursor = btree.open(initial_root);
+        for i in 0..100u64 {
+            let value = format!("[{}, \"row_{}\"]", i, i);
+            cursor.insert(i, value.into_bytes());
+        }
+
+        // The catalog should have been updated automatically
+        let (catalog_root, _) = btree.lookup_table("big_table").unwrap();
+        assert_ne!(catalog_root, initial_root, "Catalog should have new root after splits");
+
+        // CursorHandle should track the current root
+        assert_eq!(cursor.root_page(), catalog_root);
+
+        // Data should be accessible through the catalog rootpage
+        let mut read_cursor = btree.open(catalog_root);
+        let mut c = read_cursor.open_readonly();
+        c.first();
+        let entry = c.get_entry();
+        assert!(entry.is_some(), "Should be able to read data from catalog root");
     }
 }
