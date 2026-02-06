@@ -587,14 +587,6 @@ impl BTree {
         }
     }
 
-    // TODO: Remove these bridge methods once the catalog is in place
-    pub fn register_tree(&self, name: &str, root_page: u32) {
-        self.pager.borrow_mut().set_root_page(name, root_page);
-    }
-
-    pub fn get_root_page(&self, name: &str) -> Option<u32> {
-        self.pager.borrow().get_root_page(name)
-    }
 
     pub fn debug(&self, message: &str) {
         self.pager.borrow().debug(message)

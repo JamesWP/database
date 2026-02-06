@@ -1,6 +1,5 @@
 use std::{
     borrow::Borrow,
-    collections::HashMap,
     fs::{File, OpenOptions},
     io::{BufReader, Read, Seek, Write},
     os::unix::prelude::MetadataExt,
@@ -33,9 +32,6 @@ pub struct ZeroPage {
     /// This is the only root page tracked directly by the pager.
     /// All other table root pages are stored as rows in db_schema.
     schema_root_page: Option<u32>,
-
-    // TODO: Remove once all callers use the catalog
-    root_pages: HashMap<String, u32>,
 }
 
 impl Default for ZeroPage {
@@ -43,7 +39,6 @@ impl Default for ZeroPage {
         Self {
             free_page_list: Default::default(),
             schema_root_page: None,
-            root_pages: Default::default(),
         }
     }
 }
@@ -242,21 +237,6 @@ impl Pager {
         self.set_zero_page(zero);
     }
 
-    // TODO: Remove once all callers use the catalog
-    pub fn get_root_page(&self, root_name: &str) -> Option<u32> {
-        let zero = self.get_zero_page()?;
-
-        zero.root_pages.get(&root_name.to_string()).copied()
-    }
-
-    // TODO: Remove once all callers use the catalog
-    pub fn set_root_page(&mut self, root_name: &str, idx: u32) {
-        let mut zero = self.get_zero_page().unwrap();
-
-        zero.root_pages.insert(root_name.to_string(), idx);
-
-        self.set_zero_page(zero);
-    }
 
     pub fn debug(&self, message: &str) {
         for i in 0..self.get_file_size_pages() {
@@ -266,15 +246,6 @@ impl Pager {
         }
     }
 
-    pub fn get_tree_names(&self) -> Vec<String> {
-        let zp = self.get_zero_page();
-        if zp.is_none() {
-            return vec![];
-        }
-        let zp = zp.unwrap();
-
-        zp.root_pages.keys().cloned().collect()
-    }
 }
 
 #[cfg(test)]

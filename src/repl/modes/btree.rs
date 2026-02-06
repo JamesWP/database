@@ -39,16 +39,21 @@ impl Mode for BTreeMode {
 
     fn execute(&mut self, tokens: &[&str], shared: &mut SharedState) -> CommandResult {
         match tokens {
-            // TODO: Update to use db_schema catalog instead of pager name-based lookup
             // Table management
             ["create", "table", rest @ ..] => {
                 let name = rest.join(" ");
                 if name.is_empty() {
                     return CommandResult::Error("Usage: create table <name>".to_string());
                 }
+                // Check if table already exists
+                if shared.btree.lookup_table(&name).is_some() {
+                    return CommandResult::Error(format!("Table '{}' already exists", name));
+                }
                 let root_page = shared.btree.create_tree();
-                // Temporarily use pager's name-based tracking until catalog is in place
-                shared.btree.register_tree(&name, root_page);
+                // Use a simple key based on the name's hash for the catalog row
+                let key = name.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+                let ddl = format!("CREATE TABLE {} ()", name);
+                shared.btree.insert_schema_entry(key, "table", &name, &name, root_page, &ddl);
                 CommandResult::Message(format!("Created table '{}' at page {}", name, root_page))
             }
 
@@ -65,9 +70,8 @@ impl Mode for BTreeMode {
                     );
                 }
 
-                // Temporarily use pager's name-based lookup until catalog is in place
-                match shared.btree.get_root_page(&name) {
-                    Some(root_page) => {
+                match shared.btree.lookup_table(&name) {
+                    Some((root_page, _)) => {
                         let handle = shared.btree.open(root_page);
                         self.cursor = Some(CursorState {
                             table_name: name.clone(),
