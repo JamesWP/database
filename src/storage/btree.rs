@@ -472,9 +472,46 @@ pub struct BTree {
 
 impl BTree {
     pub fn new(path: &str) -> BTree {
-        BTree {
+        let btree = BTree {
             pager: Arc::new(RefCell::new(Pager::new(path))),
+        };
+
+        // Bootstrap db_schema table if this is a new (empty) database
+        if btree.pager.borrow().get_file_size_pages() == 0 {
+            btree.bootstrap_schema();
         }
+
+        btree
+    }
+
+    /// Bootstrap a new database by creating the db_schema catalog table.
+    /// Inserts a self-referencing row so the catalog describes itself.
+    fn bootstrap_schema(&self) {
+        let schema_root = {
+            let mut pager = self.pager.borrow_mut();
+            let idx = pager.allocate();
+            let empty_leaf = node::LeafNodePage::default();
+            pager
+                .encode_and_set(idx, node::NodePage::Leaf(empty_leaf))
+                .unwrap();
+            pager.set_schema_root_page(idx);
+            idx
+        };
+
+        self.insert_schema_entry(
+            0,
+            "table",
+            "db_schema",
+            "db_schema",
+            schema_root,
+            "CREATE TABLE db_schema (type TEXT, name TEXT, tbl_name TEXT, rootpage INTEGER, sql TEXT)",
+        );
+    }
+
+    /// Returns the root page of the db_schema catalog table, if the database
+    /// has been bootstrapped.
+    pub fn schema_root_page(&self) -> Option<u32> {
+        self.pager.borrow().get_schema_root_page()
     }
 
     pub fn open(&self, root_page: u32) -> CursorHandle {
@@ -498,6 +535,56 @@ impl BTree {
         let empty_root_node = node::NodePage::Leaf(empty_leaf_node);
         pager.encode_and_set(idx, empty_root_node).unwrap();
         idx
+    }
+
+    /// Insert a row into the db_schema catalog table.
+    /// `key` is the B-tree key for the catalog row (caller manages key allocation).
+    /// The row is stored as a JSON array: [type, name, tbl_name, rootpage, sql].
+    pub fn insert_schema_entry(
+        &self,
+        key: u64,
+        obj_type: &str,
+        name: &str,
+        tbl_name: &str,
+        rootpage: u32,
+        sql: &str,
+    ) {
+        let schema_root = self.schema_root_page().expect("db_schema not bootstrapped");
+        let row = serde_json::to_vec(&serde_json::json!([
+            obj_type, name, tbl_name, rootpage, sql
+        ]))
+        .unwrap();
+        let mut cursor = self.open(schema_root);
+        cursor.open_readwrite().insert(key, row);
+    }
+
+    /// Look up a table's root page and DDL by scanning db_schema for a matching name.
+    /// Returns (rootpage, sql) if found.
+    pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> {
+        let schema_root = self.schema_root_page()?;
+        let mut cursor = self.open(schema_root);
+        let mut c = cursor.open_readonly();
+        c.first();
+        loop {
+            let entry = c.get_entry();
+            match entry {
+                None => return None,
+                Some(mut reader) => {
+                    let values = reader.decode_as_json_array();
+                    // Row format: [type, name, tbl_name, rootpage, sql]
+                    if values.len() >= 5 {
+                        let obj_type = values[0].as_str().unwrap_or("");
+                        let name = values[1].as_str().unwrap_or("");
+                        if obj_type == "table" && name == table_name {
+                            let rootpage = values[3].as_u64().unwrap() as u32;
+                            let sql = values[4].as_str().unwrap_or("").to_string();
+                            return Some((rootpage, sql));
+                        }
+                    }
+                }
+            }
+            c.next();
+        }
     }
 
     // TODO: Remove these bridge methods once the catalog is in place
@@ -784,5 +871,119 @@ mod test {
             let mut btree = test.btree;
             do_test_ordering(elements.as_slice(), &mut btree, ordering);
         }
+    }
+
+    // ========================================================================
+    // Schema catalog tests
+    // ========================================================================
+
+    #[test]
+    fn test_bootstrap_creates_schema() {
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        // db_schema root page should exist
+        let schema_root = btree.schema_root_page();
+        assert!(schema_root.is_some());
+        let schema_root = schema_root.unwrap();
+
+        // Read the self-referencing row from db_schema
+        let mut cursor = btree.open(schema_root);
+        let mut c = cursor.open_readonly();
+        c.first();
+        let entry = c.get_entry();
+        assert!(entry.is_some());
+
+        let values = entry.unwrap().decode_as_json_array();
+        assert_eq!(values[0], "table");
+        assert_eq!(values[1], "db_schema");
+        assert_eq!(values[2], "db_schema");
+        assert_eq!(values[3], schema_root as u64);
+        assert!(values[4].as_str().unwrap().starts_with("CREATE TABLE db_schema"));
+    }
+
+    #[test]
+    fn test_lookup_table_self() {
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        // Should be able to look up db_schema itself
+        let result = btree.lookup_table("db_schema");
+        assert!(result.is_some());
+
+        let (rootpage, sql) = result.unwrap();
+        assert_eq!(rootpage, btree.schema_root_page().unwrap());
+        assert!(sql.starts_with("CREATE TABLE db_schema"));
+    }
+
+    #[test]
+    fn test_lookup_table_not_found() {
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let result = btree.lookup_table("nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_insert_and_lookup_schema_entry() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        // Create a new table
+        let root = btree.create_tree();
+        btree.insert_schema_entry(
+            1,
+            "table",
+            "users",
+            "users",
+            root,
+            "CREATE TABLE users (id INTEGER, name TEXT)",
+        );
+
+        // Look it up
+        let result = btree.lookup_table("users");
+        assert!(result.is_some());
+
+        let (rootpage, sql) = result.unwrap();
+        assert_eq!(rootpage, root);
+        assert_eq!(sql, "CREATE TABLE users (id INTEGER, name TEXT)");
+    }
+
+    #[test]
+    fn test_insert_multiple_schema_entries() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let users_root = btree.create_tree();
+        btree.insert_schema_entry(
+            1,
+            "table",
+            "users",
+            "users",
+            users_root,
+            "CREATE TABLE users (id INTEGER, name TEXT)",
+        );
+
+        let orders_root = btree.create_tree();
+        btree.insert_schema_entry(
+            2,
+            "table",
+            "orders",
+            "orders",
+            orders_root,
+            "CREATE TABLE orders (id INTEGER, user_id INTEGER, total REAL)",
+        );
+
+        // Both should be findable
+        let (rp, _) = btree.lookup_table("users").unwrap();
+        assert_eq!(rp, users_root);
+
+        let (rp, _) = btree.lookup_table("orders").unwrap();
+        assert_eq!(rp, orders_root);
+
+        // db_schema still works
+        let (rp, _) = btree.lookup_table("db_schema").unwrap();
+        assert_eq!(rp, btree.schema_root_page().unwrap());
     }
 }

@@ -29,7 +29,12 @@ pub struct ZeroPage {
     // TODO: make this the head of a linked list to ensure it is a fixed size when encoding ZeroPage
     free_page_list: Vec<u32>,
 
-    // contains the root pages for the given entities
+    /// Root page number of the db_schema catalog table.
+    /// This is the only root page tracked directly by the pager.
+    /// All other table root pages are stored as rows in db_schema.
+    schema_root_page: Option<u32>,
+
+    // TODO: Remove once all callers use the catalog
     root_pages: HashMap<String, u32>,
 }
 
@@ -37,6 +42,7 @@ impl Default for ZeroPage {
     fn default() -> Self {
         Self {
             free_page_list: Default::default(),
+            schema_root_page: None,
             root_pages: Default::default(),
         }
     }
@@ -225,12 +231,25 @@ impl Pager {
         self.set_zero_page(zero);
     }
 
+    pub fn get_schema_root_page(&self) -> Option<u32> {
+        let zero = self.get_zero_page()?;
+        zero.schema_root_page
+    }
+
+    pub fn set_schema_root_page(&mut self, page: u32) {
+        let mut zero = self.get_zero_page().unwrap();
+        zero.schema_root_page = Some(page);
+        self.set_zero_page(zero);
+    }
+
+    // TODO: Remove once all callers use the catalog
     pub fn get_root_page(&self, root_name: &str) -> Option<u32> {
         let zero = self.get_zero_page()?;
 
         zero.root_pages.get(&root_name.to_string()).copied()
     }
 
+    // TODO: Remove once all callers use the catalog
     pub fn set_root_page(&mut self, root_name: &str, idx: u32) {
         let mut zero = self.get_zero_page().unwrap();
 
