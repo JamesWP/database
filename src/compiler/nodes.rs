@@ -588,6 +588,9 @@ pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenCon
         LogicalPlan::Limit { count, input } => {
             codegen_limit(*count, input, cont, ctx)
         }
+        LogicalPlan::Insert { .. } => {
+            todo!("INSERT codegen implemented in commit 5")
+        }
     }
 }
 

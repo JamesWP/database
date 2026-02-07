@@ -134,6 +134,15 @@ pub enum LogicalPlan {
     /// Output: single integer column
     Sequence { start: i64, end: i64 },
 
+    /// Insert rows into a table (1 input, typically Values)
+    /// Consumes all rows from input, writes each to the table's B-tree.
+    /// Output: single integer column containing the count of rows inserted.
+    Insert {
+        rootpage: u32,
+        table_columns: Vec<usize>,
+        input: Box<LogicalPlan>,
+    },
+
     // Future: Join { left: Box<LogicalPlan>, right: Box<LogicalPlan>, ... }
 }
 
@@ -182,7 +191,7 @@ pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanErro
     match statement {
         Statement::Select(select) => plan_select(select, btree),
         Statement::CreateTable(_) => Err(PlanError::UnsupportedStatement),
-        Statement::Insert(_) => Err(PlanError::UnsupportedStatement), // handled in commit 3
+        Statement::Insert(insert) => plan_insert(insert, btree),
     }
 }
 
@@ -280,6 +289,121 @@ fn plan_select(
     Ok(plan)
 }
 
+fn plan_insert(
+    insert: ast::InsertStatement,
+    btree: &BTree,
+) -> Result<LogicalPlan, PlanError> {
+    let table = resolve_table(&insert.table_name, btree)?;
+    let num_table_columns = table.columns.len();
+
+    // Determine which columns we're inserting into
+    let table_columns: Vec<usize> = match &insert.columns {
+        Some(col_names) => {
+            col_names
+                .iter()
+                .map(|name| {
+                    table.get_column_index(name).ok_or_else(|| PlanError::ColumnNotFound {
+                        table: insert.table_name.clone(),
+                        column: name.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        None => (0..num_table_columns).collect(),
+    };
+
+    // Convert each value row to Literals, validating column count
+    let mut rows = Vec::new();
+    for value_row in &insert.values {
+        if value_row.len() != table_columns.len() {
+            return Err(PlanError::ColumnCountMismatch {
+                expected: table_columns.len(),
+                got: value_row.len(),
+            });
+        }
+        let literals: Vec<Literal> = value_row
+            .iter()
+            .map(|expr| {
+                let plan_expr = convert_expr_no_context(expr)?;
+                eval_constant(&plan_expr)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.push(literals);
+    }
+
+    Ok(LogicalPlan::Insert {
+        rootpage: table.rootpage,
+        table_columns,
+        input: Box::new(LogicalPlan::Values { rows }),
+    })
+}
+
+/// Convert an AST expression to a PlanExpr without column resolution context.
+/// Used for INSERT VALUES where expressions are constants (no column references).
+fn convert_expr_no_context(expr: &ast::Expression) -> Result<PlanExpr, PlanError> {
+    match expr {
+        ast::Expression::Value(scalar) => convert_scalar_no_context(scalar),
+        ast::Expression::BinaryOp { op, lhs, rhs } => Ok(PlanExpr::BinaryOp {
+            op: convert_binary_op(op),
+            left: Box::new(convert_expr_no_context(lhs)?),
+            right: Box::new(convert_expr_no_context(rhs)?),
+        }),
+        ast::Expression::UnaryOp { op, expression } => Ok(PlanExpr::UnaryOp {
+            op: convert_unary_op(op),
+            operand: Box::new(convert_expr_no_context(expression)?),
+        }),
+    }
+}
+
+fn convert_scalar_no_context(scalar: &ast::ScalarValue) -> Result<PlanExpr, PlanError> {
+    match scalar {
+        ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
+        ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
+        ast::ScalarValue::StringLiteral(s) => Ok(PlanExpr::Literal(Literal::String(s.clone()))),
+        ast::ScalarValue::Identifier(_) | ast::ScalarValue::MultiPartIdentifier(_, _) => {
+            Err(PlanError::UnsupportedStatement)
+        }
+    }
+}
+
+/// Try to evaluate a PlanExpr down to a Literal at plan time.
+fn eval_constant(expr: &PlanExpr) -> Result<Literal, PlanError> {
+    match expr {
+        PlanExpr::Literal(lit) => Ok(lit.clone()),
+        PlanExpr::UnaryOp { op, operand } => {
+            let val = eval_constant(operand)?;
+            match (op, val) {
+                (UnaryOp::Negate, Literal::Integer(n)) => Ok(Literal::Integer(-n)),
+                (UnaryOp::Negate, Literal::Float(n)) => Ok(Literal::Float(-n)),
+                (UnaryOp::Plus, v) => Ok(v),
+                _ => Err(PlanError::UnsupportedStatement),
+            }
+        }
+        PlanExpr::BinaryOp { op, left, right } => {
+            let l = eval_constant(left)?;
+            let r = eval_constant(right)?;
+            eval_binary_constant(op, &l, &r)
+        }
+        PlanExpr::ColumnRef(_) => Err(PlanError::UnsupportedStatement),
+    }
+}
+
+fn eval_binary_constant(op: &BinaryOp, l: &Literal, r: &Literal) -> Result<Literal, PlanError> {
+    match (op, l, r) {
+        (BinaryOp::Add, Literal::Integer(a), Literal::Integer(b)) => Ok(Literal::Integer(a + b)),
+        (BinaryOp::Subtract, Literal::Integer(a), Literal::Integer(b)) => Ok(Literal::Integer(a - b)),
+        (BinaryOp::Multiply, Literal::Integer(a), Literal::Integer(b)) => Ok(Literal::Integer(a * b)),
+        (BinaryOp::Divide, Literal::Integer(a), Literal::Integer(b)) => Ok(Literal::Integer(a / b)),
+        (BinaryOp::Remainder, Literal::Integer(a), Literal::Integer(b)) => Ok(Literal::Integer(a % b)),
+        (BinaryOp::Add, Literal::Float(a), Literal::Float(b)) => Ok(Literal::Float(a + b)),
+        (BinaryOp::Subtract, Literal::Float(a), Literal::Float(b)) => Ok(Literal::Float(a - b)),
+        (BinaryOp::Multiply, Literal::Float(a), Literal::Float(b)) => Ok(Literal::Float(a * b)),
+        (BinaryOp::Divide, Literal::Float(a), Literal::Float(b)) => Ok(Literal::Float(a / b)),
+        (BinaryOp::Add, Literal::String(a), Literal::String(b)) => Ok(Literal::String(format!("{}{}", a, b))),
+        _ => Err(PlanError::UnsupportedStatement),
+    }
+}
+
 /// Extract table name and reference (alias or table name) from FROM clause
 fn extract_table_info(from: &ast::NamedTupleSource) -> Result<(String, String), PlanError> {
     match from {
@@ -332,6 +456,7 @@ fn extract_limit_value(expr: &ast::Expression) -> Result<u64, PlanError> {
 pub enum PlanError {
     TableNotFound(String),
     ColumnNotFound { table: String, column: String },
+    ColumnCountMismatch { expected: usize, got: usize },
     UnsupportedStatement,
 }
 
@@ -1077,6 +1202,104 @@ mod tests {
                 table: "users".to_string(),
                 column: "nonexistent".to_string(),
             })
+        );
+    }
+
+    // ========================================================================
+    // INSERT Plan Tests
+    // ========================================================================
+
+    #[test]
+    fn test_plan_insert_basic() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("INSERT INTO users VALUES (1, 'alice', 30)");
+
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Insert {
+            rootpage: users_root,
+            table_columns: vec![0, 1, 2],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![
+                    Literal::Integer(1),
+                    Literal::String("alice".to_string()),
+                    Literal::Integer(30),
+                ]],
+            }),
+        };
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_plan_insert_with_columns() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("INSERT INTO users (age, name) VALUES (30, 'alice')");
+
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Insert {
+            rootpage: users_root,
+            table_columns: vec![2, 1], // age=2, name=1
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![
+                    Literal::Integer(30),
+                    Literal::String("alice".to_string()),
+                ]],
+            }),
+        };
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_plan_insert_column_count_mismatch() {
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("INSERT INTO users VALUES (1, 'alice')");
+
+        let result = plan(stmt, &test.btree);
+
+        assert_eq!(
+            result,
+            Err(PlanError::ColumnCountMismatch {
+                expected: 3,
+                got: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn test_plan_insert_with_expressions() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("INSERT INTO users VALUES (1+1, 'alice', 10*3)");
+
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Insert {
+            rootpage: users_root,
+            table_columns: vec![0, 1, 2],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![
+                    Literal::Integer(2),
+                    Literal::String("alice".to_string()),
+                    Literal::Integer(30),
+                ]],
+            }),
+        };
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_plan_insert_table_not_found() {
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("INSERT INTO nonexistent VALUES (1)");
+
+        let result = plan(stmt, &test.btree);
+
+        assert_eq!(
+            result,
+            Err(PlanError::TableNotFound("nonexistent".to_string()))
         );
     }
 }
