@@ -42,6 +42,7 @@ impl JumpTarget {
 pub enum MoveOperation {
     First,
     Next,
+    Last,
 }
 
 // TODO: switch to using {} and named members
@@ -71,8 +72,10 @@ pub enum Operation {
     // Db
     Open(Reg, u32),
     MoveCursor(Reg, MoveOperation),
-    ReadCursor(Vec<Reg>, Reg), // TODO: allow program to select which columns to read and type check
-    CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
+    ReadCursor(Vec<Reg>, Reg),           // ReadCursor(dest_regs, cursor): read row values
+    ReadKey(Reg, Reg),                   // ReadKey(dest, cursor): read btree key as integer
+    WriteCursor(Reg, Reg, Vec<Reg>),     // WriteCursor(cursor, key, values): insert row
+    CanReadCursor(Reg, Reg),             // Reg = CanReadCursor(Reg)
 
     // Control Flow
     Yield(Vec<Reg>),
@@ -154,6 +157,7 @@ impl std::fmt::Display for MoveOperation {
         match self {
             MoveOperation::First => write!(f, "First"),
             MoveOperation::Next => write!(f, "Next"),
+            MoveOperation::Last => write!(f, "Last"),
         }
     }
 }
@@ -194,6 +198,11 @@ impl std::fmt::Display for Operation {
             ReadCursor(regs, cursor) => {
                 let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
                 write!(f, "{:10} [{}], {}", "ReadCursor".cyan().bold(), regs_str.join(", "), cursor)
+            }
+            ReadKey(dest, cursor) => write!(f, "{:10} {}, {}", "ReadKey".cyan().bold(), dest, cursor),
+            WriteCursor(cursor, key, regs) => {
+                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
+                write!(f, "{:10} {}, {}, [{}]", "Write".cyan().bold(), cursor, key, regs_str.join(", "))
             }
             CanReadCursor(dest, cursor) => write!(f, "{:10} {}, {}", "CanRead".cyan().bold(), dest, cursor),
 

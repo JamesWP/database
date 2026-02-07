@@ -246,6 +246,9 @@ impl Engine {
                     program::MoveOperation::Next => {
                         cursor.next();
                     }
+                    program::MoveOperation::Last => {
+                        cursor.last();
+                    }
                 };
             }
             CanReadCursor(dest, reg) => {
@@ -289,6 +292,45 @@ impl Engine {
                         _ => todo!(),
                     }
                 }
+            }
+            ReadKey(dest, cursor_reg) => {
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let cursor = cursor.open_readonly();
+                let entry = cursor.get_entry().unwrap();
+                let key = entry.key();
+                drop(cursor);
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Integer(key as i64));
+            }
+            WriteCursor(cursor_reg, key_reg, value_regs) => {
+                // Read key value
+                let key = match self.registers.get(key_reg).scalar().unwrap() {
+                    ScalarValue::Integer(k) => *k as u64,
+                    other => panic!("WriteCursor key must be Integer, got {:?}", other),
+                };
+
+                // Read values and convert to JSON array
+                let json_values: Vec<serde_json::Value> = value_regs
+                    .iter()
+                    .map(|reg| {
+                        let sv = self.registers.get(*reg).scalar().unwrap();
+                        match sv {
+                            ScalarValue::Integer(i) => serde_json::Value::Number((*i).into()),
+                            ScalarValue::Floating(f) => serde_json::Value::Number(
+                                serde_json::Number::from_f64(*f).unwrap(),
+                            ),
+                            ScalarValue::Boolean(b) => serde_json::Value::Bool(*b),
+                            ScalarValue::String(s) => serde_json::Value::String(s.clone()),
+                        }
+                    })
+                    .collect();
+
+                let bytes = serde_json::to_vec(&serde_json::Value::Array(json_values)).unwrap();
+
+                // Write to btree
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let mut cursor = cursor.open_readwrite();
+                cursor.insert(key, bytes);
             }
         };
 
@@ -1036,6 +1078,117 @@ mod test {
         let yields = engine.run();
 
         assert_eq!(yields.len(), 0);
+    }
+
+    #[test]
+    fn test_write_cursor_and_read_back() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let r_cursor = Reg::new(0);
+        let r_key = Reg::new(1);
+        let r_val1 = Reg::new(2);
+        let r_val2 = Reg::new(3);
+        let r_flag = Reg::new(4);
+        let r_out1 = Reg::new(5);
+        let r_out2 = Reg::new(6);
+
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                // Write a row
+                Operation::Open(r_cursor, root),                           // 0
+                Operation::StoreValue(r_key, ScalarValue::Integer(1)),     // 1
+                Operation::StoreValue(r_val1, ScalarValue::Integer(42)),   // 2
+                Operation::StoreValue(r_val2, ScalarValue::String("hello".to_string())), // 3
+                Operation::WriteCursor(r_cursor, r_key, vec![r_val1, r_val2]),           // 4
+                // Read it back
+                Operation::MoveCursor(r_cursor, MoveOperation::First),     // 5
+                Operation::CanReadCursor(r_flag, r_cursor),                // 6
+                Operation::GoToIfFalse(JumpTarget::addr(11), r_flag),      // 7
+                Operation::ReadCursor(vec![r_out1, r_out2], r_cursor),     // 8
+                Operation::Yield(vec![r_out1, r_out2]),                    // 9
+                Operation::Halt,                                           // 10 (unreachable but valid)
+                Operation::Halt,                                           // 11
+            ],
+            7,
+            btree,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(42));
+        assert_eq!(harness.value(0, 1), ScalarValue::String("hello".to_string()));
+    }
+
+    #[test]
+    fn test_move_last_and_read_key() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Pre-populate with some data
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            c.insert(1, b"[10]".to_vec());
+            c.insert(2, b"[20]".to_vec());
+            c.insert(5, b"[50]".to_vec());
+        }
+
+        let r_cursor = Reg::new(0);
+        let r_key = Reg::new(1);
+
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                Operation::Open(r_cursor, root),
+                Operation::MoveCursor(r_cursor, MoveOperation::Last),
+                Operation::ReadKey(r_key, r_cursor),
+                Operation::Yield(vec![r_key]),
+                Operation::Halt,
+            ],
+            2,
+            btree,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(5));
+    }
+
+    #[test]
+    fn test_write_cursor_on_empty_table() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let r_cursor = Reg::new(0);
+        let r_key = Reg::new(1);
+        let r_val = Reg::new(2);
+        let r_readkey = Reg::new(3);
+
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                Operation::Open(r_cursor, root),
+                Operation::StoreValue(r_key, ScalarValue::Integer(1)),
+                Operation::StoreValue(r_val, ScalarValue::Integer(999)),
+                Operation::WriteCursor(r_cursor, r_key, vec![r_val]),
+                // Read back the key
+                Operation::MoveCursor(r_cursor, MoveOperation::First),
+                Operation::ReadKey(r_readkey, r_cursor),
+                Operation::Yield(vec![r_readkey]),
+                Operation::Halt,
+            ],
+            4,
+            btree,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 1);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(1));
     }
 
     #[test]
