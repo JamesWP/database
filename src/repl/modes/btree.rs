@@ -188,7 +188,6 @@ impl Mode for BTreeMode {
             }
 
             // Debug operations
-            // TODO: Re-add verify-all by querying db_schema for all root pages
             ["verify"] => {
                 match &mut self.cursor {
                     None => CommandResult::Error("No cursor open. Use 'open <table>' first.".to_string()),
@@ -198,6 +197,61 @@ impl Mode for BTreeMode {
                             Err(e) => CommandResult::Error(format!("Verify failed: {:?}", e)),
                         }
                     }
+                }
+            }
+
+            ["verify", "all"] => {
+                // Open db_schema like any other table via lookup_table
+                let (schema_root, _) = match shared.btree.lookup_table("db_schema") {
+                    Some(r) => r,
+                    None => return CommandResult::Error("No schema table found".to_string()),
+                };
+
+                // Scan the catalog to collect all table names and root pages.
+                // db_schema is included because it has a self-referencing row.
+                let tables = {
+                    let mut cursor = shared.btree.open(schema_root);
+                    let mut c = cursor.open_readonly();
+                    c.first();
+                    let mut tables = Vec::new();
+                    loop {
+                        match c.get_entry() {
+                            None => break,
+                            Some(mut reader) => {
+                                let row = reader.decode_as_json_array();
+                                if row.len() >= 5 && row[0].as_str() == Some("table") {
+                                    let name = row[1].as_str().unwrap_or("").to_string();
+                                    let rootpage = row[3].as_u64().unwrap() as u32;
+                                    tables.push((name, rootpage));
+                                }
+                            }
+                        }
+                        c.next();
+                    }
+                    tables
+                };
+
+                if tables.is_empty() {
+                    return CommandResult::Message("No tables found".to_string());
+                }
+
+                // Verify each table's B-tree
+                let mut failures = Vec::new();
+                for (name, rootpage) in &tables {
+                    let mut handle = shared.btree.open(*rootpage);
+                    let result = handle.open_readonly().verify();
+                    if let Err(e) = result {
+                        failures.push(format!("  {}: {:?}", name, e));
+                    }
+                }
+                if failures.is_empty() {
+                    CommandResult::Message(format!("All {} tables verified OK", tables.len()))
+                } else {
+                    CommandResult::Error(format!(
+                        "Verification failed for {} table(s):\n{}",
+                        failures.len(),
+                        failures.join("\n")
+                    ))
                 }
             }
 
@@ -240,7 +294,8 @@ impl Mode for BTreeMode {
     random insert <n> <size>  Insert n random entries
 
   Debug:
-    verify                    Verify B-tree integrity
+    verify                    Verify current table's B-tree integrity
+    verify all                Verify all tables in the database
     dump <path>               Export B-tree as graphviz dot file"#
             .to_string()
     }

@@ -993,6 +993,41 @@ mod test {
     }
 
     #[test]
+    fn test_scan_schema_via_cursor() {
+        // db_schema can be scanned with the regular cursor API, just like any other table.
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let users_root = btree.create_tree();
+        btree.insert_schema_entry(1, "table", "users", "users", users_root, "CREATE TABLE users (id INTEGER)");
+        let orders_root = btree.create_tree();
+        btree.insert_schema_entry(2, "table", "orders", "orders", orders_root, "CREATE TABLE orders (id INTEGER)");
+
+        // Look up db_schema's rootpage via lookup_table, then scan it with a cursor
+        let (schema_root, _) = btree.lookup_table("db_schema").unwrap();
+        let mut cursor = btree.open(schema_root);
+        let mut c = cursor.open_readonly();
+        c.first();
+        let mut names = Vec::new();
+        loop {
+            match c.get_entry() {
+                None => break,
+                Some(mut reader) => {
+                    let row = reader.decode_as_json_array();
+                    if row.len() >= 5 && row[0].as_str() == Some("table") {
+                        names.push(row[1].as_str().unwrap().to_string());
+                    }
+                }
+            }
+            c.next();
+        }
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"db_schema".to_string()));
+        assert!(names.contains(&"users".to_string()));
+        assert!(names.contains(&"orders".to_string()));
+    }
+
+    #[test]
     fn test_catalog_root_stable_after_splits() {
         // Insert enough schema entries to force the db_schema B-tree root to split.
         // With stable root pages, schema_root_page() must stay the same,
