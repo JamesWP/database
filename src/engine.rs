@@ -54,6 +54,11 @@ impl Engine {
         }
     }
 
+    /// Take the BTree out of the engine, for reuse after execution.
+    pub(crate) fn take_btree(&mut self) -> Option<storage::BTree> {
+        self.btree.take()
+    }
+
     /// Run the program to completion, returning all yielded rows.
     pub(crate) fn run(&mut self) -> Vec<Vec<ScalarValue>> {
         let mut yields = Vec::new();

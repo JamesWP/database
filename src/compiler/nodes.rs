@@ -563,6 +563,117 @@ pub fn codegen_limit(
     }
 }
 
+/// Generate bytecode for an Insert node.
+///
+/// Insert consumes all rows from its child (typically Values), writes each
+/// to the B-tree, and outputs a single row containing the count of rows inserted.
+/// This follows the same double-emitter pattern as codegen_count.
+///
+/// ```text
+/// INIT (init_emitter):
+///   Open(cursor, rootpage)
+///   MoveCursor(cursor, Last)
+///   CanReadCursor(flag, cursor)
+///   GoToIfFalse(@empty, flag)
+///   ReadKey(key, cursor)
+///   IncrementValue(key)            // next key = max + 1
+///   GoTo(@init_done)
+///   @empty: StoreValue(key, 1)     // empty table starts at 1
+///   @init_done:
+///   StoreValue(counter, 0)
+///
+/// BODY (body_emitter):
+///   <child codegen with our handlers>
+///   child_on_tuple: WriteCursor(cursor, key, child.output_regs)
+///                   IncrementValue(key)
+///                   IncrementValue(counter)
+///                   GoTo(child.next)
+///   child_on_done:  GoTo(on_tuple)     // yield the count
+///   insert_next:    GoTo(on_done)      // done after yielding
+/// ```
+pub fn codegen_insert(
+    rootpage: u32,
+    _table_columns: &[usize],
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // Allocate registers
+    let cursor_reg = ctx.registers.alloc();
+    let flag_reg = ctx.registers.alloc();
+    let key_reg = ctx.registers.alloc();
+    let counter_reg = ctx.registers.alloc();
+
+    // INIT: Open cursor and discover next key
+    ctx.init_emitter
+        .emit(Operation::Open(cursor_reg, rootpage));
+    ctx.init_emitter
+        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Last));
+    ctx.init_emitter
+        .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
+
+    // Branch: if table is empty, go to @empty
+    let empty_label = ctx.init_emitter.create_label();
+    let init_done_label = ctx.init_emitter.create_label();
+
+    ctx.init_emitter.emit_goto_if_false(empty_label, flag_reg);
+
+    // Non-empty: read max key, increment
+    ctx.init_emitter
+        .emit(Operation::ReadKey(key_reg, cursor_reg));
+    ctx.init_emitter
+        .emit(Operation::IncrementValue(key_reg));
+    ctx.init_emitter.emit_goto(init_done_label);
+
+    // @empty: start at key 1
+    ctx.init_emitter.bind_label(empty_label);
+    ctx.init_emitter
+        .emit(Operation::StoreValue(key_reg, ScalarValue::Integer(1)));
+
+    // @init_done: init counter
+    ctx.init_emitter.bind_label(init_done_label);
+    ctx.init_emitter
+        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
+
+    // Create labels for child's continuations
+    let child_on_tuple = ctx.body_emitter.create_label();
+    let child_on_done = ctx.body_emitter.create_label();
+    let child_cont = NodeContinuation {
+        on_tuple: child_on_tuple,
+        on_done: child_on_done,
+    };
+
+    // Compile child
+    let child_output = codegen(input, &child_cont, ctx);
+
+    // child_on_tuple: write row, increment key and counter, get next
+    ctx.body_emitter.bind_label(child_on_tuple);
+    ctx.body_emitter.emit(Operation::WriteCursor(
+        cursor_reg,
+        key_reg,
+        child_output.output_regs.clone(),
+    ));
+    ctx.body_emitter
+        .emit(Operation::IncrementValue(key_reg));
+    ctx.body_emitter
+        .emit(Operation::IncrementValue(counter_reg));
+    ctx.body_emitter.emit_goto(child_output.next);
+
+    // child_on_done: all rows consumed, yield the count
+    ctx.body_emitter.bind_label(child_on_done);
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // insert_next: after yielding count, we're done
+    let insert_next = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(insert_next);
+    ctx.body_emitter.emit_goto(cont.on_done);
+
+    NodeOutput {
+        next: insert_next,
+        output_regs: vec![counter_reg],
+    }
+}
+
 /// Main codegen dispatch function.
 /// Routes to the appropriate codegen based on plan type.
 pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenContext) -> NodeOutput {
@@ -588,9 +699,11 @@ pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenCon
         LogicalPlan::Limit { count, input } => {
             codegen_limit(*count, input, cont, ctx)
         }
-        LogicalPlan::Insert { .. } => {
-            todo!("INSERT codegen implemented in commit 5")
-        }
+        LogicalPlan::Insert {
+            rootpage,
+            table_columns,
+            input,
+        } => codegen_insert(*rootpage, table_columns, input, cont, ctx),
     }
 }
 
@@ -1390,6 +1503,116 @@ mod tests {
 
         assert_eq!(yields.len(), 1);
         assert_eq!(yields[0][0], ScalarValue::Integer(5));
+    }
+
+    // ========================================================================
+    // Insert tests
+    // ========================================================================
+
+    /// Test Insert with Values input yields row count
+    #[test]
+    fn test_insert_yields_count() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let plan = LogicalPlan::Insert {
+            rootpage: root,
+            table_columns: vec![0, 1, 2],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![
+                    vec![
+                        Literal::Integer(1),
+                        Literal::String("alice".to_string()),
+                        Literal::Integer(30),
+                    ],
+                    vec![
+                        Literal::Integer(2),
+                        Literal::String("bob".to_string()),
+                        Literal::Integer(25),
+                    ],
+                ],
+            }),
+        };
+
+        let (ops, num_registers) = compile_plan(&plan);
+
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let yields = engine.run();
+
+        // Should yield a single row with count = 2
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(2));
+    }
+
+    /// Test Insert then scan to verify data was written
+    #[test]
+    fn test_insert_then_scan() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // First: INSERT
+        let insert_plan = LogicalPlan::Insert {
+            rootpage: root,
+            table_columns: vec![0, 1],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![
+                    vec![Literal::Integer(100), Literal::String("alice".to_string())],
+                    vec![Literal::Integer(200), Literal::String("bob".to_string())],
+                    vec![Literal::Integer(300), Literal::String("charlie".to_string())],
+                ],
+            }),
+        };
+
+        let (ops, num_registers) = compile_plan(&insert_plan);
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let insert_yields = engine.run();
+        assert_eq!(insert_yields[0][0], ScalarValue::Integer(3));
+
+        // Get btree back from engine
+        let btree = engine.take_btree().unwrap();
+
+        // Second: SCAN to read back
+        let scan_plan = LogicalPlan::Scan {
+            rootpage: root,
+            columns: vec![0, 1],
+        };
+
+        let (ops, num_registers) = compile_plan(&scan_plan);
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let scan_yields = engine.run();
+
+        assert_eq!(scan_yields.len(), 3);
+        assert_eq!(scan_yields[0][0], ScalarValue::Integer(100));
+        assert_eq!(scan_yields[0][1], ScalarValue::String("alice".to_string()));
+        assert_eq!(scan_yields[1][0], ScalarValue::Integer(200));
+        assert_eq!(scan_yields[1][1], ScalarValue::String("bob".to_string()));
+        assert_eq!(scan_yields[2][0], ScalarValue::Integer(300));
+        assert_eq!(scan_yields[2][1], ScalarValue::String("charlie".to_string()));
+    }
+
+    /// Test Insert into empty table
+    #[test]
+    fn test_insert_into_empty_table() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let plan = LogicalPlan::Insert {
+            rootpage: root,
+            table_columns: vec![0],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![Literal::Integer(42)]],
+            }),
+        };
+
+        let (ops, num_registers) = compile_plan(&plan);
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(1));
     }
 
     /// Test complex combination: Limit(Project(Filter(Sequence)))

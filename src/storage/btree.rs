@@ -285,9 +285,11 @@ where
         loop {
             match page {
                 node::NodePage::Leaf(l) => {
-                    // We found the first leaf in the tree.
-                    // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
-                    self.cursor_state.leaf_iterator = Some((page_idx, l.num_items() - 1));
+                    if l.num_items() == 0 {
+                        self.cursor_state.leaf_iterator = None;
+                    } else {
+                        self.cursor_state.leaf_iterator = Some((page_idx, l.num_items() - 1));
+                    }
                     return;
                 }
                 node::NodePage::Interior(_i) => todo!(),
