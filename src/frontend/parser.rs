@@ -73,6 +73,18 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::Insert, lexer::Type::Insert) => {
+                self.advance();
+                Ok(())
+            }
+            (Expect::Into, lexer::Type::Into) => {
+                self.advance();
+                Ok(())
+            }
+            (Expect::Values, lexer::Type::Values) => {
+                self.advance();
+                Ok(())
+            }
             // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
@@ -106,6 +118,9 @@ pub enum Expect {
     Select,
     Create,
     Table,
+    Insert,
+    Into,
+    Values,
 }
 
 impl lexer::Type {
@@ -150,8 +165,60 @@ impl Parser {
         match self.input.peek() {
             lexer::Type::Select => Ok(ast::Statement::Select(self.parse_select_statement()?)),
             lexer::Type::Create => Ok(ast::Statement::CreateTable(self.parse_create_table_statement()?)),
+            lexer::Type::Insert => Ok(ast::Statement::Insert(self.parse_insert_statement()?)),
             _ => todo!(),
         }
+    }
+
+    fn parse_insert_statement(&mut self) -> ParseResult<ast::InsertStatement> {
+        self.input.expect(Expect::Insert)?;
+        self.input.expect(Expect::Into)?;
+        let table_name = self.parse_identifier()?;
+
+        // Optional column list appears before VALUES keyword.
+        // We distinguish it from the VALUES rows by checking for the VALUES keyword:
+        // if the next token is not VALUES, it must be a column list in parens.
+        let columns = match self.input.peek() {
+            lexer::Type::Values => None,
+            lexer::Type::LeftParen => {
+                self.input.expect(Expect::LeftParen)?;
+                let mut cols = vec![self.parse_identifier()?];
+                while let lexer::Type::Comma = self.input.peek() {
+                    self.input.advance();
+                    cols.push(self.parse_identifier()?);
+                }
+                self.input.expect(Expect::RightParen)?;
+                Some(cols)
+            }
+            t => return Err(ParseError::UnexpectedToken(Expect::Values, t)),
+        };
+
+        self.input.expect(Expect::Values)?;
+
+        // Parse one or more value rows: (expr, ...) [, (expr, ...)]
+        let mut values = vec![self.parse_value_row()?];
+        while let lexer::Type::Comma = self.input.peek() {
+            self.input.advance();
+            values.push(self.parse_value_row()?);
+        }
+
+        Ok(ast::InsertStatement {
+            table_name,
+            columns,
+            values,
+        })
+    }
+
+    fn parse_value_row(&mut self) -> ParseResult<Vec<ast::Expression>> {
+        self.input.expect(Expect::LeftParen)?;
+        let mut exprs = Vec::new();
+        exprs.push(self.parse_expression()?);
+        while let lexer::Type::Comma = self.input.peek() {
+            self.input.advance();
+            exprs.push(self.parse_expression()?);
+        }
+        self.input.expect(Expect::RightParen)?;
+        Ok(exprs)
     }
 
     fn parse_create_table_statement(&mut self) -> ParseResult<ast::CreateTableStatement> {
@@ -654,6 +721,49 @@ mod test {
                 assert_eq!(ct.columns[0].type_name, Some(ast::DataType::Integer));
             }
             _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_insert_without_columns() {
+        let stmt = parse("INSERT INTO users VALUES (1, 'alice', 30)").unwrap();
+        match stmt {
+            ast::Statement::Insert(ins) => {
+                assert_eq!(ins.table_name, "users");
+                assert!(ins.columns.is_none());
+                assert_eq!(ins.values.len(), 1);
+                assert_eq!(ins.values[0].len(), 3);
+            }
+            _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_insert_with_columns() {
+        let stmt = parse("INSERT INTO users (id, name, age) VALUES (1, 'alice', 30)").unwrap();
+        match stmt {
+            ast::Statement::Insert(ins) => {
+                assert_eq!(ins.table_name, "users");
+                assert_eq!(ins.columns, Some(vec!["id".to_string(), "name".to_string(), "age".to_string()]));
+                assert_eq!(ins.values.len(), 1);
+                assert_eq!(ins.values[0].len(), 3);
+            }
+            _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_insert_multiple_rows() {
+        let stmt = parse("INSERT INTO users VALUES (1, 'alice', 30), (2, 'bob', 25)").unwrap();
+        match stmt {
+            ast::Statement::Insert(ins) => {
+                assert_eq!(ins.table_name, "users");
+                assert!(ins.columns.is_none());
+                assert_eq!(ins.values.len(), 2);
+                assert_eq!(ins.values[0].len(), 3);
+                assert_eq!(ins.values[1].len(), 3);
+            }
+            _ => panic!("Expected Insert statement"),
         }
     }
 }

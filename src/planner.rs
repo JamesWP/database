@@ -182,6 +182,7 @@ pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanErro
     match statement {
         Statement::Select(select) => plan_select(select, btree),
         Statement::CreateTable(_) => Err(PlanError::UnsupportedStatement),
+        Statement::Insert(_) => Err(PlanError::UnsupportedStatement), // handled in commit 3
     }
 }
 

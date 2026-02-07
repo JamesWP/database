@@ -2,6 +2,14 @@
 pub enum Statement {
     Select(SelectStatement),
     CreateTable(CreateTableStatement),
+    Insert(InsertStatement),
+}
+
+#[derive(Debug)]
+pub struct InsertStatement {
+    pub table_name: String,
+    pub columns: Option<Vec<String>>,
+    pub values: Vec<Vec<Expression>>,
 }
 
 #[derive(Debug)]

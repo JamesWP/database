@@ -65,6 +65,9 @@ pub enum Type {
     Text,
     Real,
     Blob,
+    Insert,
+    Into,
+    Values,
 
     Error(Error),
 
@@ -435,7 +438,18 @@ impl<'a> Lexer<'a> {
                 Some('a') => match_reserved(ident, "false", Type::False),
                 _ => Type::Identifier(ident.to_owned()),
             },
-            'i' => match_reserved(ident, "integer", Type::Integer),
+            'i' => match ident.chars().nth(1) {
+                Some('n') => match ident.chars().nth(2) {
+                    Some('s') => match_reserved(ident, "insert", Type::Insert),
+                    Some('t') => match ident.chars().nth(3) {
+                        Some('e') => match_reserved(ident, "integer", Type::Integer),
+                        Some('o') => match_reserved(ident, "into", Type::Into),
+                        _ => Type::Identifier(ident.to_owned()),
+                    },
+                    _ => Type::Identifier(ident.to_owned()),
+                },
+                _ => Type::Identifier(ident.to_owned()),
+            },
             'l' => match_reserved(ident, "limit", Type::Limit),
             'n' => match_reserved(ident, "null", Type::Null),
             'o' => match_reserved(ident, "or", Type::Or),
@@ -446,6 +460,7 @@ impl<'a> Lexer<'a> {
                 Some('e') => match_reserved(ident, "text", Type::Text),
                 _ => Type::Identifier(ident.to_owned()),
             },
+            'v' => match_reserved(ident, "values", Type::Values),
             'w' => match_reserved(ident, "where", Type::Where),
             _ => Type::Identifier(ident.to_owned()),
         };
