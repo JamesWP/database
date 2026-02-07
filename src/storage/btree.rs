@@ -51,17 +51,6 @@ impl CursorHandle {
         }
     }
 
-    /// Insert a key-value pair, automatically propagating root splits to the catalog.
-    /// If the root page changes due to a split, the db_schema entry for this table
-    /// is updated to reflect the new root page.
-    pub fn insert(&mut self, key: u64, value: Vec<u8>) {
-        let initial_root = self.state.root_page;
-        self.open_readwrite().insert(key, value);
-        if self.state.root_page != initial_root {
-            let btree = BTree { pager: self.pager.clone() };
-            btree.update_schema_rootpage_by_rootpage(initial_root, self.state.root_page);
-        }
-    }
 }
 
 pub struct Cursor<'a, PagerRef> {
@@ -83,7 +72,7 @@ impl<'a, PagerRef> Cursor<'a, PagerRef>
 where
     PagerRef: DerefMut<Target = Pager>,
 {
-    fn insert(&mut self, key: u64, value: Value) {
+    pub fn insert(&mut self, key: u64, value: Value) {
         assert!(value.len() > 0);
 
         // values must be small enough so that a few can fit on each page
@@ -159,59 +148,69 @@ where
         }
     }
 
-    fn split_page(&mut self, page_to_be_split: NodePage, mut stack: Vec<u32>) {
-        let top_page_idx = stack.pop().unwrap();
-        let (top_page, extra_page) = page_to_be_split.split();
-        let extra_page_idx = self.pager.allocate();
+    /// Split an overfull page into two halves and link them into the tree.
+    ///
+    /// `stack` is the path from root to the overfull page (last element = overfull page).
+    ///
+    /// Non-root split — insert a new child pointer into the parent:
+    ///
+    ///        [parent]              [parent]
+    ///           |            =>    /      \
+    ///       [overfull]         [left]  [right]
+    ///
+    /// Root split — the root page index stays stable (the SQLite approach).
+    /// The two halves move to new pages; the root is rewritten as an interior node:
+    ///
+    ///       [root:overfull]       [root:interior]
+    ///                        =>    /          \
+    ///                          [left]      [right]
+    ///
+    fn split_page(&mut self, overfull_page: NodePage, mut stack: Vec<u32>) {
+        let overfull_idx = stack.pop().unwrap();
 
-        let extra_page_first_key = extra_page.smallest_key();
+        // 1. Split the overfull page into left and right halves
+        let (left_half, right_half) = overfull_page.split();
+        let right_idx = self.pager.allocate();
+        let right_first_key = right_half.smallest_key();
 
+        // 2. Write both halves to disk
         self.pager
-            .encode_and_set(top_page_idx, top_page)
+            .encode_and_set(overfull_idx, left_half)
             .expect("After split, parts are smaller");
         self.pager
-            .encode_and_set(extra_page_idx, extra_page)
+            .encode_and_set(right_idx, right_half)
             .expect("After split, parts are smaller");
 
-        // We now must put our new page into the tree.
-        // The new page is at index: extra_page_idx, and the first key on that new page is extra_page_first_key
+        // 3. Link the new right page into the tree
         if stack.len() != 0 {
-            // We must update the parent node
-            // A reference to the new extra_page must be inserted into the parent node
-            // Our reference in our parent might need updating???
-
-            let parent_node_idx = stack.pop().unwrap();
-
-            let parent_node: NodePage = self.pager.get_and_decode(parent_node_idx);
-
-            let mut parent_interior_node = parent_node.interior().unwrap();
-
-            parent_interior_node.insert_child_page(extra_page_first_key, extra_page_idx);
-
-            let parent_interior_node = parent_interior_node.node();
+            // Non-root: add a child pointer for the right page to the parent
+            let parent_idx = stack.pop().unwrap();
+            let parent_page: NodePage = self.pager.get_and_decode(parent_idx);
+            let mut parent_interior = parent_page.interior().unwrap();
+            parent_interior.insert_child_page(right_first_key, right_idx);
+            let parent_node = parent_interior.node();
 
             let result = self
                 .pager
-                .encode_and_set(parent_node_idx, parent_interior_node.clone());
+                .encode_and_set(parent_idx, parent_node.clone());
 
-            match result {
-                Err(pager::EncodingError::NotEnoughSpaceInPage) => {
-                    stack.push(parent_node_idx);
-                    self.split_page(parent_interior_node, stack);
-                }
-                Ok(_) => {}
+            // If the parent is now overfull, recursively split it
+            if let Err(pager::EncodingError::NotEnoughSpaceInPage) = result {
+                stack.push(parent_idx);
+                self.split_page(parent_node, stack);
             }
         } else {
-            // We have just split the root node...
-            // We must now create the first interior node and insert two new child pages
-            let interior_node =
-                InteriorNodePage::new(top_page_idx, extra_page_first_key, extra_page_idx);
+            // Root: keep the root at the same page index.
+            // Move the left half (currently at overfull_idx) to a fresh page,
+            // then overwrite the root with a new interior node.
+            let left_page: NodePage = self.pager.get_and_decode(overfull_idx);
+            let left_idx = self.pager.allocate();
+            self.pager.encode_and_set(left_idx, left_page).unwrap();
 
-            let root_node = NodePage::Interior(interior_node);
-
-            let root_node_idx = self.pager.allocate();
-            self.pager.encode_and_set(root_node_idx, root_node).unwrap();
-            self.cursor_state.root_page = root_node_idx;
+            let interior = InteriorNodePage::new(left_idx, right_first_key, right_idx);
+            self.pager
+                .encode_and_set(overfull_idx, NodePage::Interior(interior))
+                .unwrap();
         }
     }
 }
@@ -570,7 +569,7 @@ impl BTree {
         ]))
         .unwrap();
         let mut cursor = self.open(schema_root);
-        cursor.insert(key, row);
+        cursor.open_readwrite().insert(key, row);
     }
 
     /// Look up a table's root page and DDL by scanning db_schema for a matching name.
@@ -592,9 +591,6 @@ impl BTree {
                         let name = values[1].as_str().unwrap_or("");
                         if obj_type == "table" && name == table_name {
                             let rootpage = values[3].as_u64().unwrap() as u32;
-                            // For db_schema, ZeroPage is the authoritative source
-                            // (the self-reference row may be stale after catalog root splits)
-                            let rootpage = if name == "db_schema" { schema_root } else { rootpage };
                             let sql = values[4].as_str().unwrap_or("").to_string();
                             return Some((rootpage, sql));
                         }
@@ -603,52 +599,6 @@ impl BTree {
             }
             c.next();
         }
-    }
-
-    /// Update a table's rootpage in the db_schema catalog, finding the entry
-    /// by its current rootpage value. Used by CursorHandle::insert to propagate
-    /// root splits without needing to know the table name.
-    fn update_schema_rootpage_by_rootpage(&self, old_rootpage: u32, new_rootpage: u32) {
-        let schema_root = self.schema_root_page().expect("db_schema not bootstrapped");
-
-        // If this is the schema table itself, update ZeroPage directly
-        if old_rootpage == schema_root {
-            self.pager.borrow_mut().set_schema_root_page(new_rootpage);
-            return;
-        }
-
-        // Scan catalog for the entry with the old rootpage
-        let (key, obj_type, name, tbl_name, sql) = {
-            let mut cursor = self.open(schema_root);
-            let mut c = cursor.open_readonly();
-            c.first();
-            loop {
-                match c.get_entry() {
-                    None => panic!(
-                        "No catalog entry found with rootpage {}",
-                        old_rootpage
-                    ),
-                    Some(mut reader) => {
-                        let key = reader.key();
-                        let values = reader.decode_as_json_array();
-                        if values.len() >= 5 {
-                            let rp = values[3].as_u64().unwrap() as u32;
-                            if rp == old_rootpage {
-                                let obj_type = values[0].as_str().unwrap_or("").to_string();
-                                let name = values[1].as_str().unwrap_or("").to_string();
-                                let tbl_name =
-                                    values[2].as_str().unwrap_or("").to_string();
-                                let sql = values[4].as_str().unwrap_or("").to_string();
-                                break (key, obj_type, name, tbl_name, sql);
-                            }
-                        }
-                    }
-                }
-                c.next();
-            }
-        }; // cursor dropped here
-
-        self.insert_schema_entry(key, &obj_type, &name, &tbl_name, new_rootpage, &sql);
     }
 
     pub fn debug(&self, message: &str) {
@@ -1043,10 +993,10 @@ mod test {
     }
 
     #[test]
-    fn test_catalog_root_split_propagates() {
+    fn test_catalog_root_stable_after_splits() {
         // Insert enough schema entries to force the db_schema B-tree root to split.
-        // After the split, schema_root_page() must return the new root, and
-        // all entries must still be accessible via lookup_table().
+        // With stable root pages, schema_root_page() must stay the same,
+        // and all entries must still be accessible via lookup_table().
         let test = TestDb::default();
         let mut btree = test.btree;
 
@@ -1061,11 +1011,11 @@ mod test {
             btree.insert_schema_entry(i + 100, "table", &name, &name, root, &ddl);
         }
 
-        // The root should have split at some point
+        // The root page should remain stable
         let final_root = btree.schema_root_page().unwrap();
-        assert_ne!(
+        assert_eq!(
             initial_root, final_root,
-            "Expected catalog root to split after many inserts"
+            "Schema root page should stay stable after splits"
         );
 
         // All entries should still be accessible
@@ -1078,12 +1028,13 @@ mod test {
 
         // db_schema self-reference should still work
         let (rp, _) = btree.lookup_table("db_schema").unwrap();
-        assert_eq!(rp, final_root);
+        assert_eq!(rp, initial_root);
     }
 
     #[test]
-    fn test_cursor_insert_propagates_root_split() {
-        // CursorHandle::insert should automatically update the catalog when a root splits.
+    fn test_user_table_root_stable_after_splits() {
+        // User table root pages should remain stable after many inserts
+        // that cause multiple levels of splits.
         let test = TestDb::default();
         let mut btree = test.btree;
 
@@ -1097,25 +1048,29 @@ mod test {
             "CREATE TABLE big_table (id INTEGER, data TEXT)",
         );
 
-        // Insert enough rows via CursorHandle::insert to force a root split
-        let mut cursor = btree.open(initial_root);
-        for i in 0..100u64 {
-            let value = format!("[{}, \"row_{}\"]", i, i);
-            cursor.insert(i, value.into_bytes());
+        // Insert enough rows to force multiple root splits
+        {
+            let mut cursor = btree.open(initial_root);
+            let mut c = cursor.open_readwrite();
+            for i in 0..100u64 {
+                let value = format!("[{}, \"row_{}\"]", i, i);
+                c.insert(i, value.into_bytes());
+            }
         }
 
-        // The catalog should have been updated automatically
+        // The catalog entry should still have the original rootpage
         let (catalog_root, _) = btree.lookup_table("big_table").unwrap();
-        assert_ne!(catalog_root, initial_root, "Catalog should have new root after splits");
+        assert_eq!(catalog_root, initial_root, "Root page should stay stable");
 
-        // CursorHandle should track the current root
-        assert_eq!(cursor.root_page(), catalog_root);
-
-        // Data should be accessible through the catalog rootpage
-        let mut read_cursor = btree.open(catalog_root);
+        // Data should be accessible through the original rootpage
+        let mut read_cursor = btree.open(initial_root);
         let mut c = read_cursor.open_readonly();
         c.first();
-        let entry = c.get_entry();
-        assert!(entry.is_some(), "Should be able to read data from catalog root");
+        let mut count = 0;
+        while c.get_entry().is_some() {
+            count += 1;
+            c.next();
+        }
+        assert_eq!(count, 100, "All 100 rows should be accessible");
     }
 }

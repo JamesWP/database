@@ -814,11 +814,14 @@ mod test {
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
-        let mut cursor = btree.open(root);
-        cursor.insert(0, b"[12345,6789]".to_vec());
-        cursor.insert(1, b"[12345]".to_vec());
-        cursor.insert(2, b"[12345]".to_vec());
-        cursor.insert(3, b"[12345]".to_vec());
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            c.insert(0, b"[12345,6789]".to_vec());
+            c.insert(1, b"[12345]".to_vec());
+            c.insert(2, b"[12345]".to_vec());
+            c.insert(3, b"[12345]".to_vec());
+        }
 
         let r0 = Reg::new(0);
         let r1 = Reg::new(1);
@@ -853,11 +856,14 @@ mod test {
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let mut cursor = btree.open(root);
-        cursor.insert(0, b"[12345,6789]".to_vec());
-        cursor.insert(1, b"[12345,0]".to_vec());
-        cursor.insert(2, b"[12345,0]".to_vec());
-        cursor.insert(3, b"[12345,0]".to_vec());
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            c.insert(0, b"[12345,6789]".to_vec());
+            c.insert(1, b"[12345,0]".to_vec());
+            c.insert(2, b"[12345,0]".to_vec());
+            c.insert(3, b"[12345,0]".to_vec());
+        }
 
         let r0 = Reg::new(0);
         let r1 = Reg::new(1);
@@ -920,9 +926,12 @@ mod test {
         let root = btree.create_tree();
 
         // Insert test data
-        let mut cursor = btree.open(root);
-        cursor.insert(0, b"[100, 200]".to_vec());
-        cursor.insert(1, b"[300, 400]".to_vec());
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            c.insert(0, b"[100, 200]".to_vec());
+            c.insert(1, b"[300, 400]".to_vec());
+        }
 
         let r0 = Reg::new(0);
         let r1 = Reg::new(1);

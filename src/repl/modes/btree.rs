@@ -146,7 +146,7 @@ impl Mode for BTreeMode {
                 };
                 let value = rest.join(" ");
                 self.with_cursor(|cursor| {
-                    cursor.handle.insert(key, value.into_bytes());
+                    cursor.handle.open_readwrite().insert(key, value.into_bytes());
                     CommandResult::Message(format!("Inserted key {}", key))
                 })
             }
@@ -178,7 +178,7 @@ impl Mode for BTreeMode {
                         let key =
                             rng.sample(rand::distributions::Uniform::new(1 << 10, 1u64 << 32));
 
-                        cursor.handle.insert(key, bytes);
+                        cursor.handle.open_readwrite().insert(key, bytes);
                     }
                     CommandResult::Message(format!(
                         "Inserted {} items with random size up to {}",
