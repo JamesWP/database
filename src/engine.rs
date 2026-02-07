@@ -282,6 +282,10 @@ impl Engine {
                             let value = ScalarValue::Boolean(b);
                             *self.registers.get_mut(*reg) = RegisterValue::ScalarValue(value);
                         }
+                        serde_json::Value::String(s) => {
+                            let value = ScalarValue::String(s);
+                            *self.registers.get_mut(*reg) = RegisterValue::ScalarValue(value);
+                        }
                         _ => todo!(),
                     }
                 }
@@ -894,6 +898,52 @@ mod test {
         assert_eq!(harness.value(1, 0), ScalarValue::Integer(12345));
         assert_eq!(harness.value(2, 0), ScalarValue::Integer(12345));
         assert_eq!(harness.value(3, 0), ScalarValue::Integer(12345));
+    }
+
+    #[test]
+    fn test_read_cursor_string_values() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            c.insert(0, br#"[1,"alice",30]"#.to_vec());
+            c.insert(1, br#"[2,"bob",25]"#.to_vec());
+        }
+
+        let r0 = Reg::new(0);
+        let r1 = Reg::new(1);
+        let r2 = Reg::new(2);
+        let r3 = Reg::new(3);
+        let r4 = Reg::new(4);
+
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                Operation::Open(r0, root),
+                Operation::MoveCursor(r0, MoveOperation::First),
+                Operation::CanReadCursor(r1, r0),       // 2
+                Operation::GoToIfFalse(JumpTarget::addr(8), r1), // 3
+                Operation::ReadCursor(vec![r2, r3, r4], r0), // 4
+                Operation::Yield(vec![r2, r3, r4]),      // 5
+                Operation::MoveCursor(r0, MoveOperation::Next), // 6
+                Operation::GoTo(JumpTarget::addr(2)),    // 7
+                Operation::Halt,                         // 8
+            ],
+            5,
+            btree,
+        );
+
+        harness.run();
+
+        assert_eq!(harness.num_yields(), 2);
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(1));
+        assert_eq!(harness.value(0, 1), ScalarValue::String("alice".to_string()));
+        assert_eq!(harness.value(0, 2), ScalarValue::Integer(30));
+        assert_eq!(harness.value(1, 0), ScalarValue::Integer(2));
+        assert_eq!(harness.value(1, 1), ScalarValue::String("bob".to_string()));
+        assert_eq!(harness.value(1, 2), ScalarValue::Integer(25));
     }
 
     // ========================================================================

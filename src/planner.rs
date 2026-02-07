@@ -387,6 +387,7 @@ fn convert_scalar(scalar: &ast::ScalarValue, ctx: &ExprContext) -> Result<PlanEx
     match scalar {
         ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
         ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
+        ast::ScalarValue::StringLiteral(s) => Ok(PlanExpr::Literal(Literal::String(s.clone()))),
         ast::ScalarValue::Identifier(name) => {
             let pos = ctx.columns.get(name).ok_or_else(|| PlanError::ColumnNotFound {
                 table: ctx.table_ref.to_string(),
@@ -449,7 +450,9 @@ fn collect_columns_scalar(scalar: &ast::ScalarValue, columns: &mut HashSet<Strin
             // For table.column, we only need the column name
             columns.insert(column_name.clone());
         }
-        ast::ScalarValue::IntegerNumber(_) | ast::ScalarValue::FloatingNumber(_) => {
+        ast::ScalarValue::IntegerNumber(_)
+        | ast::ScalarValue::FloatingNumber(_)
+        | ast::ScalarValue::StringLiteral(_) => {
             // Literals don't reference columns
         }
     }

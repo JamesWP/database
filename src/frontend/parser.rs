@@ -545,6 +545,10 @@ impl Parser {
                     value,
                 )))
             }
+            lexer::Type::String(s) => {
+                self.input.advance();
+                Ok(ast::Expression::Value(ast::ScalarValue::StringLiteral(s)))
+            }
             lexer::Type::LeftParen => {
                 self.input.advance();
                 let expr = self.parse_expression()?;
@@ -616,6 +620,26 @@ mod test {
                 assert_eq!(ct.columns[3].type_name, Some(ast::DataType::Blob));
             }
             _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_string_literal() {
+        let stmt = parse("SELECT 'hello' FROM users").unwrap();
+        match stmt {
+            ast::Statement::Select(select) => {
+                assert_eq!(select.columns.len(), 1);
+                match &select.columns[0] {
+                    ast::ColumnExpression::Anonyomous(expr) => match expr.as_ref() {
+                        ast::Expression::Value(ast::ScalarValue::StringLiteral(s)) => {
+                            assert_eq!(s, "hello");
+                        }
+                        other => panic!("Expected StringLiteral, got {:?}", other),
+                    },
+                    other => panic!("Expected Anonymous, got {:?}", other),
+                }
+            }
+            _ => panic!("Expected Select statement"),
         }
     }
 
