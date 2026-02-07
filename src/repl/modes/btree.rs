@@ -4,6 +4,8 @@ use std::ops::ControlFlow;
 
 use rand::Rng;
 
+use crate::frontend::ast;
+use crate::frontend::parse;
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
 use crate::storage::{CellReader, CursorHandle};
 
@@ -41,19 +43,19 @@ impl Mode for BTreeMode {
         match tokens {
             // Table management
             ["create", "table", rest @ ..] => {
-                let name = rest.join(" ");
-                if name.is_empty() {
-                    return CommandResult::Error("Usage: create table <name>".to_string());
-                }
-                // Check if table already exists
-                if shared.btree.lookup_table(&name).is_some() {
+                let sql = format!("CREATE TABLE {}", rest.join(" "));
+                let stmt = match parse(&sql) {
+                    Ok(ast::Statement::CreateTable(ct)) => ct,
+                    Ok(_) => return CommandResult::Error("Expected CREATE TABLE statement".to_string()),
+                    Err(e) => return CommandResult::Error(format!("Parse error: {:?}", e)),
+                };
+                let name = &stmt.table_name;
+                if shared.btree.lookup_table(name).is_some() {
                     return CommandResult::Error(format!("Table '{}' already exists", name));
                 }
                 let root_page = shared.btree.create_tree();
-                // Use a simple key based on the name's hash for the catalog row
                 let key = name.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-                let ddl = format!("CREATE TABLE {} ()", name);
-                shared.btree.insert_schema_entry(key, "table", &name, &name, root_page, &ddl);
+                shared.btree.insert_schema_entry(key, "table", name, name, root_page, &sql);
                 CommandResult::Message(format!("Created table '{}' at page {}", name, root_page))
             }
 
@@ -274,7 +276,7 @@ impl Mode for BTreeMode {
     fn help(&self) -> String {
         r#"BTree mode commands:
   Table management:
-    create table <name>       Create a new B-tree table
+    create table <name> (<cols>)  Create a table with schema (SQL syntax)
     open <name>               Open a cursor on a table
     read table <name>         Alias for open
     close                     Close the current cursor
