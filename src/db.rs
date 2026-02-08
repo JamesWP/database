@@ -37,6 +37,19 @@ impl QueryExecution {
 pub enum ExecuteError {
     Parse(ParseError),
     Plan(PlanError),
+    TableAlreadyExists(String),
+}
+
+impl std::fmt::Display for ExecuteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExecuteError::Parse(e) => write!(f, "Parse error: {:?}", e),
+            ExecuteError::Plan(e) => write!(f, "Planning error: {:?}", e),
+            ExecuteError::TableAlreadyExists(name) => {
+                write!(f, "Table '{}' already exists", name)
+            }
+        }
+    }
 }
 
 pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteError> {
@@ -49,6 +62,12 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                 _ => unreachable!(),
             };
             let name = &ct.table_name;
+
+            // Check if table already exists
+            if btree.lookup_table(name).is_some() {
+                return Err(ExecuteError::TableAlreadyExists(name.clone()));
+            }
+
             let root_page = btree.create_tree();
             let ddl = sql.to_string();
             let key = name
@@ -90,6 +109,28 @@ mod tests {
                 assert_eq!(table_name, "users");
             }
             _ => panic!("Expected CreateTable result"),
+        }
+    }
+
+    #[test]
+    fn test_execute_create_duplicate_table() {
+        let mut test = TestDb::default();
+        execute(
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+
+        // Try to create the same table again
+        let result = execute(
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+            &mut test.btree,
+        );
+        match result {
+            Err(ExecuteError::TableAlreadyExists(name)) => {
+                assert_eq!(name, "users");
+            }
+            _ => panic!("Expected TableAlreadyExists error"),
         }
     }
 

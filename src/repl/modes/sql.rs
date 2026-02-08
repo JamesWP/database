@@ -37,7 +37,7 @@ impl Mode for SqlMode {
                 output += &format!("({} rows)", count);
                 CommandResult::Message(output)
             }
-            Err(e) => CommandResult::Error(format!("{:?}", e)),
+            Err(e) => CommandResult::Error(format!("{}", e)),
         }
     }
 
