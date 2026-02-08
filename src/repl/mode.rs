@@ -7,6 +7,7 @@ pub enum ModeId {
     Parser,
     Planner,
     Engine,
+    Sql,
 }
 
 impl ModeId {
@@ -16,6 +17,7 @@ impl ModeId {
             ModeId::Parser => "parser",
             ModeId::Planner => "planner",
             ModeId::Engine => "engine",
+            ModeId::Sql => "sql",
         }
     }
 
@@ -25,11 +27,12 @@ impl ModeId {
             ModeId::Parser => "SQL lexer and parser inspection",
             ModeId::Planner => "Query planning and logical plans",
             ModeId::Engine => "VM bytecode execution",
+            ModeId::Sql => "Run SQL statements",
         }
     }
 
     pub fn all() -> &'static [ModeId] {
-        &[ModeId::BTree, ModeId::Parser, ModeId::Planner, ModeId::Engine]
+        &[ModeId::BTree, ModeId::Parser, ModeId::Planner, ModeId::Engine, ModeId::Sql]
     }
 }
 
@@ -42,6 +45,7 @@ impl TryFrom<&str> for ModeId {
             "parser" => Ok(ModeId::Parser),
             "planner" => Ok(ModeId::Planner),
             "engine" => Ok(ModeId::Engine),
+            "sql" => Ok(ModeId::Sql),
             _ => Err(()),
         }
     }

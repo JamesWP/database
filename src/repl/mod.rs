@@ -8,7 +8,7 @@ use std::io::Write;
 pub use mode::{CommandResult, Mode, ModeFactory, ModeId};
 pub use shared::SharedState;
 
-use modes::{BTreeMode, EngineMode, ParserMode, PlannerMode};
+use modes::{BTreeMode, EngineMode, ParserMode, PlannerMode, SqlMode};
 
 pub struct Repl {
     shared: SharedState,
@@ -24,6 +24,7 @@ impl Repl {
         mode_factories.insert(ModeId::Parser, |_| Box::new(ParserMode::new()));
         mode_factories.insert(ModeId::Planner, |_| Box::new(PlannerMode::new()));
         mode_factories.insert(ModeId::Engine, |_| Box::new(EngineMode::new()));
+        mode_factories.insert(ModeId::Sql, |_| Box::new(SqlMode::new()));
 
         Repl {
             shared,
