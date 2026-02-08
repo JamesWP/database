@@ -479,6 +479,7 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
     first_page_idx
 }
 
+#[derive(Clone)]
 pub struct BTree {
     pager: Arc<RefCell<pager::Pager>>,
 }
