@@ -1,5 +1,16 @@
 use crate::db::{self, ExecuteResult};
+use crate::engine::scalarvalue::ScalarValue;
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
+
+/// Format a ScalarValue without ANSI color codes (for width calculation)
+fn plain_value(v: &ScalarValue) -> String {
+    match v {
+        ScalarValue::Integer(i) => i.to_string(),
+        ScalarValue::Floating(f) => f.to_string(),
+        ScalarValue::Boolean(b) => b.to_string(),
+        ScalarValue::String(s) => format!("\"{}\"", s),
+    }
+}
 
 #[derive(Debug)]
 pub struct SqlMode;
@@ -26,15 +37,44 @@ impl Mode for SqlMode {
                 CommandResult::Message(format!("Created table '{}'", table_name))
             }
             Ok(ExecuteResult::Query(mut query)) => {
-                let mut output = String::new();
-                let mut count = 0;
+                use colored::Colorize;
+
+                // Collect all rows first
+                let mut rows = Vec::new();
                 while let Some(row) = query.next() {
-                    let formatted: Vec<String> = row.iter().map(|v| format!("{}", v)).collect();
-                    output += &formatted.join(" | ");
-                    output += "\n";
-                    count += 1;
+                    rows.push(row);
                 }
-                output += &format!("({} rows)", count);
+
+                if rows.is_empty() {
+                    return CommandResult::Message("(0 rows)".to_string());
+                }
+
+                // Convert to plain strings and compute max width per column
+                let num_cols = rows[0].len();
+                let plain_rows: Vec<Vec<String>> = rows
+                    .iter()
+                    .map(|row| row.iter().map(plain_value).collect())
+                    .collect();
+
+                let mut col_widths = vec![0; num_cols];
+                for row in &plain_rows {
+                    for (i, cell) in row.iter().enumerate() {
+                        col_widths[i] = col_widths[i].max(cell.len());
+                    }
+                }
+
+                // Build output with aligned and colored cells
+                let mut output = String::new();
+                for plain_row in &plain_rows {
+                    let padded_cells: Vec<String> = plain_row
+                        .iter()
+                        .enumerate()
+                        .map(|(i, cell)| format!("{:width$}", cell.green(), width = col_widths[i]))
+                        .collect();
+                    output += &padded_cells.join(" | ");
+                    output += "\n";
+                }
+                output += &format!("({} rows)", rows.len());
                 CommandResult::Message(output)
             }
             Err(e) => CommandResult::Error(format!("{}", e)),
