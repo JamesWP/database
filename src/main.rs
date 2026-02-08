@@ -1,4 +1,5 @@
 mod compiler;
+mod db;
 mod engine;
 mod frontend;
 mod planner;
