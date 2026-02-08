@@ -236,4 +236,44 @@ mod tests {
             _ => panic!("Expected Query result"),
         }
     }
+
+    #[test]
+    fn test_execute_insert_with_column_names() {
+        let mut test = TestDb::default();
+        execute(
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+
+        // Insert with columns in different order: age, id, name
+        // Should reorder values to match table's actual column order: id, name, age
+        let mut q = match execute(
+            "INSERT INTO users (age, id, name) VALUES (70, 1, 'oldie')",
+            &mut test.btree,
+        )
+        .unwrap()
+        {
+            ExecuteResult::Query(q) => q,
+            _ => panic!(),
+        };
+        while q.next().is_some() {}
+
+        // Verify the values were inserted in correct positions
+        let result = execute("SELECT id, name, age FROM users", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(mut q) => {
+                let row = q.next().expect("Expected row");
+                assert_eq!(row[0], ScalarValue::Integer(1), "id should be 1");
+                assert_eq!(
+                    row[1],
+                    ScalarValue::String("oldie".to_string()),
+                    "name should be 'oldie'"
+                );
+                assert_eq!(row[2], ScalarValue::Integer(70), "age should be 70");
+                assert!(q.next().is_none());
+            }
+            _ => panic!("Expected Query result"),
+        }
+    }
 }

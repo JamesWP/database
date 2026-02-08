@@ -607,7 +607,7 @@ pub fn codegen_limit(
 /// ```
 pub fn codegen_insert(
     rootpage: u32,
-    _table_columns: &[usize],
+    table_columns: &[usize],
     input: &LogicalPlan,
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
@@ -660,10 +660,33 @@ pub fn codegen_insert(
 
     // child_on_tuple: write row, increment key and counter, get next
     ctx.body_emitter.bind_label(child_on_tuple);
+
+    // Reorder child output registers to match table column order
+    // If table has columns [id, name, age] and user wrote INSERT(age,id,name)
+    // then table_columns=[2,0,1] and child outputs are in [age,id,name] order
+    // We need to reorder them to [id,name,age] order for writing
+    let reordered_regs: Vec<Reg> = if table_columns.iter().enumerate().all(|(i, &col)| i == col) {
+        // Fast path: columns are already in order, no reordering needed
+        child_output.output_regs.clone()
+    } else {
+        // Need to reorder: allocate new registers and copy values
+        let num_table_columns = table_columns.iter().max().map(|&m| m + 1).unwrap_or(0);
+        let reordered = ctx.registers.alloc_block(num_table_columns);
+
+        // Copy each value to its correct position
+        for (i, &col_idx) in table_columns.iter().enumerate() {
+            ctx.body_emitter.emit(Operation::CopyValue(
+                reordered[col_idx],
+                child_output.output_regs[i],
+            ));
+        }
+
+        reordered
+    };
     ctx.body_emitter.emit(Operation::WriteCursor(
         cursor_reg,
         key_reg,
-        child_output.output_regs.clone(),
+        reordered_regs,
     ));
     ctx.body_emitter.emit(Operation::IncrementValue(key_reg));
     ctx.body_emitter
