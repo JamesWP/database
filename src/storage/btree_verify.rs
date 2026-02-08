@@ -104,4 +104,3 @@ pub fn verify(pager: &Pager, root_page_idx: u32) -> Result<(), VerifyError> {
 
     Ok(())
 }
-

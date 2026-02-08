@@ -128,8 +128,7 @@ pub fn codegen_scan(
     let output_regs = ctx.registers.alloc_block(num_columns);
 
     // INIT (init_emitter): Open cursor and move to first row
-    ctx.init_emitter
-        .emit(Operation::Open(cursor_reg, rootpage));
+    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
     ctx.init_emitter
         .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
 
@@ -199,7 +198,8 @@ pub fn codegen_count(
 
     // child_on_tuple: increment counter, get next from child
     ctx.body_emitter.bind_label(child_on_tuple);
-    ctx.body_emitter.emit(Operation::IncrementValue(counter_reg));
+    ctx.body_emitter
+        .emit(Operation::IncrementValue(counter_reg));
     ctx.body_emitter.emit_goto(child_output.next);
 
     // child_on_done: count is ready, signal our on_tuple
@@ -265,8 +265,10 @@ pub fn codegen_values(
     // INIT: index = 0, num_rows = N
     ctx.init_emitter
         .emit(Operation::StoreValue(index_reg, ScalarValue::Integer(0)));
-    ctx.init_emitter
-        .emit(Operation::StoreValue(num_rows_reg, ScalarValue::Integer(num_rows as i64)));
+    ctx.init_emitter.emit(Operation::StoreValue(
+        num_rows_reg,
+        ScalarValue::Integer(num_rows as i64),
+    ));
 
     // Allocate constant registers for each row index (for dispatch comparison)
     let index_constants: Vec<Reg> = (0..num_rows)
@@ -349,8 +351,10 @@ pub fn codegen_sequence(
     let output_reg = ctx.registers.alloc();
 
     // INIT: initialize value and end
-    ctx.init_emitter
-        .emit(Operation::StoreValue(value_reg, ScalarValue::Integer(start)));
+    ctx.init_emitter.emit(Operation::StoreValue(
+        value_reg,
+        ScalarValue::Integer(start),
+    ));
     ctx.init_emitter
         .emit(Operation::StoreValue(end_reg, ScalarValue::Integer(end)));
 
@@ -423,7 +427,8 @@ pub fn codegen_filter(
     };
 
     // If predicate is false, get next from child (reject)
-    ctx.body_emitter.emit_goto_if_false(child_output.next, pred_reg);
+    ctx.body_emitter
+        .emit_goto_if_false(child_output.next, pred_reg);
 
     // If predicate is true (fall through), emit the tuple
     ctx.body_emitter.emit_goto(cont.on_tuple);
@@ -527,8 +532,10 @@ pub fn codegen_limit(
     let zero_reg = ctx.registers.alloc();
 
     // INIT: initialize counter to count, zero to 0
-    ctx.init_emitter
-        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(count as i64)));
+    ctx.init_emitter.emit(Operation::StoreValue(
+        counter_reg,
+        ScalarValue::Integer(count as i64),
+    ));
     ctx.init_emitter
         .emit(Operation::StoreValue(zero_reg, ScalarValue::Integer(0)));
 
@@ -551,7 +558,8 @@ pub fn codegen_limit(
         .emit_goto_if_equal(cont.on_done, counter_reg, zero_reg);
 
     // Decrement counter
-    ctx.body_emitter.emit(Operation::DecrementValue(counter_reg));
+    ctx.body_emitter
+        .emit(Operation::DecrementValue(counter_reg));
 
     // Emit the tuple
     ctx.body_emitter.emit_goto(cont.on_tuple);
@@ -605,8 +613,7 @@ pub fn codegen_insert(
     let counter_reg = ctx.registers.alloc();
 
     // INIT: Open cursor and discover next key
-    ctx.init_emitter
-        .emit(Operation::Open(cursor_reg, rootpage));
+    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
     ctx.init_emitter
         .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Last));
     ctx.init_emitter
@@ -621,8 +628,7 @@ pub fn codegen_insert(
     // Non-empty: read max key, increment
     ctx.init_emitter
         .emit(Operation::ReadKey(key_reg, cursor_reg));
-    ctx.init_emitter
-        .emit(Operation::IncrementValue(key_reg));
+    ctx.init_emitter.emit(Operation::IncrementValue(key_reg));
     ctx.init_emitter.emit_goto(init_done_label);
 
     // @empty: start at key 1
@@ -653,8 +659,7 @@ pub fn codegen_insert(
         key_reg,
         child_output.output_regs.clone(),
     ));
-    ctx.body_emitter
-        .emit(Operation::IncrementValue(key_reg));
+    ctx.body_emitter.emit(Operation::IncrementValue(key_reg));
     ctx.body_emitter
         .emit(Operation::IncrementValue(counter_reg));
     ctx.body_emitter.emit_goto(child_output.next);
@@ -676,29 +681,21 @@ pub fn codegen_insert(
 
 /// Main codegen dispatch function.
 /// Routes to the appropriate codegen based on plan type.
-pub fn codegen(plan: &LogicalPlan, cont: &NodeContinuation, ctx: &mut CodegenContext) -> NodeOutput {
+pub fn codegen(
+    plan: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
     match plan {
         LogicalPlan::Scan { rootpage, columns } => {
             codegen_scan(*rootpage, columns.len(), cont, ctx)
         }
-        LogicalPlan::Count { input } => {
-            codegen_count(input, cont, ctx)
-        }
-        LogicalPlan::Values { rows } => {
-            codegen_values(rows, cont, ctx)
-        }
-        LogicalPlan::Filter { predicate, input } => {
-            codegen_filter(predicate, input, cont, ctx)
-        }
-        LogicalPlan::Project { columns, input } => {
-            codegen_project(columns, input, cont, ctx)
-        }
-        LogicalPlan::Sequence { start, end } => {
-            codegen_sequence(*start, *end, cont, ctx)
-        }
-        LogicalPlan::Limit { count, input } => {
-            codegen_limit(*count, input, cont, ctx)
-        }
+        LogicalPlan::Count { input } => codegen_count(input, cont, ctx),
+        LogicalPlan::Values { rows } => codegen_values(rows, cont, ctx),
+        LogicalPlan::Filter { predicate, input } => codegen_filter(predicate, input, cont, ctx),
+        LogicalPlan::Project { columns, input } => codegen_project(columns, input, cont, ctx),
+        LogicalPlan::Sequence { start, end } => codegen_sequence(*start, *end, cont, ctx),
+        LogicalPlan::Limit { count, input } => codegen_limit(*count, input, cont, ctx),
         LogicalPlan::Insert {
             rootpage,
             table_columns,
@@ -885,9 +882,18 @@ mod tests {
         let yields = engine.run();
 
         assert_eq!(yields.len(), 3);
-        assert_eq!(yields[0], vec![ScalarValue::Integer(1), ScalarValue::Integer(10)]);
-        assert_eq!(yields[1], vec![ScalarValue::Integer(2), ScalarValue::Integer(20)]);
-        assert_eq!(yields[2], vec![ScalarValue::Integer(3), ScalarValue::Integer(30)]);
+        assert_eq!(
+            yields[0],
+            vec![ScalarValue::Integer(1), ScalarValue::Integer(10)]
+        );
+        assert_eq!(
+            yields[1],
+            vec![ScalarValue::Integer(2), ScalarValue::Integer(20)]
+        );
+        assert_eq!(
+            yields[2],
+            vec![ScalarValue::Integer(3), ScalarValue::Integer(30)]
+        );
     }
 
     /// Test Values with empty rows
@@ -937,14 +943,12 @@ mod tests {
     #[test]
     fn test_values_mixed_types() {
         let plan = LogicalPlan::Values {
-            rows: vec![
-                vec![
-                    Literal::Integer(42),
-                    Literal::Float(3.14),
-                    Literal::Bool(true),
-                    Literal::String("hello".to_string()),
-                ],
-            ],
+            rows: vec![vec![
+                Literal::Integer(42),
+                Literal::Float(3.14),
+                Literal::Bool(true),
+                Literal::String("hello".to_string()),
+            ]],
         };
 
         let (ops, num_registers) = compile_plan(&plan);
@@ -1240,9 +1244,18 @@ mod tests {
         let yields = run_plan(&plan);
 
         assert_eq!(yields.len(), 3);
-        assert_eq!(yields[0], vec![ScalarValue::Integer(1), ScalarValue::Integer(2)]);
-        assert_eq!(yields[1], vec![ScalarValue::Integer(2), ScalarValue::Integer(4)]);
-        assert_eq!(yields[2], vec![ScalarValue::Integer(3), ScalarValue::Integer(6)]);
+        assert_eq!(
+            yields[0],
+            vec![ScalarValue::Integer(1), ScalarValue::Integer(2)]
+        );
+        assert_eq!(
+            yields[1],
+            vec![ScalarValue::Integer(2), ScalarValue::Integer(4)]
+        );
+        assert_eq!(
+            yields[2],
+            vec![ScalarValue::Integer(3), ScalarValue::Integer(6)]
+        );
     }
 
     /// Test Project with literal only (constant column)
@@ -1282,8 +1295,14 @@ mod tests {
         let yields = run_plan(&plan);
 
         assert_eq!(yields.len(), 2);
-        assert_eq!(yields[0], vec![ScalarValue::Integer(10), ScalarValue::Integer(1)]);
-        assert_eq!(yields[1], vec![ScalarValue::Integer(20), ScalarValue::Integer(2)]);
+        assert_eq!(
+            yields[0],
+            vec![ScalarValue::Integer(10), ScalarValue::Integer(1)]
+        );
+        assert_eq!(
+            yields[1],
+            vec![ScalarValue::Integer(20), ScalarValue::Integer(2)]
+        );
     }
 
     /// Test Filter(Project(...)) - filter on projected output
@@ -1560,7 +1579,10 @@ mod tests {
                 rows: vec![
                     vec![Literal::Integer(100), Literal::String("alice".to_string())],
                     vec![Literal::Integer(200), Literal::String("bob".to_string())],
-                    vec![Literal::Integer(300), Literal::String("charlie".to_string())],
+                    vec![
+                        Literal::Integer(300),
+                        Literal::String("charlie".to_string()),
+                    ],
                 ],
             }),
         };
@@ -1589,7 +1611,10 @@ mod tests {
         assert_eq!(scan_yields[1][0], ScalarValue::Integer(200));
         assert_eq!(scan_yields[1][1], ScalarValue::String("bob".to_string()));
         assert_eq!(scan_yields[2][0], ScalarValue::Integer(300));
-        assert_eq!(scan_yields[2][1], ScalarValue::String("charlie".to_string()));
+        assert_eq!(
+            scan_yields[2][1],
+            ScalarValue::String("charlie".to_string())
+        );
     }
 
     /// Test Insert into empty table

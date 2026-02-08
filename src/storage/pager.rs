@@ -237,7 +237,6 @@ impl Pager {
         self.set_zero_page(zero);
     }
 
-
     pub fn debug(&self, message: &str) {
         for i in 0..self.get_file_size_pages() {
             let page: serde_json::Value = self.get_and_decode(i);
@@ -245,7 +244,6 @@ impl Pager {
             println!("{message}: Page {i} : {page}");
         }
     }
-
 }
 
 #[cfg(test)]

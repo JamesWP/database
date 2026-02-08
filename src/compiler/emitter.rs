@@ -32,10 +32,7 @@ impl BytecodeEmitter {
     /// Bind a label to the current position (the next instruction that will be emitted).
     pub fn bind_label(&mut self, label: Label) {
         let Label(id) = label;
-        assert!(
-            self.label_positions[id].is_none(),
-            "Label already bound"
-        );
+        assert!(self.label_positions[id].is_none(), "Label already bound");
         self.label_positions[id] = Some(self.operations.len());
     }
 
@@ -74,7 +71,8 @@ impl BytecodeEmitter {
     /// Emit a GoToIfEqualValue instruction: jump to label if lhs == rhs.
     pub fn emit_goto_if_equal(&mut self, label: Label, lhs: Reg, rhs: Reg) {
         let target = self.resolve_label(label);
-        self.operations.push(Operation::GoToIfEqualValue(target, lhs, rhs));
+        self.operations
+            .push(Operation::GoToIfEqualValue(target, lhs, rhs));
     }
 
     /// Finalize the bytecode by resolving all jump targets.
@@ -107,8 +105,7 @@ fn resolve_target(target: &JumpTarget, label_positions: &[Option<usize>]) -> Jum
     match target {
         JumpTarget::Resolved(addr) => JumpTarget::Resolved(*addr),
         JumpTarget::Unresolved(Label(id)) => {
-            let addr = label_positions[*id]
-                .expect("Label was never bound");
+            let addr = label_positions[*id].expect("Label was never bound");
             JumpTarget::Resolved(addr)
         }
     }

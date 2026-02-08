@@ -46,7 +46,9 @@ impl Mode for BTreeMode {
                 let sql = format!("CREATE TABLE {}", rest.join(" "));
                 let stmt = match parse(&sql) {
                     Ok(ast::Statement::CreateTable(ct)) => ct,
-                    Ok(_) => return CommandResult::Error("Expected CREATE TABLE statement".to_string()),
+                    Ok(_) => {
+                        return CommandResult::Error("Expected CREATE TABLE statement".to_string())
+                    }
                     Err(e) => return CommandResult::Error(format!("Parse error: {:?}", e)),
                 };
                 let name = &stmt.table_name;
@@ -54,8 +56,12 @@ impl Mode for BTreeMode {
                     return CommandResult::Error(format!("Table '{}' already exists", name));
                 }
                 let root_page = shared.btree.create_tree();
-                let key = name.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-                shared.btree.insert_schema_entry(key, "table", name, name, root_page, &sql);
+                let key = name
+                    .bytes()
+                    .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+                shared
+                    .btree
+                    .insert_schema_entry(key, "table", name, name, root_page, &sql);
                 CommandResult::Message(format!("Created table '{}' at page {}", name, root_page))
             }
 
@@ -148,7 +154,10 @@ impl Mode for BTreeMode {
                 };
                 let value = rest.join(" ");
                 self.with_cursor(|cursor| {
-                    cursor.handle.open_readwrite().insert(key, value.into_bytes());
+                    cursor
+                        .handle
+                        .open_readwrite()
+                        .insert(key, value.into_bytes());
                     CommandResult::Message(format!("Inserted key {}", key))
                 })
             }
@@ -190,17 +199,15 @@ impl Mode for BTreeMode {
             }
 
             // Debug operations
-            ["verify"] => {
-                match &mut self.cursor {
-                    None => CommandResult::Error("No cursor open. Use 'open <table>' first.".to_string()),
-                    Some(cursor) => {
-                        match cursor.handle.open_readonly().verify() {
-                            Ok(_) => CommandResult::Message("Verify success!".to_string()),
-                            Err(e) => CommandResult::Error(format!("Verify failed: {:?}", e)),
-                        }
-                    }
+            ["verify"] => match &mut self.cursor {
+                None => {
+                    CommandResult::Error("No cursor open. Use 'open <table>' first.".to_string())
                 }
-            }
+                Some(cursor) => match cursor.handle.open_readonly().verify() {
+                    Ok(_) => CommandResult::Message("Verify success!".to_string()),
+                    Err(e) => CommandResult::Error(format!("Verify failed: {:?}", e)),
+                },
+            },
 
             ["verify", "all"] => {
                 // Open db_schema like any other table via lookup_table
@@ -313,7 +320,6 @@ impl BTreeMode {
             Some(cursor) => f(cursor),
         }
     }
-
 }
 
 fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {
@@ -335,7 +341,10 @@ fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {
                     println!("Entry: key={}, len={} value=<redacted>", key, len)
                 }
                 (Ok(len), Err(_)) => {
-                    println!("Entry: key={}, len={} value=<unable to decode utf8>", key, len)
+                    println!(
+                        "Entry: key={}, len={} value=<unable to decode utf8>",
+                        key, len
+                    )
                 }
                 (Err(_), _) => println!("Entry: key={}, value=<unable to read value>", key),
             }

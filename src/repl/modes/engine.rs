@@ -63,9 +63,9 @@ impl Mode for EngineMode {
                     }
                     CommandResult::Message(output)
                 }
-                None => {
-                    CommandResult::Message("No program loaded. Use 'compile <sql>' first.".to_string())
-                }
+                None => CommandResult::Message(
+                    "No program loaded. Use 'compile <sql>' first.".to_string(),
+                ),
             },
 
             ["clear"] | ["reset"] => {

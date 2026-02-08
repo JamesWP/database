@@ -17,32 +17,18 @@ pub struct ExprContext<'a> {
 /// For a ColumnRef with index i, we copy from input_regs[i].
 ///
 /// Returns the register containing the expression result.
-pub fn compile_expr(
-    expr: &PlanExpr,
-    input_regs: &[Reg],
-    ctx: &mut ExprContext,
-) -> Reg {
+pub fn compile_expr(expr: &PlanExpr, input_regs: &[Reg], ctx: &mut ExprContext) -> Reg {
     match expr {
-        PlanExpr::ColumnRef(col_ref) => {
-            compile_column_ref(col_ref, input_regs, ctx)
-        }
-        PlanExpr::Literal(lit) => {
-            compile_literal(lit, ctx)
-        }
+        PlanExpr::ColumnRef(col_ref) => compile_column_ref(col_ref, input_regs, ctx),
+        PlanExpr::Literal(lit) => compile_literal(lit, ctx),
         PlanExpr::BinaryOp { op, left, right } => {
             compile_binary_op(op, left, right, input_regs, ctx)
         }
-        PlanExpr::UnaryOp { op, operand } => {
-            compile_unary_op(op, operand, input_regs, ctx)
-        }
+        PlanExpr::UnaryOp { op, operand } => compile_unary_op(op, operand, input_regs, ctx),
     }
 }
 
-fn compile_column_ref(
-    col_ref: &ColumnRef,
-    input_regs: &[Reg],
-    ctx: &mut ExprContext,
-) -> Reg {
+fn compile_column_ref(col_ref: &ColumnRef, input_regs: &[Reg], ctx: &mut ExprContext) -> Reg {
     match col_ref {
         ColumnRef::Single { column_idx } => {
             // Copy the value from the input register to a new register
@@ -93,7 +79,9 @@ fn compile_binary_op(
         BinaryOp::Equals => Operation::EqualsValue(dest, left_reg, right_reg),
         BinaryOp::NotEquals => Operation::NotEqualsValue(dest, left_reg, right_reg),
         BinaryOp::GreaterThan => Operation::GreaterThanValue(dest, left_reg, right_reg),
-        BinaryOp::GreaterThanOrEqual => Operation::GreaterThanOrEqualValue(dest, left_reg, right_reg),
+        BinaryOp::GreaterThanOrEqual => {
+            Operation::GreaterThanOrEqualValue(dest, left_reg, right_reg)
+        }
         BinaryOp::LessThan => Operation::LessThanValue(dest, left_reg, right_reg),
         BinaryOp::LessThanOrEqual => Operation::LessThanOrEqualValue(dest, left_reg, right_reg),
 

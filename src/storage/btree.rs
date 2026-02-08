@@ -50,7 +50,6 @@ impl CursorHandle {
             cursor_state: &mut self.state,
         }
     }
-
 }
 
 pub struct Cursor<'a, PagerRef> {
@@ -190,9 +189,7 @@ where
             parent_interior.insert_child_page(right_first_key, right_idx);
             let parent_node = parent_interior.node();
 
-            let result = self
-                .pager
-                .encode_and_set(parent_idx, parent_node.clone());
+            let result = self.pager.encode_and_set(parent_idx, parent_node.clone());
 
             // If the parent is now overfull, recursively split it
             if let Err(pager::EncodingError::NotEnoughSpaceInPage) = result {
@@ -619,7 +616,6 @@ impl BTree {
         write!(writer, "{}", self)?;
         Ok(())
     }
-
 }
 
 impl Display for BTree {
@@ -632,7 +628,7 @@ impl Display for BTree {
 
 #[cfg(test)]
 mod test {
-    
+
     use crate::test::TestDb;
     use proptest::prelude::*;
     use std::collections::BTreeMap;
@@ -907,7 +903,10 @@ mod test {
         assert_eq!(values[1], "db_schema");
         assert_eq!(values[2], "db_schema");
         assert_eq!(values[3], schema_root as u64);
-        assert!(values[4].as_str().unwrap().starts_with("CREATE TABLE db_schema"));
+        assert!(values[4]
+            .as_str()
+            .unwrap()
+            .starts_with("CREATE TABLE db_schema"));
     }
 
     #[test]
@@ -1002,9 +1001,23 @@ mod test {
         let mut btree = test.btree;
 
         let users_root = btree.create_tree();
-        btree.insert_schema_entry(1, "table", "users", "users", users_root, "CREATE TABLE users (id INTEGER)");
+        btree.insert_schema_entry(
+            1,
+            "table",
+            "users",
+            "users",
+            users_root,
+            "CREATE TABLE users (id INTEGER)",
+        );
         let orders_root = btree.create_tree();
-        btree.insert_schema_entry(2, "table", "orders", "orders", orders_root, "CREATE TABLE orders (id INTEGER)");
+        btree.insert_schema_entry(
+            2,
+            "table",
+            "orders",
+            "orders",
+            orders_root,
+            "CREATE TABLE orders (id INTEGER)",
+        );
 
         // Look up db_schema's rootpage via lookup_table, then scan it with a cursor
         let (schema_root, _) = btree.lookup_table("db_schema").unwrap();

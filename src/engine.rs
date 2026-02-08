@@ -214,13 +214,15 @@ impl Engine {
                 *dest = value;
             }
             GoTo(target) => {
-                self.program.set_next_operation_index(target.unwrap_resolved());
+                self.program
+                    .set_next_operation_index(target.unwrap_resolved());
             }
             GoToIfEqualValue(target, lhs, rhs) => {
                 let lhs = self.registers.get(lhs).scalar().unwrap();
                 let rhs = self.registers.get(rhs).scalar().unwrap();
                 if *lhs == *rhs {
-                    self.program.set_next_operation_index(target.unwrap_resolved());
+                    self.program
+                        .set_next_operation_index(target.unwrap_resolved());
                 } else {
                     // branch not taken
                 }
@@ -228,7 +230,8 @@ impl Engine {
             GoToIfFalse(target, reg) => {
                 let reg = self.registers.get(reg).boolean().unwrap();
                 if !reg {
-                    self.program.set_next_operation_index(target.unwrap_resolved());
+                    self.program
+                        .set_next_operation_index(target.unwrap_resolved());
                 } else {
                     // branch not taken
                 }
@@ -321,9 +324,9 @@ impl Engine {
                         let sv = self.registers.get(*reg).scalar().unwrap();
                         match sv {
                             ScalarValue::Integer(i) => serde_json::Value::Number((*i).into()),
-                            ScalarValue::Floating(f) => serde_json::Value::Number(
-                                serde_json::Number::from_f64(*f).unwrap(),
-                            ),
+                            ScalarValue::Floating(f) => {
+                                serde_json::Value::Number(serde_json::Number::from_f64(*f).unwrap())
+                            }
                             ScalarValue::Boolean(b) => serde_json::Value::Bool(*b),
                             ScalarValue::String(s) => serde_json::Value::String(s.clone()),
                         }
@@ -348,17 +351,14 @@ mod test {
     use crate::{
         engine::{
             program::{JumpTarget, MoveOperation, Operation, ProgramCode},
-            scalarvalue::ScalarValue, StepSuccess,
+            scalarvalue::ScalarValue,
+            StepSuccess,
         },
         storage::BTree,
         test::TestDb,
     };
 
-    use super::{
-        program::Reg,
-        registers::Registers,
-        Engine,
-    };
+    use super::{program::Reg, registers::Registers, Engine};
 
     struct TestHarness {
         engine: Engine,
@@ -727,12 +727,12 @@ mod test {
         harness.run();
 
         assert_eq!(harness.num_yields(), 1);
-        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));  // 5 < 10
-        assert_eq!(harness.value(0, 1), ScalarValue::Boolean(true));  // 5 <= 5
-        assert_eq!(harness.value(0, 2), ScalarValue::Boolean(true));  // 10 > 5
-        assert_eq!(harness.value(0, 3), ScalarValue::Boolean(true));  // 5 >= 5
-        assert_eq!(harness.value(0, 4), ScalarValue::Boolean(true));  // 5 == 5
-        assert_eq!(harness.value(0, 5), ScalarValue::Boolean(true));  // 5 != 10
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true)); // 5 < 10
+        assert_eq!(harness.value(0, 1), ScalarValue::Boolean(true)); // 5 <= 5
+        assert_eq!(harness.value(0, 2), ScalarValue::Boolean(true)); // 10 > 5
+        assert_eq!(harness.value(0, 3), ScalarValue::Boolean(true)); // 5 >= 5
+        assert_eq!(harness.value(0, 4), ScalarValue::Boolean(true)); // 5 == 5
+        assert_eq!(harness.value(0, 5), ScalarValue::Boolean(true)); // 5 != 10
         assert_eq!(harness.value(0, 6), ScalarValue::Boolean(false)); // 5 == 10
     }
 
@@ -759,11 +759,11 @@ mod test {
                 Operation::AndValue(r4, r1, r0), // false && true = false
                 Operation::AndValue(r5, r1, r1), // false && false = false
                 // OR truth table
-                Operation::OrValue(r6, r0, r1),  // true || false = true
-                Operation::OrValue(r7, r1, r1),  // false || false = false
+                Operation::OrValue(r6, r0, r1), // true || false = true
+                Operation::OrValue(r7, r1, r1), // false || false = false
                 // NOT
-                Operation::NotValue(r8, r0),    // !true = false
-                Operation::NotValue(r9, r1),    // !false = true
+                Operation::NotValue(r8, r0), // !true = false
+                Operation::NotValue(r9, r1), // !false = true
                 Operation::Yield(vec![r2, r3, r4, r5, r6, r7, r8, r9]),
                 Operation::Halt,
             ],
@@ -774,16 +774,16 @@ mod test {
 
         assert_eq!(harness.num_yields(), 1);
         // AND
-        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));  // T && T
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true)); // T && T
         assert_eq!(harness.value(0, 1), ScalarValue::Boolean(false)); // T && F
         assert_eq!(harness.value(0, 2), ScalarValue::Boolean(false)); // F && T
         assert_eq!(harness.value(0, 3), ScalarValue::Boolean(false)); // F && F
-        // OR
-        assert_eq!(harness.value(0, 4), ScalarValue::Boolean(true));  // T || F
+                                                                      // OR
+        assert_eq!(harness.value(0, 4), ScalarValue::Boolean(true)); // T || F
         assert_eq!(harness.value(0, 5), ScalarValue::Boolean(false)); // F || F
-        // NOT
+                                                                      // NOT
         assert_eq!(harness.value(0, 6), ScalarValue::Boolean(false)); // !T
-        assert_eq!(harness.value(0, 7), ScalarValue::Boolean(true));  // !F
+        assert_eq!(harness.value(0, 7), ScalarValue::Boolean(true)); // !F
     }
 
     #[test]
@@ -925,13 +925,13 @@ mod test {
             &[
                 Operation::Open(r0, root),
                 Operation::MoveCursor(r0, MoveOperation::First),
-                Operation::CanReadCursor(r1, r0),  // Next
+                Operation::CanReadCursor(r1, r0), // Next
                 Operation::GoToIfFalse(JumpTarget::addr(8), r1), // Goto End
                 Operation::ReadCursor(vec![r2, r3], r0),
                 Operation::Yield(vec![r2, r3]),
                 Operation::MoveCursor(r0, MoveOperation::Next),
                 Operation::GoTo(JumpTarget::addr(2)), // Goto Next
-                Operation::Halt,    // End
+                Operation::Halt,                      // End
             ],
             4,
             btree,
@@ -970,13 +970,13 @@ mod test {
             &[
                 Operation::Open(r0, root),
                 Operation::MoveCursor(r0, MoveOperation::First),
-                Operation::CanReadCursor(r1, r0),       // 2
+                Operation::CanReadCursor(r1, r0),                // 2
                 Operation::GoToIfFalse(JumpTarget::addr(8), r1), // 3
-                Operation::ReadCursor(vec![r2, r3, r4], r0), // 4
-                Operation::Yield(vec![r2, r3, r4]),      // 5
-                Operation::MoveCursor(r0, MoveOperation::Next), // 6
-                Operation::GoTo(JumpTarget::addr(2)),    // 7
-                Operation::Halt,                         // 8
+                Operation::ReadCursor(vec![r2, r3, r4], r0),     // 4
+                Operation::Yield(vec![r2, r3, r4]),              // 5
+                Operation::MoveCursor(r0, MoveOperation::Next),  // 6
+                Operation::GoTo(JumpTarget::addr(2)),            // 7
+                Operation::Halt,                                 // 8
             ],
             5,
             btree,
@@ -986,7 +986,10 @@ mod test {
 
         assert_eq!(harness.num_yields(), 2);
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(1));
-        assert_eq!(harness.value(0, 1), ScalarValue::String("alice".to_string()));
+        assert_eq!(
+            harness.value(0, 1),
+            ScalarValue::String("alice".to_string())
+        );
         assert_eq!(harness.value(0, 2), ScalarValue::Integer(30));
         assert_eq!(harness.value(1, 0), ScalarValue::Integer(2));
         assert_eq!(harness.value(1, 1), ScalarValue::String("bob".to_string()));
@@ -1102,19 +1105,19 @@ mod test {
         let mut harness = TestHarness::new_with_btree(
             &[
                 // Write a row
-                Operation::Open(r_cursor, root),                           // 0
-                Operation::StoreValue(r_key, ScalarValue::Integer(1)),     // 1
-                Operation::StoreValue(r_val1, ScalarValue::Integer(42)),   // 2
+                Operation::Open(r_cursor, root), // 0
+                Operation::StoreValue(r_key, ScalarValue::Integer(1)), // 1
+                Operation::StoreValue(r_val1, ScalarValue::Integer(42)), // 2
                 Operation::StoreValue(r_val2, ScalarValue::String("hello".to_string())), // 3
-                Operation::WriteCursor(r_cursor, r_key, vec![r_val1, r_val2]),           // 4
+                Operation::WriteCursor(r_cursor, r_key, vec![r_val1, r_val2]), // 4
                 // Read it back
-                Operation::MoveCursor(r_cursor, MoveOperation::First),     // 5
-                Operation::CanReadCursor(r_flag, r_cursor),                // 6
-                Operation::GoToIfFalse(JumpTarget::addr(11), r_flag),      // 7
-                Operation::ReadCursor(vec![r_out1, r_out2], r_cursor),     // 8
-                Operation::Yield(vec![r_out1, r_out2]),                    // 9
-                Operation::Halt,                                           // 10 (unreachable but valid)
-                Operation::Halt,                                           // 11
+                Operation::MoveCursor(r_cursor, MoveOperation::First), // 5
+                Operation::CanReadCursor(r_flag, r_cursor),            // 6
+                Operation::GoToIfFalse(JumpTarget::addr(11), r_flag),  // 7
+                Operation::ReadCursor(vec![r_out1, r_out2], r_cursor), // 8
+                Operation::Yield(vec![r_out1, r_out2]),                // 9
+                Operation::Halt,                                       // 10 (unreachable but valid)
+                Operation::Halt,                                       // 11
             ],
             7,
             btree,
@@ -1124,7 +1127,10 @@ mod test {
 
         assert_eq!(harness.num_yields(), 1);
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(42));
-        assert_eq!(harness.value(0, 1), ScalarValue::String("hello".to_string()));
+        assert_eq!(
+            harness.value(0, 1),
+            ScalarValue::String("hello".to_string())
+        );
     }
 
     #[test]

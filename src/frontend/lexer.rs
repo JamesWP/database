@@ -1,8 +1,5 @@
 use peekmore::{PeekMore, PeekMoreIterator};
-use std::{
-    fmt::Debug,
-    str::Chars,
-};
+use std::{fmt::Debug, str::Chars};
 
 pub struct Pos {
     line: usize,

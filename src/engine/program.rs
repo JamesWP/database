@@ -50,32 +50,32 @@ pub enum MoveOperation {
 pub enum Operation {
     // Value
     StoreValue(Reg, ScalarValue),
-    IncrementValue(Reg),            // Reg = Reg + 1
-    DecrementValue(Reg),            // Reg = Reg - 1
-    AddValue(Reg, Reg, Reg),        // Reg = Reg + Reg
-    SubtractValue(Reg, Reg, Reg),   // Reg = Reg - Reg
-    MultiplyValue(Reg, Reg, Reg),   // Reg = Reg * Reg
-    DivideValue(Reg, Reg, Reg),          // Reg = Reg / Reg
-    RemainderValue(Reg, Reg, Reg),       // Reg = Reg % Reg
-    LessThanValue(Reg, Reg, Reg),        // Reg = Reg < Reg
-    LessThanOrEqualValue(Reg, Reg, Reg), // Reg = Reg <= Reg
-    GreaterThanValue(Reg, Reg, Reg),     // Reg = Reg > Reg
+    IncrementValue(Reg),                    // Reg = Reg + 1
+    DecrementValue(Reg),                    // Reg = Reg - 1
+    AddValue(Reg, Reg, Reg),                // Reg = Reg + Reg
+    SubtractValue(Reg, Reg, Reg),           // Reg = Reg - Reg
+    MultiplyValue(Reg, Reg, Reg),           // Reg = Reg * Reg
+    DivideValue(Reg, Reg, Reg),             // Reg = Reg / Reg
+    RemainderValue(Reg, Reg, Reg),          // Reg = Reg % Reg
+    LessThanValue(Reg, Reg, Reg),           // Reg = Reg < Reg
+    LessThanOrEqualValue(Reg, Reg, Reg),    // Reg = Reg <= Reg
+    GreaterThanValue(Reg, Reg, Reg),        // Reg = Reg > Reg
     GreaterThanOrEqualValue(Reg, Reg, Reg), // Reg = Reg >= Reg
-    EqualsValue(Reg, Reg, Reg),          // Reg = Reg == Reg
-    NotEqualsValue(Reg, Reg, Reg),       // Reg = Reg != Reg
-    AndValue(Reg, Reg, Reg),             // Reg = Reg && Reg
-    OrValue(Reg, Reg, Reg),              // Reg = Reg || Reg
-    NotValue(Reg, Reg),                  // Reg = !Reg
-    NegateValue(Reg, Reg),               // Reg = -Reg (arithmetic negation)
-    CopyValue(Reg, Reg),                 // Reg = Reg (copy value)
+    EqualsValue(Reg, Reg, Reg),             // Reg = Reg == Reg
+    NotEqualsValue(Reg, Reg, Reg),          // Reg = Reg != Reg
+    AndValue(Reg, Reg, Reg),                // Reg = Reg && Reg
+    OrValue(Reg, Reg, Reg),                 // Reg = Reg || Reg
+    NotValue(Reg, Reg),                     // Reg = !Reg
+    NegateValue(Reg, Reg),                  // Reg = -Reg (arithmetic negation)
+    CopyValue(Reg, Reg),                    // Reg = Reg (copy value)
 
     // Db
     Open(Reg, u32),
     MoveCursor(Reg, MoveOperation),
-    ReadCursor(Vec<Reg>, Reg),           // ReadCursor(dest_regs, cursor): read row values
-    ReadKey(Reg, Reg),                   // ReadKey(dest, cursor): read btree key as integer
-    WriteCursor(Reg, Reg, Vec<Reg>),     // WriteCursor(cursor, key, values): insert row
-    CanReadCursor(Reg, Reg),             // Reg = CanReadCursor(Reg)
+    ReadCursor(Vec<Reg>, Reg), // ReadCursor(dest_regs, cursor): read row values
+    ReadKey(Reg, Reg),         // ReadKey(dest, cursor): read btree key as integer
+    WriteCursor(Reg, Reg, Vec<Reg>), // WriteCursor(cursor, key, values): insert row
+    CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
 
     // Control Flow
     Yield(Vec<Reg>),
@@ -178,9 +178,13 @@ impl std::fmt::Display for Operation {
             DivideValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Div".cyan().bold(), d, a, b),
             RemainderValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Rem".cyan().bold(), d, a, b),
             LessThanValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Lt".cyan().bold(), d, a, b),
-            LessThanOrEqualValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Le".cyan().bold(), d, a, b),
+            LessThanOrEqualValue(d, a, b) => {
+                write!(f, "{:10} {}, {}, {}", "Le".cyan().bold(), d, a, b)
+            }
             GreaterThanValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Gt".cyan().bold(), d, a, b),
-            GreaterThanOrEqualValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Ge".cyan().bold(), d, a, b),
+            GreaterThanOrEqualValue(d, a, b) => {
+                write!(f, "{:10} {}, {}, {}", "Ge".cyan().bold(), d, a, b)
+            }
             EqualsValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Eq".cyan().bold(), d, a, b),
             NotEqualsValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Ne".cyan().bold(), d, a, b),
             AndValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "And".cyan().bold(), d, a, b),
@@ -192,19 +196,42 @@ impl std::fmt::Display for Operation {
             // Database operations
             Open(r, rootpage) => {
                 use colored::Colorize;
-                write!(f, "{:10} {}, {}", "Open".cyan().bold(), r, format!("page:{}", rootpage).green())
+                write!(
+                    f,
+                    "{:10} {}, {}",
+                    "Open".cyan().bold(),
+                    r,
+                    format!("page:{}", rootpage).green()
+                )
             }
             MoveCursor(r, op) => write!(f, "{:10} {}, {}", "MoveCursor".cyan().bold(), r, op),
             ReadCursor(regs, cursor) => {
                 let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
-                write!(f, "{:10} [{}], {}", "ReadCursor".cyan().bold(), regs_str.join(", "), cursor)
+                write!(
+                    f,
+                    "{:10} [{}], {}",
+                    "ReadCursor".cyan().bold(),
+                    regs_str.join(", "),
+                    cursor
+                )
             }
-            ReadKey(dest, cursor) => write!(f, "{:10} {}, {}", "ReadKey".cyan().bold(), dest, cursor),
+            ReadKey(dest, cursor) => {
+                write!(f, "{:10} {}, {}", "ReadKey".cyan().bold(), dest, cursor)
+            }
             WriteCursor(cursor, key, regs) => {
                 let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
-                write!(f, "{:10} {}, {}, [{}]", "Write".cyan().bold(), cursor, key, regs_str.join(", "))
+                write!(
+                    f,
+                    "{:10} {}, {}, [{}]",
+                    "Write".cyan().bold(),
+                    cursor,
+                    key,
+                    regs_str.join(", ")
+                )
             }
-            CanReadCursor(dest, cursor) => write!(f, "{:10} {}, {}", "CanRead".cyan().bold(), dest, cursor),
+            CanReadCursor(dest, cursor) => {
+                write!(f, "{:10} {}, {}", "CanRead".cyan().bold(), dest, cursor)
+            }
 
             // Control flow
             Yield(regs) => {
@@ -213,9 +240,18 @@ impl std::fmt::Display for Operation {
             }
             GoTo(target) => write!(f, "{:10} {}", "GoTo".cyan().bold(), target),
             GoToIfEqualValue(target, a, b) => {
-                write!(f, "{:10} {}, {}, {}", "GoToIfEq".cyan().bold(), target, a, b)
+                write!(
+                    f,
+                    "{:10} {}, {}, {}",
+                    "GoToIfEq".cyan().bold(),
+                    target,
+                    a,
+                    b
+                )
             }
-            GoToIfFalse(target, r) => write!(f, "{:10} {}, {}", "GoToIfNot".cyan().bold(), target, r),
+            GoToIfFalse(target, r) => {
+                write!(f, "{:10} {}, {}", "GoToIfNot".cyan().bold(), target, r)
+            }
             Halt => write!(f, "{}", "Halt".cyan().bold()),
         }
     }

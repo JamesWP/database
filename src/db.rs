@@ -102,11 +102,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = execute(
-            "INSERT INTO users VALUES (1, 'alice', 30)",
-            &mut test.btree,
-        )
-        .unwrap();
+        let result = execute("INSERT INTO users VALUES (1, 'alice', 30)", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(mut q) => {
                 // INSERT yields a count row
@@ -128,26 +124,18 @@ mod tests {
         .unwrap();
 
         // Insert two rows
-        let mut q = match execute(
-            "INSERT INTO users VALUES (1, 'alice', 30)",
-            &mut test.btree,
-        )
-        .unwrap()
-        {
-            ExecuteResult::Query(q) => q,
-            _ => panic!(),
-        };
+        let mut q =
+            match execute("INSERT INTO users VALUES (1, 'alice', 30)", &mut test.btree).unwrap() {
+                ExecuteResult::Query(q) => q,
+                _ => panic!(),
+            };
         while q.next().is_some() {}
 
-        let mut q = match execute(
-            "INSERT INTO users VALUES (2, 'bob', 25)",
-            &mut test.btree,
-        )
-        .unwrap()
-        {
-            ExecuteResult::Query(q) => q,
-            _ => panic!(),
-        };
+        let mut q =
+            match execute("INSERT INTO users VALUES (2, 'bob', 25)", &mut test.btree).unwrap() {
+                ExecuteResult::Query(q) => q,
+                _ => panic!(),
+            };
         while q.next().is_some() {}
 
         // Select all columns (scan reads from position 0 sequentially)
@@ -193,11 +181,7 @@ mod tests {
         }
 
         // Select with filter (include id so scan covers columns from 0)
-        let result = execute(
-            "SELECT id, name FROM users WHERE age > 26",
-            &mut test.btree,
-        )
-        .unwrap();
+        let result = execute("SELECT id, name FROM users WHERE age > 26", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(mut q) => {
                 let row1 = q.next().expect("Expected row 1");

@@ -4,10 +4,7 @@ use super::{ast, lexer};
 pub fn parse(sql: &str) -> Result<ast::Statement, ParseError> {
     let tokens = lexer::lex(sql);
     let mut parser = Parser {
-        input: ParserInput {
-            tokens,
-            curent: 0,
-        },
+        input: ParserInput { tokens, curent: 0 },
     };
     parser.parse_statement()
 }
@@ -164,7 +161,9 @@ impl Parser {
     pub(crate) fn parse_statement(&mut self) -> ParseResult<ast::Statement> {
         match self.input.peek() {
             lexer::Type::Select => Ok(ast::Statement::Select(self.parse_select_statement()?)),
-            lexer::Type::Create => Ok(ast::Statement::CreateTable(self.parse_create_table_statement()?)),
+            lexer::Type::Create => Ok(ast::Statement::CreateTable(
+                self.parse_create_table_statement()?,
+            )),
             lexer::Type::Insert => Ok(ast::Statement::Insert(self.parse_insert_statement()?)),
             _ => todo!(),
         }
@@ -250,10 +249,22 @@ impl Parser {
 
     fn parse_optional_data_type(&mut self) -> Option<ast::DataType> {
         match self.input.peek() {
-            lexer::Type::Integer => { self.input.advance(); Some(ast::DataType::Integer) }
-            lexer::Type::Text => { self.input.advance(); Some(ast::DataType::Text) }
-            lexer::Type::Real => { self.input.advance(); Some(ast::DataType::Real) }
-            lexer::Type::Blob => { self.input.advance(); Some(ast::DataType::Blob) }
+            lexer::Type::Integer => {
+                self.input.advance();
+                Some(ast::DataType::Integer)
+            }
+            lexer::Type::Text => {
+                self.input.advance();
+                Some(ast::DataType::Text)
+            }
+            lexer::Type::Real => {
+                self.input.advance();
+                Some(ast::DataType::Real)
+            }
+            lexer::Type::Blob => {
+                self.input.advance();
+                Some(ast::DataType::Blob)
+            }
             _ => None,
         }
     }
@@ -744,7 +755,14 @@ mod test {
         match stmt {
             ast::Statement::Insert(ins) => {
                 assert_eq!(ins.table_name, "users");
-                assert_eq!(ins.columns, Some(vec!["id".to_string(), "name".to_string(), "age".to_string()]));
+                assert_eq!(
+                    ins.columns,
+                    Some(vec![
+                        "id".to_string(),
+                        "name".to_string(),
+                        "age".to_string()
+                    ])
+                );
                 assert_eq!(ins.values.len(), 1);
                 assert_eq!(ins.values[0].len(), 3);
             }

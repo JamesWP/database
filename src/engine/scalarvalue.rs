@@ -68,7 +68,9 @@ impl core::ops::Add for ScalarValue {
 
     fn add(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => ScalarValue::Integer(lhs + rhs),
+            (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => {
+                ScalarValue::Integer(lhs + rhs)
+            }
             (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => {
                 ScalarValue::Floating(lhs as f64 + rhs)
             }
@@ -78,9 +80,7 @@ impl core::ops::Add for ScalarValue {
             (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => {
                 ScalarValue::Floating(lhs + rhs)
             }
-            (ScalarValue::String(lhs), ScalarValue::String(rhs)) => {
-                ScalarValue::String(lhs + &rhs)
-            }
+            (ScalarValue::String(lhs), ScalarValue::String(rhs)) => ScalarValue::String(lhs + &rhs),
             (ScalarValue::Boolean(_), _) | (_, ScalarValue::Boolean(_)) => {
                 panic!("invalid types for add operation")
             }
@@ -96,8 +96,12 @@ impl PartialOrd for ScalarValue {
         match (self, rhs) {
             (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => lhs.partial_cmp(rhs),
             (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => lhs.partial_cmp(rhs),
-            (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => (*lhs as f64).partial_cmp(rhs),
-            (ScalarValue::Floating(lhs), ScalarValue::Integer(rhs)) => lhs.partial_cmp(&(*rhs as f64)),
+            (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => {
+                (*lhs as f64).partial_cmp(rhs)
+            }
+            (ScalarValue::Floating(lhs), ScalarValue::Integer(rhs)) => {
+                lhs.partial_cmp(&(*rhs as f64))
+            }
             (ScalarValue::String(lhs), ScalarValue::String(rhs)) => lhs.partial_cmp(rhs),
             (ScalarValue::Boolean(_), ScalarValue::Boolean(_)) => None,
             (_, _) => None,

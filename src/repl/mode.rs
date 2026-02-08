@@ -32,7 +32,13 @@ impl ModeId {
     }
 
     pub fn all() -> &'static [ModeId] {
-        &[ModeId::BTree, ModeId::Parser, ModeId::Planner, ModeId::Engine, ModeId::Sql]
+        &[
+            ModeId::BTree,
+            ModeId::Parser,
+            ModeId::Planner,
+            ModeId::Engine,
+            ModeId::Sql,
+        ]
     }
 }
 

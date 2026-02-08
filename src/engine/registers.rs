@@ -1,9 +1,6 @@
 use crate::storage::CursorHandle;
 
-use super::{
-    program::Reg,
-    scalarvalue::ScalarValue,
-};
+use super::{program::Reg, scalarvalue::ScalarValue};
 
 #[derive(Clone, Debug)]
 pub enum RegisterValue {
