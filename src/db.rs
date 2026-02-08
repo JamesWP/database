@@ -138,19 +138,17 @@ mod tests {
             };
         while q.next().is_some() {}
 
-        // Select all columns (scan reads from position 0 sequentially)
-        let result = execute("SELECT id, name, age FROM users", &mut test.btree).unwrap();
+        // Select column subset (name, age) from 3-column table
+        let result = execute("SELECT name, age FROM users", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(mut q) => {
                 let row1 = q.next().expect("Expected row 1");
-                assert_eq!(row1[0], ScalarValue::Integer(1));
-                assert_eq!(row1[1], ScalarValue::String("alice".to_string()));
-                assert_eq!(row1[2], ScalarValue::Integer(30));
+                assert_eq!(row1[0], ScalarValue::String("alice".to_string()));
+                assert_eq!(row1[1], ScalarValue::Integer(30));
 
                 let row2 = q.next().expect("Expected row 2");
-                assert_eq!(row2[0], ScalarValue::Integer(2));
-                assert_eq!(row2[1], ScalarValue::String("bob".to_string()));
-                assert_eq!(row2[2], ScalarValue::Integer(25));
+                assert_eq!(row2[0], ScalarValue::String("bob".to_string()));
+                assert_eq!(row2[1], ScalarValue::Integer(25));
 
                 assert!(q.next().is_none());
             }

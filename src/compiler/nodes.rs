@@ -118,14 +118,20 @@ pub struct NodeOutput {
 /// ```
 pub fn codegen_scan(
     rootpage: u32,
-    num_columns: usize,
+    columns: &[usize],
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
     // Allocate registers for cursor, flag, and output columns
     let cursor_reg = ctx.registers.alloc();
     let flag_reg = ctx.registers.alloc();
-    let output_regs = ctx.registers.alloc_block(num_columns);
+
+    // Compute num_read: need to read up to max(columns) + 1 values
+    let num_read = columns.iter().max().map(|&m| m + 1).unwrap_or(0);
+    let all_regs = ctx.registers.alloc_block(num_read);
+
+    // Map output_regs to only the needed columns
+    let output_regs: Vec<Reg> = columns.iter().map(|&i| all_regs[i]).collect();
 
     // INIT (init_emitter): Open cursor and move to first row
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
@@ -140,9 +146,9 @@ pub fn codegen_scan(
         .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
     ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
 
-    // READ: Read current row into output registers
+    // READ: Read current row into all registers (num_read values)
     ctx.body_emitter
-        .emit(Operation::ReadCursor(output_regs.clone(), cursor_reg));
+        .emit(Operation::ReadCursor(all_regs.clone(), cursor_reg));
 
     // ADVANCE: Move cursor to next row (makes next row "pending")
     ctx.body_emitter
@@ -688,7 +694,7 @@ pub fn codegen(
 ) -> NodeOutput {
     match plan {
         LogicalPlan::Scan { rootpage, columns } => {
-            codegen_scan(*rootpage, columns.len(), cont, ctx)
+            codegen_scan(*rootpage, columns, cont, ctx)
         }
         LogicalPlan::Count { input } => codegen_count(input, cont, ctx),
         LogicalPlan::Values { rows } => codegen_values(rows, cont, ctx),
@@ -751,7 +757,7 @@ mod tests {
         let on_done = ctx.body_emitter.create_label();
         let cont = NodeContinuation { on_tuple, on_done };
 
-        let output = codegen_scan(42, 2, &cont, &mut ctx);
+        let output = codegen_scan(42, &[0, 1], &cont, &mut ctx);
 
         // Check that we got 2 output registers
         assert_eq!(output.output_regs.len(), 2);
