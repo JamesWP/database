@@ -50,6 +50,7 @@ fn interor_edge<W: Write>(output: &mut W, page_idx: u32, edge_idx: usize) -> Res
     Ok(())
 }
 
+#[allow(dead_code)]
 fn value_edge<W: Write>(output: &mut W, page_idx: u32, value_idx: usize) -> Result {
     write!(output, "node_{}:", page_idx)?;
     value_tag(output, value_idx)?;
@@ -57,6 +58,7 @@ fn value_edge<W: Write>(output: &mut W, page_idx: u32, value_idx: usize) -> Resu
     Ok(())
 }
 
+#[allow(dead_code)]
 fn value_node<W: Write>(output: &mut W, page_idx: u32, value_idx: usize) -> Result {
     write!(output, "value_{}_", page_idx)?;
     value_tag(output, value_idx)?;
@@ -64,6 +66,7 @@ fn value_node<W: Write>(output: &mut W, page_idx: u32, value_idx: usize) -> Resu
     Ok(())
 }
 
+#[allow(dead_code)]
 fn value_tag<W: Write>(output: &mut W, value_idx: usize) -> Result {
     write!(output, "v_{}", value_idx)?;
 
@@ -76,6 +79,7 @@ fn interior_tag<W: Write>(output: &mut W, value_idx: usize) -> Result {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn quote(message: &str) -> String {
     let mut s = String::new();
 
@@ -114,6 +118,7 @@ fn join<I: Iterator<Item = T>, T: std::fmt::Display>(iter: &mut I, sep: &str) ->
     }
 }
 
+#[allow(dead_code)]
 fn to_json_string(value: &Vec<serde_json::Value>) -> String {
     serde_json::Value::Array(value.clone()).to_string()
 }

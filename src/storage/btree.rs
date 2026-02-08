@@ -63,6 +63,7 @@ type InteriorNodeIterator = (u32, usize);
 /// identifies the page index of the leaf node and the index of the entry curently selected
 type LeafNodeIterator = (u32, usize);
 
+#[allow(dead_code)]
 const NULL: serde_json::Value = serde_json::Value::Null;
 const CHUNK_THRESHOLD: usize = 55;
 

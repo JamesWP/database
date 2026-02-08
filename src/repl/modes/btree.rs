@@ -129,7 +129,7 @@ impl Mode for BTreeMode {
             ["print"] => self.with_cursor(|cursor| {
                 let c = cursor.handle.open_readonly();
                 let entry = c.get_entry();
-                print_value(entry);
+                let _ = print_value(entry);
                 CommandResult::Ok
             }),
 
