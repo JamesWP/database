@@ -33,6 +33,7 @@ impl RegisterValue {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn scalar_mut(&mut self) -> Option<&mut ScalarValue> {
         if let RegisterValue::ScalarValue(ref mut s) = self {
             Some(s)
@@ -41,6 +42,7 @@ impl RegisterValue {
         }
     }
 
+    #[allow(dead_code)]
     pub fn integer(&self) -> Option<i64> {
         if let RegisterValue::ScalarValue(scalar_value) = self {
             if let ScalarValue::Integer(x) = scalar_value {
@@ -53,6 +55,7 @@ impl RegisterValue {
         }
     }
 
+    #[allow(dead_code)]
     pub fn integer_mut(&mut self) -> Option<&mut i64> {
         if let RegisterValue::ScalarValue(ref mut scalar_value) = self {
             if let ScalarValue::Integer(ref mut x) = scalar_value {
@@ -77,6 +80,7 @@ impl RegisterValue {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn cursor(&self) -> Option<&CursorHandle> {
         match self {
             RegisterValue::CursorHandle(c) => Some(c),

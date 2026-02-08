@@ -8,6 +8,7 @@ pub struct SharedState {
     pub btree: Box<BTree>,
 
     /// Database file path
+    #[allow(dead_code)]
     pub db_path: PathBuf,
 }
 

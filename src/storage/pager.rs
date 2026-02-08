@@ -210,6 +210,7 @@ impl Pager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn dealocate(&mut self, idx: u32) {
         if idx == 0 {
             panic!("Cant dealloc page zero");
@@ -237,6 +238,7 @@ impl Pager {
         self.set_zero_page(zero);
     }
 
+    #[allow(dead_code)]
     pub fn debug(&self, message: &str) {
         for i in 0..self.get_file_size_pages() {
             let page: serde_json::Value = self.get_and_decode(i);

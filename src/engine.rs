@@ -20,7 +20,9 @@ pub(crate) enum StepSuccess {
 }
 
 #[derive(Debug)]
-enum EngineError {
+#[allow(dead_code)]
+pub(crate) enum EngineError {
+    #[allow(dead_code)]
     RegisterTypeError(Reg, &'static str, RegisterValue),
 }
 
@@ -31,6 +33,7 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
+    #[allow(dead_code)]
     pub fn new(registers: Registers, program: ProgramCode) -> Engine {
         Engine {
             btree: None,
@@ -55,6 +58,7 @@ impl Engine {
     }
 
     /// Take the BTree out of the engine, for reuse after execution.
+    #[allow(dead_code)]
     pub(crate) fn take_btree(&mut self) -> Option<storage::BTree> {
         self.btree.take()
     }

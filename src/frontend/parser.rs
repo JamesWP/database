@@ -11,6 +11,7 @@ pub fn parse(sql: &str) -> Result<ast::Statement, ParseError> {
 
 #[derive(Debug)]
 pub enum ParseError {
+    #[allow(dead_code)]
     UnexpectedToken(Expect, lexer::Type),
 }
 

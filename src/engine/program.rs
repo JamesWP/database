@@ -23,6 +23,7 @@ impl JumpTarget {
     }
 
     /// Create an unresolved jump target from a label.
+    #[allow(dead_code)]
     pub fn label(label: Label) -> Self {
         JumpTarget::Unresolved(label)
     }

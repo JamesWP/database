@@ -21,6 +21,7 @@ pub struct CreateTableStatement {
 #[derive(Debug)]
 pub struct ColumnDef {
     pub name: String,
+    #[allow(dead_code)]
     pub type_name: Option<DataType>,
 }
 
@@ -43,12 +44,14 @@ pub struct SelectStatement {
 #[derive(Debug)]
 pub enum ColumnExpression {
     Named {
+        #[allow(dead_code)]
         name: String,
         expression: Box<Expression>,
     },
     Anonyomous(Box<Expression>),
 }
 
+#[allow(dead_code)]
 pub struct ColumnReference {
     pub table: String,
     pub name: String,
@@ -114,10 +117,12 @@ pub enum NamedTupleSource {
 #[derive(Debug)]
 pub enum TupleSource {
     Table(String),
+    #[allow(dead_code)]
     Subquery(Box<SelectStatement>),
 }
 
 impl Expression {
+    #[allow(dead_code)]
     pub fn get_column_references(&self) -> Vec<ColumnReference> {
         match self {
             // select abc

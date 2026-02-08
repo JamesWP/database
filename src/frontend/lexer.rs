@@ -9,7 +9,9 @@ pub struct Pos {
 pub struct Token {
     tipe: Type,
     lexeme: String,
+    #[allow(dead_code)]
     start: Pos,
+    #[allow(dead_code)]
     end: Pos,
 }
 impl Token {
@@ -66,6 +68,7 @@ pub enum Type {
     Into,
     Values,
 
+    #[allow(dead_code)]
     Error(Error),
 
     Eof,
@@ -82,9 +85,13 @@ pub enum Type {
 #[derive(Debug, Clone)]
 pub enum Error {
     UnterminatedStringLiteral,
+    #[allow(dead_code)]
     UnknownCharacter(char),
+    #[allow(dead_code)]
     UnknownEscape(char),
+    #[allow(dead_code)]
     BadFloatingPointNumber(String),
+    #[allow(dead_code)]
     BadIntegerNumber(String),
     MissingEscape,
 }

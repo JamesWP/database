@@ -37,6 +37,7 @@ impl BytecodeEmitter {
     }
 
     /// Returns the current position (index of next instruction to be emitted).
+    #[allow(dead_code)]
     pub fn current_position(&self) -> usize {
         self.operations.len()
     }

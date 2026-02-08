@@ -31,6 +31,7 @@ pub struct CursorHandle {
 }
 
 impl CursorHandle {
+    #[allow(dead_code)]
     pub fn root_page(&self) -> u32 {
         self.state.root_page
     }
@@ -324,6 +325,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     fn row_key(&self) -> Option<u64> {
         let cell = self.get_entry()?;
 
@@ -427,6 +429,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn debug(&self, message: &str) {
         self.pager.debug(message);
     }
@@ -602,6 +605,7 @@ impl BTree {
         }
     }
 
+    #[allow(dead_code)]
     pub fn debug(&self, message: &str) {
         self.pager.borrow().debug(message)
     }

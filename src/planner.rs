@@ -15,6 +15,7 @@ use crate::storage::BTree;
 pub enum UnaryOp {
     Plus,
     Negate,
+    #[allow(dead_code)]
     Not,
 }
 
@@ -66,7 +67,9 @@ pub enum Literal {
     Integer(i64),
     Float(f64),
     String(String),
+    #[allow(dead_code)]
     Bool(bool),
+    #[allow(dead_code)]
     Null,
 }
 
@@ -118,6 +121,7 @@ pub enum LogicalPlan {
     /// Count rows from input (1 input)
     /// Consumes all rows from child and outputs a single row with the count.
     /// Output: single integer column containing the row count.
+    #[allow(dead_code)]
     Count { input: Box<LogicalPlan> },
 
     /// Emit fixed rows (leaf node, no inputs)
@@ -128,6 +132,7 @@ pub enum LogicalPlan {
     /// Generate a sequence of integers (leaf node, no inputs)
     /// Useful for testing. Generates rows [start], [start+1], ..., [end-1]
     /// Output: single integer column
+    #[allow(dead_code)]
     Sequence { start: i64, end: i64 },
 
     /// Insert rows into a table (1 input, typically Values)
@@ -147,12 +152,14 @@ pub enum LogicalPlan {
 
 pub mod schema {
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     pub struct Schema {
         pub tables: Vec<Table>,
     }
 
     #[derive(Debug, Clone)]
     pub struct Table {
+        #[allow(dead_code)]
         pub name: String,
         pub rootpage: u32,
         pub columns: Vec<Column>,
@@ -165,6 +172,7 @@ pub mod schema {
     }
 
     impl Schema {
+        #[allow(dead_code)]
         pub fn get_table(&self, name: &str) -> Option<&Table> {
             self.tables.iter().find(|t| t.name == name)
         }
