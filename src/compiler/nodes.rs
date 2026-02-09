@@ -683,11 +683,8 @@ pub fn codegen_insert(
 
         reordered
     };
-    ctx.body_emitter.emit(Operation::WriteCursor(
-        cursor_reg,
-        key_reg,
-        reordered_regs,
-    ));
+    ctx.body_emitter
+        .emit(Operation::WriteCursor(cursor_reg, key_reg, reordered_regs));
     ctx.body_emitter.emit(Operation::IncrementValue(key_reg));
     ctx.body_emitter
         .emit(Operation::IncrementValue(counter_reg));
@@ -716,9 +713,7 @@ pub fn codegen(
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
     match plan {
-        LogicalPlan::Scan { rootpage, columns } => {
-            codegen_scan(*rootpage, columns, cont, ctx)
-        }
+        LogicalPlan::Scan { rootpage, columns } => codegen_scan(*rootpage, columns, cont, ctx),
         LogicalPlan::Count { input } => codegen_count(input, cont, ctx),
         LogicalPlan::Values { rows } => codegen_values(rows, cont, ctx),
         LogicalPlan::Filter { predicate, input } => codegen_filter(predicate, input, cont, ctx),

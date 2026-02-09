@@ -532,7 +532,9 @@ mod test {
         assert!(matches!(tokens.last().unwrap().tipe(), super::Type::Eof));
 
         // Verify the subtraction is properly tokenized
-        let has_minus = tokens.iter().any(|t| matches!(t.tipe(), super::Type::Minus));
+        let has_minus = tokens
+            .iter()
+            .any(|t| matches!(t.tipe(), super::Type::Minus));
         assert!(has_minus, "Should contain a Minus token");
     }
 
@@ -543,6 +545,8 @@ mod test {
         let tokens = lex(input);
 
         // Should not have any whitespace tokens
-        assert!(tokens.iter().all(|t| !matches!(t.tipe(), super::Type::Identifier(s) if s.trim().is_empty())));
+        assert!(tokens
+            .iter()
+            .all(|t| !matches!(t.tipe(), super::Type::Identifier(s) if s.trim().is_empty())));
     }
 }
