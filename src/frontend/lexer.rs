@@ -255,13 +255,13 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 ' ' | '\r' | '\t' => {
                     self.advance();
-                    break;
+                    // Continue consuming whitespace
                 }
                 '\n' => {
                     self.advance();
                     self.line += 1;
                     self.column = 0;
-                    break;
+                    // Continue consuming whitespace
                 }
                 '-' => {
                     if self.peek_next() == '-' {
@@ -274,6 +274,9 @@ impl<'a> Lexer<'a> {
                                 break;
                             }
                         }
+                    } else {
+                        // Single '-' is not whitespace, stop here
+                        break;
                     }
                 }
                 _ => break,
@@ -500,5 +503,46 @@ mod test {
 
         println!("{:?}", input);
         println!("{:?}", output);
+    }
+
+    #[test]
+    fn test_subtraction_expression() {
+        // Regression test for infinite loop bug when lexer encounters
+        // a single minus sign that's not part of a -- comment
+        let input = "age-20";
+        let tokens = lex(input);
+
+        // Should produce: Identifier("age"), Minus, IntegerNumber(20), Eof
+        assert_eq!(tokens.len(), 4);
+        assert!(matches!(tokens[0].tipe(), super::Type::Identifier(_)));
+        assert!(matches!(tokens[1].tipe(), super::Type::Minus));
+        assert!(matches!(tokens[2].tipe(), super::Type::IntegerNumber(20)));
+        assert!(matches!(tokens[3].tipe(), super::Type::Eof));
+    }
+
+    #[test]
+    fn test_where_clause_with_subtraction() {
+        // Regression test for the bug reported in:
+        // "select name from users where age-20>10"
+        let input = "select name from users where age-20>10";
+        let tokens = lex(input);
+
+        // Verify it doesn't hang and produces tokens
+        assert!(tokens.len() > 0);
+        assert!(matches!(tokens.last().unwrap().tipe(), super::Type::Eof));
+
+        // Verify the subtraction is properly tokenized
+        let has_minus = tokens.iter().any(|t| matches!(t.tipe(), super::Type::Minus));
+        assert!(has_minus, "Should contain a Minus token");
+    }
+
+    #[test]
+    fn test_multiple_whitespace_consumption() {
+        // Verify that skip_whitespace consumes multiple consecutive spaces
+        let input = "select     name    from     users";
+        let tokens = lex(input);
+
+        // Should not have any whitespace tokens
+        assert!(tokens.iter().all(|t| !matches!(t.tipe(), super::Type::Identifier(s) if s.trim().is_empty())));
     }
 }
