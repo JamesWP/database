@@ -32,7 +32,7 @@ cargo fmt -- --check     # Check if code is formatted
 
 **Purpose**: Manual tests complement automated unit/integration tests by exercising the database through realistic end-to-end scenarios.
 
-**Location**: Manual test scripts live in the repository root (e.g., `test_sql_mode.sql`)
+**Location**: Manual test scripts live in `manual_tests/` directory
 
 **When to create manual tests**:
 - End-to-end workflows that exercise multiple subsystems
@@ -52,21 +52,21 @@ cargo fmt -- --check     # Check if code is formatted
 **Example manual test workflow**:
 ```bash
 # Create a test script
-vim test_new_feature.sql
+vim manual_tests/test_new_feature.sql
 
 # Run the test
-cat test_new_feature.sql | ./target/release/database test.db > actual_output.txt
+cat manual_tests/test_new_feature.sql | ./target/release/database test.db > actual_output.txt
 
 # Verify results (inspect output)
 cat actual_output.txt
 
-# Document in README.md
+# Document in manual_tests/README.md
 # Add expected results to version control if useful
 ```
 
 **Existing manual tests**:
-- `test_sql_mode.sql` - Comprehensive SQL mode test with 3 tables, 16 rows, 10 queries
-- See README.md for complete list and usage
+- See `manual_tests/README.md` for complete list and usage
+- Example: `test_sql_mode.sql` - SQL mode test with 3 tables, 16 rows, 10 queries
 
 ### Code Formatting
 
