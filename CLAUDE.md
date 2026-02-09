@@ -15,6 +15,56 @@ cargo test               # Run all tests
 cargo test <test_name>   # Run single test
 cargo test -- --nocapture  # Run tests with output
 cargo run -- <db_file>   # Run interactive CLI
+cargo fmt                # Format code
+cargo fmt -- --check     # Check if code is formatted
+```
+
+## Development Practices
+
+### Test-Driven Development (TDD)
+
+- **Always use TDD where possible**: Write tests before or alongside implementation
+- **Run tests before making changes**: Establish a baseline with `cargo test --bin database`
+- **Run tests after making changes**: Verify nothing broke with `cargo test --bin database`
+- **Add regression tests**: When fixing bugs, add tests that would have caught the bug
+
+### Code Formatting
+
+**IMPORTANT**: Always format code before committing to keep diffs clean and focused.
+
+1. **Before starting work**: Run `cargo fmt -- --check` to verify code is formatted
+   - If not formatted, run `cargo fmt` first and check the diff
+   - This ensures your commits only contain relevant changes, not formatting noise
+
+2. **Before committing**: Always run `cargo fmt` to format your changes
+   - This keeps the codebase consistently formatted
+   - Prevents formatting changes from polluting functional commits
+
+### Git Workflow
+
+**Small, focused commits**: Break work into logical, self-contained commits.
+
+**Commit message style**: Use imperative mood, be concise but descriptive:
+```
+Fix infinite loop in lexer
+Add support for WHERE clauses
+Refactor expression compiler
+```
+
+**Fixup commits**: When you need to fix or update something from a previous unpushed commit:
+- Consider using `git commit --fixup <commit-hash>`
+- Then squash with `git rebase -i --autosquash` before pushing
+- This keeps history clean without losing development context
+
+**Standard workflow**:
+```bash
+cargo fmt -- --check        # Check formatting first
+cargo test --bin database   # Run tests before changes
+# ... make changes ...
+cargo fmt                   # Format code
+cargo test --bin database   # Run tests after changes
+git add <files>
+git commit -m "message"
 ```
 
 ## Architecture
