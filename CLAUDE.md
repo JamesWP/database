@@ -80,6 +80,65 @@ cat actual_output.txt
    - This keeps the codebase consistently formatted
    - Prevents formatting changes from polluting functional commits
 
+### Compiler Warnings
+
+**CRITICAL**: Maintain a warning-free codebase at all times.
+
+**Zero warnings policy**: The project must compile without warnings. Warnings indicate potential bugs, code smells, or technical debt.
+
+**Before committing**:
+```bash
+# Check for warnings in debug build
+cargo build 2>&1 | grep -i warning
+
+# Check for warnings in release build
+cargo build --release 2>&1 | grep -i warning
+
+# If any warnings exist, fix them before committing
+```
+
+**Common warning types and how to handle them**:
+
+1. **Unused variables**: Remove them or prefix with underscore if intentionally unused
+   ```rust
+   // Bad
+   let result = compute();
+
+   // Good - remove if truly unused
+   compute();
+
+   // Good - keep if needed for clarity
+   let _result = compute();
+   ```
+
+2. **Unused imports**: Remove them
+   ```rust
+   // Bad
+   use std::collections::HashMap;  // unused
+
+   // Good - remove unused imports
+   ```
+
+3. **Dead code**: Remove unused functions/methods or add `#[allow(dead_code)]` if keeping for future use
+   ```rust
+   // If keeping for future, document why
+   #[allow(dead_code)]
+   fn helper_for_future_feature() { }
+   ```
+
+4. **Deprecated API usage**: Update to use the replacement API
+
+**When introducing new code**:
+- Write code that compiles cleanly from the start
+- If you must temporarily allow warnings, add a TODO comment and issue
+- Never commit code with new warnings
+
+**Benefits**:
+- Warnings often indicate bugs before they manifest
+- Clean builds make real issues easier to spot
+- Maintains high code quality standards
+- Prevents warning fatigue
+
 ### Git Workflow
 
 **Small, focused commits**: Break work into logical, self-contained commits.
@@ -99,9 +158,11 @@ Refactor expression compiler
 **Standard workflow**:
 ```bash
 cargo fmt -- --check        # Check formatting first
+cargo build                 # Check for warnings before changes
 cargo test --bin database   # Run tests before changes
 # ... make changes ...
 cargo fmt                   # Format code
+cargo build                 # Check for new warnings
 cargo test --bin database   # Run tests after changes
 git add <files>
 git commit -m "message"
