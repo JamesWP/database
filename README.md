@@ -65,6 +65,47 @@ engine> program
    ...
 ```
 
+## Manual Tests
+
+Manual test scripts are located in the repository root. These complement automated tests by exercising the database through realistic usage scenarios.
+
+### SQL Mode End-to-End Test
+
+**Script**: `test_sql_mode.sql`
+**Purpose**: Comprehensive test of SQL mode functionality
+
+Creates a multi-table database with realistic data and exercises various SQL features:
+
+```bash
+# Run the test
+cat test_sql_mode.sql | ./target/release/database test_sql.db
+
+# Test includes:
+# - 3 tables (users, products, orders)
+# - 16 row insertions
+# - 10 SELECT queries with various WHERE conditions
+# - Arithmetic expressions in WHERE clauses
+# - Multiple comparison operators (>, <, >=, etc.)
+```
+
+**What it tests**:
+- Table creation (CREATE TABLE)
+- Data insertion (INSERT INTO ... VALUES)
+- Basic queries (SELECT ... FROM)
+- Filtered queries (WHERE with comparison operators)
+- Arithmetic expressions in predicates (age-20>10)
+- Column alignment and output formatting
+
+**Expected results**: See `test_results.md` for detailed output from each query.
+
+### Adding New Manual Tests
+
+When adding manual tests:
+1. Create a `.sql` or command script file
+2. Document it in this section with purpose and usage
+3. Include expected results or reference documentation
+4. Consider adding it to CI if it's stable and fast
+
 ## References
 
 - B-tree design: https://cglab.ca/~abeinges/blah/rust-btree-case/

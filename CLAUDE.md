@@ -28,6 +28,46 @@ cargo fmt -- --check     # Check if code is formatted
 - **Run tests after making changes**: Verify nothing broke with `cargo test --bin database`
 - **Add regression tests**: When fixing bugs, add tests that would have caught the bug
 
+### Manual Testing
+
+**Purpose**: Manual tests complement automated unit/integration tests by exercising the database through realistic end-to-end scenarios.
+
+**Location**: Manual test scripts live in the repository root (e.g., `test_sql_mode.sql`)
+
+**When to create manual tests**:
+- End-to-end workflows that exercise multiple subsystems
+- Interactive REPL scenarios that are hard to unit test
+- Performance or stress tests that need visual inspection
+- Regression tests for bugs that involve complex interactions
+- Demonstrative examples that also serve as documentation
+
+**Guidelines**:
+1. **Script format**: Use `.sql` files for SQL mode tests, or shell scripts for complex scenarios
+2. **Documentation**: Document each test in README.md's "Manual Tests" section
+3. **Expected output**: Create or reference result files (e.g., `test_results.md`)
+4. **Naming**: Use descriptive names like `test_sql_mode.sql`, `test_btree_stress.sql`
+5. **Maintenance**: Keep manual tests working as features evolve
+6. **Extension**: Add new tests as you implement features or find bugs
+
+**Example manual test workflow**:
+```bash
+# Create a test script
+vim test_new_feature.sql
+
+# Run the test
+cat test_new_feature.sql | ./target/release/database test.db > actual_output.txt
+
+# Verify results (inspect output)
+cat actual_output.txt
+
+# Document in README.md
+# Add expected results to version control if useful
+```
+
+**Existing manual tests**:
+- `test_sql_mode.sql` - Comprehensive SQL mode test with 3 tables, 16 rows, 10 queries
+- See README.md for complete list and usage
+
 ### Code Formatting
 
 **IMPORTANT**: Always format code before committing to keep diffs clean and focused.
