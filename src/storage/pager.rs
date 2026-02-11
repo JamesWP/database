@@ -1,9 +1,9 @@
 use std::{
     borrow::Borrow,
+    cell::RefCell,
     fs::{File, OpenOptions},
     io::{BufReader, Read, Seek, Write},
     os::unix::prelude::MetadataExt,
-    path::Path,
 };
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -43,9 +43,18 @@ impl Default for ZeroPage {
     }
 }
 
-#[derive(Debug)]
 pub struct Pager {
     path: String,
+    file: RefCell<File>,
+}
+
+impl std::fmt::Debug for Pager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pager")
+            .field("path", &self.path)
+            .field("file", &"<File>")
+            .finish()
+    }
 }
 
 const PAGE_SIZE: u64 = 2 << 11;
@@ -57,18 +66,21 @@ pub enum EncodingError {
 
 impl Pager {
     pub fn new(path: &str) -> Pager {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)
+            .unwrap();
+
         Pager {
             path: path.to_owned(),
+            file: RefCell::new(file),
         }
     }
 
     pub fn get_file_size_pages(&self) -> u32 {
-        let path = Path::new(&self.path);
-        let file = OpenOptions::new()
-            .read(true)
-            .write(false)
-            .open(path)
-            .unwrap();
+        let file = self.file.borrow();
         let file_size_bytes = file.metadata().unwrap().size();
         let num_pages = file_size_bytes / PAGE_SIZE;
 
@@ -76,13 +88,7 @@ impl Pager {
     }
 
     pub fn set_file_size_pages(&self, num_pages: u32) {
-        let path = Path::new(&self.path);
-        let file = OpenOptions::new()
-            .read(false)
-            .write(true)
-            .open(path)
-            .unwrap();
-
+        let file = self.file.borrow();
         file.set_len(PAGE_SIZE * num_pages as u64).unwrap();
     }
 
@@ -98,39 +104,14 @@ impl Pager {
         self.encode_and_set(0, zero).unwrap();
     }
 
-    fn file_at_page_readonly(&self, idx: u32) -> File {
-        let path = Path::new(&self.path);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(false)
-            .open(path)
-            .unwrap();
-        let seek = PAGE_SIZE * idx as u64;
-        file.seek(std::io::SeekFrom::Start(seek)).unwrap();
-
-        file
-    }
-
-    fn file_at_page_write(&mut self, idx: u32) -> File {
-        let path = Path::new(&self.path);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-            .unwrap();
-        let seek = PAGE_SIZE * idx as u64;
-        file.seek(std::io::SeekFrom::Start(seek)).unwrap();
-
-        file
-    }
-
     pub fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
         // println!("Reading page {}", idx.borrow());
         let mut p = Page::default();
-
         let content = p.content.as_mut_slice();
 
-        let mut file = self.file_at_page_readonly(idx.borrow().clone());
+        let mut file = self.file.borrow_mut();
+        let offset = PAGE_SIZE * (*idx.borrow() as u64);
+        file.seek(std::io::SeekFrom::Start(offset)).unwrap();
         file.read_exact(content).unwrap();
 
         p
@@ -148,7 +129,9 @@ impl Pager {
 
     pub fn set<P: Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
         // println!("Writing page {}", idx.borrow());
-        let mut file = self.file_at_page_write(idx.borrow().clone());
+        let mut file = self.file.borrow_mut();
+        let offset = PAGE_SIZE * (*idx.borrow() as u64);
+        file.seek(std::io::SeekFrom::Start(offset)).unwrap();
         file.write_all(&page.borrow().content).unwrap();
     }
 
