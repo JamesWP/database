@@ -11,7 +11,9 @@ A single-file relational database library in Rust, similar to SQLite. Implements
 ```bash
 cargo build              # Debug build
 cargo build --release    # Release build
-cargo test               # Run all tests
+cargo test               # Run all tests (lib + integration)
+cargo test --lib         # Run library tests only
+cargo test --test sql_runner  # Run SQL integration tests
 cargo test <test_name>   # Run single test
 cargo test -- --nocapture  # Run tests with output
 cargo run -- <db_file>   # Run interactive CLI
@@ -19,13 +21,45 @@ cargo fmt                # Format code
 cargo fmt -- --check     # Check if code is formatted
 ```
 
+### Test Organization
+
+- **Unit tests**: Embedded in source files with `#[cfg(test)]` modules
+- **Integration tests**: Located in `tests/` directory
+- **SQL tests**: Automated end-to-end tests in `tests/sql/*.sql` with `.expected` files
+
 ## Development Practices
+
+### Working Through Implementation Phases
+
+**Task Tracking:**
+- Use TaskCreate/TaskUpdate to track progress through phase items
+- Mark dependencies between tasks (e.g., tests depend on implementation)
+- Update task status: pending → in_progress → completed
+- Check TaskList to see what's blocked and what's ready
+
+**Verification at Each Step:**
+```bash
+# Before starting a task
+cargo test --lib  # Baseline tests
+
+# After completing implementation
+cargo test --lib  # Verify tests pass
+cargo build 2>&1 | grep -i warning  # Check warnings
+
+# Before committing
+cargo fmt  # Format code
+git add <files>
+git diff --cached --stat  # User review
+# Wait for approval, then commit
+```
+
+**Pattern:** Code → Test → Format → Stage → Review → Commit → Next Item
 
 ### Test-Driven Development (TDD)
 
 - **Always use TDD where possible**: Write tests before or alongside implementation
-- **Run tests before making changes**: Establish a baseline with `cargo test --bin database`
-- **Run tests after making changes**: Verify nothing broke with `cargo test --bin database`
+- **Run tests before making changes**: Establish a baseline with `cargo test --lib`
+- **Run tests after making changes**: Verify nothing broke with `cargo test --lib`
 - **Add regression tests**: When fixing bugs, add tests that would have caught the bug
 
 ### Manual Testing
@@ -159,14 +193,78 @@ Refactor expression compiler
 ```bash
 cargo fmt -- --check        # Check formatting first
 cargo build                 # Check for warnings before changes
-cargo test --bin database   # Run tests before changes
+cargo test --lib            # Run tests before changes
 # ... make changes ...
 cargo fmt                   # Format code
 cargo build                 # Check for new warnings
-cargo test --bin database   # Run tests after changes
+cargo test --lib            # Run tests after changes
 git add <files>
 git commit -m "message"
 ```
+
+### Multi-Item Phase Workflow
+
+When working through a phase with multiple items (like Phase A, B, C, etc.):
+
+**1. Commit Strategy**
+- Commit each item separately with clear, descriptive messages
+- If infrastructure changes (module exports, lib.rs changes) are needed, commit those first as a separate commit
+- Keep commits focused and atomic - one logical change per commit
+
+**2. Pre-Commit Review Process**
+```bash
+# Stage files for review BEFORE committing
+git add <files>
+
+# Show what's staged so user can review
+git diff --cached --stat
+git diff --cached <file>  # Show detailed changes
+
+# Wait for user approval before committing
+# User can review staged changes in IDE or with git diff
+
+# After approval, commit
+git commit -m "message"
+```
+
+**3. Phase Completion**
+At the end of each phase:
+- Run final verification: `cargo test` + `cargo build` (check warnings)
+- Show phase summary: `git log --oneline -N` (all phase commits)
+- Show total diff: `git diff master --stat`
+- Update `doc/plan/README.md` test coverage section with new counts
+- Suggest any relevant CLAUDE.md updates based on patterns learned
+
+**Example Phase A Workflow:**
+```bash
+# Infrastructure changes first
+git add src/lib.rs src/frontend.rs src/main.rs src/repl/
+git diff --cached --stat  # Review
+git commit -m "Refactor module structure..."
+
+# Item 1: SQL test harness
+git add tests/
+git diff --cached --stat  # Review
+git commit -m "Add SQL test harness..."
+
+# Item 2: Safety fix
+git add src/storage/cell_reader.rs
+git diff --cached --stat  # Review
+git commit -m "Fix CellReader unsafe pointer..."
+
+# Item 3: Tests for Item 2
+git add src/storage/cell.rs
+git diff --cached --stat  # Review
+git commit -m "Add comprehensive tests for Cell and CellReader..."
+
+# ... continue for remaining items
+```
+
+**Benefits:**
+- User can review changes before they're committed
+- Clean, focused commit history
+- Easy to understand what changed in each step
+- Easy to cherry-pick or revert individual changes if needed
 
 ## Architecture
 
