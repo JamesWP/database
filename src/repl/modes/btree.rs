@@ -4,10 +4,10 @@ use std::ops::ControlFlow;
 
 use rand::Rng;
 
-use crate::frontend::ast;
-use crate::frontend::parse;
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
-use crate::storage::{CellReader, CursorHandle};
+use database::frontend::ast;
+use database::frontend::parse;
+use database::storage::{CellReader, CursorHandle};
 
 /// BTree mode state - cursor is created/dropped as part of mode state
 #[derive(Debug)]
@@ -56,9 +56,9 @@ impl Mode for BTreeMode {
                     return CommandResult::Error(format!("Table '{}' already exists", name));
                 }
                 let root_page = shared.btree.create_tree();
-                let key = name
-                    .bytes()
-                    .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+                let key = name.bytes().fold(0u64, |acc, b: u8| {
+                    acc.wrapping_mul(31).wrapping_add(b as u64)
+                });
                 shared
                     .btree
                     .insert_schema_entry(key, "table", name, name, root_page, &sql);

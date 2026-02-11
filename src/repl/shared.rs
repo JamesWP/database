@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::storage::BTree;
+use database::storage::BTree;
 
 /// State shared across all modes
 pub struct SharedState {

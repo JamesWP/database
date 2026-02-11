@@ -1,18 +1,10 @@
-mod compiler;
-mod db;
-mod engine;
-mod frontend;
-mod planner;
 mod repl;
-mod storage;
 
-#[cfg(test)]
-mod test;
-
+use database::storage;
 use repl::{Repl, SharedState};
 use storage::BTree;
 
-pub(crate) fn main() {
+fn main() {
     let mut args = std::env::args().skip(1);
 
     let db_name = args.next().expect("first arg should be database name");
