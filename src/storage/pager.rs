@@ -62,6 +62,7 @@ const PAGE_SIZE: u64 = 2 << 11;
 #[derive(Debug)]
 pub enum EncodingError {
     NotEnoughSpaceInPage,
+    SerializationError(String),
 }
 
 impl Pager {
@@ -148,9 +149,21 @@ impl Pager {
                 serde_json::error::Category::Io => {
                     return Err(EncodingError::NotEnoughSpaceInPage);
                 }
-                serde_json::error::Category::Syntax => todo!(),
-                serde_json::error::Category::Data => todo!(),
-                serde_json::error::Category::Eof => todo!(),
+                serde_json::error::Category::Syntax => {
+                    return Err(EncodingError::SerializationError(format!(
+                        "Syntax error: {}",
+                        e
+                    )));
+                }
+                serde_json::error::Category::Data => {
+                    return Err(EncodingError::SerializationError(format!(
+                        "Data error: {}",
+                        e
+                    )));
+                }
+                serde_json::error::Category::Eof => {
+                    return Err(EncodingError::SerializationError(format!("EOF error: {}", e)));
+                }
             },
             _ => {}
         };
