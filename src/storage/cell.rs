@@ -79,3 +79,60 @@ impl<'de> Deserialize<'de> for Cell {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cell_roundtrip() {
+        let key = 12345u64;
+        let value = b"test value".to_vec();
+        let cell = Cell::new(key, value.clone(), None);
+
+        // Serialize
+        let json = serde_json::to_vec(&cell).unwrap();
+
+        // Deserialize
+        let decoded: Cell = serde_json::from_slice(&json).unwrap();
+
+        assert_eq!(decoded.key(), key);
+        assert_eq!(decoded.value(), value.as_slice());
+        assert_eq!(decoded.continuation(), None);
+    }
+
+    #[test]
+    fn test_cell_roundtrip_with_continuation() {
+        let key = 99u64;
+        let value = b"overflow data".to_vec();
+        let continuation = Some(42u32);
+        let cell = Cell::new(key, value.clone(), continuation);
+
+        // Serialize
+        let json = serde_json::to_vec(&cell).unwrap();
+
+        // Deserialize
+        let decoded: Cell = serde_json::from_slice(&json).unwrap();
+
+        assert_eq!(decoded.key(), key);
+        assert_eq!(decoded.value(), value.as_slice());
+        assert_eq!(decoded.continuation(), continuation);
+    }
+
+    #[test]
+    fn test_cell_empty_value() {
+        let key = 1u64;
+        let value = Vec::new();
+        let cell = Cell::new(key, value.clone(), None);
+
+        // Serialize
+        let json = serde_json::to_vec(&cell).unwrap();
+
+        // Deserialize
+        let decoded: Cell = serde_json::from_slice(&json).unwrap();
+
+        assert_eq!(decoded.key(), key);
+        assert_eq!(decoded.value(), &[] as &[u8]);
+        assert_eq!(decoded.continuation(), None);
+    }
+}
