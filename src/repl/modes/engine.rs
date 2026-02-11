@@ -1,9 +1,9 @@
 use colored::Colorize;
 
-use crate::compiler::{compile, CompiledProgram};
-use crate::frontend::parse;
-use crate::planner::plan;
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
+use database::compiler::{compile, CompiledProgram};
+use database::frontend::parse;
+use database::planner::plan;
 
 /// Engine/VM mode - for inspecting and executing compiled bytecode
 #[derive(Debug)]

@@ -1,6 +1,6 @@
-use crate::frontend::parse;
-use crate::planner::{plan, LogicalPlan};
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
+use database::frontend::parse;
+use database::planner::{plan, LogicalPlan};
 
 /// Planner mode - for inspecting query plans
 #[derive(Debug)]

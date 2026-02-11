@@ -1,6 +1,6 @@
-use crate::db::{self, ExecuteResult};
-use crate::engine::scalarvalue::ScalarValue;
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
+use database::db::{self, ExecuteResult};
+use database::engine::scalarvalue::ScalarValue;
 
 /// Format a ScalarValue without ANSI color codes (for width calculation)
 fn plain_value(v: &ScalarValue) -> String {

@@ -1,5 +1,5 @@
-pub(crate) mod ast;
-pub(crate) mod lexer;
-mod parser;
+pub mod ast;
+pub mod lexer;
+pub mod parser;
 
-pub(crate) use parser::{parse, ParseError};
+pub use parser::{parse, ParseError};

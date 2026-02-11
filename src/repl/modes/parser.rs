@@ -1,5 +1,5 @@
-use crate::frontend::{lexer, parse};
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
+use database::frontend::{lexer, parse};
 
 /// Parser mode - stateless, for inspecting tokenization and parsing
 #[derive(Debug)]
