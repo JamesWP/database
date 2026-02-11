@@ -146,6 +146,9 @@ where
             pager::EncodingError::NotEnoughSpaceInPage => {
                 self.split_page(modified_page, stack);
             }
+            pager::EncodingError::SerializationError(e) => {
+                panic!("Serialization error: {}", e);
+            }
         }
     }
 
@@ -194,9 +197,15 @@ where
             let result = self.pager.encode_and_set(parent_idx, parent_node.clone());
 
             // If the parent is now overfull, recursively split it
-            if let Err(pager::EncodingError::NotEnoughSpaceInPage) = result {
-                stack.push(parent_idx);
-                self.split_page(parent_node, stack);
+            match result {
+                Err(pager::EncodingError::NotEnoughSpaceInPage) => {
+                    stack.push(parent_idx);
+                    self.split_page(parent_node, stack);
+                }
+                Err(pager::EncodingError::SerializationError(e)) => {
+                    panic!("Serialization error: {}", e);
+                }
+                Ok(_) => {}
             }
         } else {
             // Root: keep the root at the same page index.
