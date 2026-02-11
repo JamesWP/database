@@ -317,4 +317,82 @@ mod test {
         // more pages allocated
         assert_eq!(max_size + 1, pager.get_file_size_pages());
     }
+
+    #[test]
+    fn test_pager_persistence() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        // Write pages to a file
+        {
+            let mut pager = Pager::new(path);
+            let page_idx = pager.allocate();
+            let mut page_content = pager.get(page_idx);
+            page_content.content[0] = 42;
+            page_content.content[100] = 99;
+            pager.set(page_idx, &page_content);
+        }
+
+        // Drop the pager, create a new one on the same file
+        {
+            let pager = Pager::new(path);
+            let page_content = pager.get(1); // First allocated page is always 1
+            assert_eq!(42, page_content.content[0]);
+            assert_eq!(99, page_content.content[100]);
+        }
+    }
+
+    #[test]
+    fn test_pager_free_list_roundtrip() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let mut pager = Pager::new(path);
+
+        // Allocate 3 pages
+        let page_a = pager.allocate();
+        let page_b = pager.allocate();
+        let page_c = pager.allocate();
+
+        assert_eq!(page_a, 1);
+        assert_eq!(page_b, 2);
+        assert_eq!(page_c, 3);
+
+        // Deallocate middle page
+        pager.dealocate(page_b);
+
+        // Allocate again - should reuse the freed page
+        let page_d = pager.allocate();
+        assert_eq!(page_b, page_d, "Should reuse the deallocated page");
+
+        // Verify we can write to and read from the reused page
+        let mut page_content = pager.get(page_d);
+        page_content.content[0] = 123;
+        pager.set(page_d, &page_content);
+
+        let read_back = pager.get(page_d);
+        assert_eq!(123, read_back.content[0]);
+    }
+
+    #[test]
+    fn test_pager_page_boundary() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let mut pager = Pager::new(path);
+        let page_idx = pager.allocate();
+
+        // Write exactly 4096 bytes to a page
+        let mut page_content = pager.get(page_idx);
+        for i in 0..4096 {
+            page_content.content[i] = (i % 256) as u8;
+        }
+        pager.set(page_idx, &page_content);
+
+        // Read it back and verify
+        let read_back = pager.get(page_idx);
+        for i in 0..4096 {
+            assert_eq!((i % 256) as u8, read_back.content[i]);
+        }
+    }
 }
