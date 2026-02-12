@@ -269,9 +269,13 @@ where
             let page: NodePage = self.pager.get_and_decode(page_idx);
             match page {
                 node::NodePage::Leaf(l) => {
-                    // We found the first leaf in the tree.
+                    // We found the rightmost leaf in the tree.
                     // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
-                    self.cursor_state.leaf_iterator = Some((page_idx, l.num_items() - 1));
+                    if l.num_items() == 0 {
+                        self.cursor_state.leaf_iterator = None;
+                    } else {
+                        self.cursor_state.leaf_iterator = Some((page_idx, l.num_items() - 1));
+                    }
                     return;
                 }
                 node::NodePage::Interior(i) => {
@@ -289,25 +293,7 @@ where
     pub fn last(&mut self) {
         // Take the tree identified by the root page number, and find its right most node and
         // find its largest entry.
-        let root_page_idx = self.cursor_state.root_page;
-        let root_page: NodePage = self.pager.get_and_decode(root_page_idx);
-
-        let page = root_page;
-        let page_idx = root_page_idx;
-        loop {
-            match page {
-                node::NodePage::Leaf(l) => {
-                    if l.num_items() == 0 {
-                        self.cursor_state.leaf_iterator = None;
-                    } else {
-                        self.cursor_state.leaf_iterator = Some((page_idx, l.num_items() - 1));
-                    }
-                    return;
-                }
-                node::NodePage::Interior(_i) => todo!(),
-                node::NodePage::OverflowPage(_) => panic!(),
-            }
-        }
+        self.select_rightmost_of_idx(self.cursor_state.root_page)
     }
 
     /// Move the cursor to point at the row in the btree identified by the given key
@@ -1321,6 +1307,108 @@ mod test {
 
             // Should be at end
             assert!(cursor.get_entry().is_none(), "Should be at end of tree");
+        }
+    }
+
+    #[test]
+    fn test_cursor_last_single_page() {
+        // Small tree, last() returns highest key
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1, 2, 3
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(1, b"one".to_vec());
+            cursor.insert(2, b"two".to_vec());
+            cursor.insert(3, b"three".to_vec());
+        }
+
+        // Call last() and verify we get key 3
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.last();
+
+            let mut buf = vec![];
+            cursor
+                .get_entry()
+                .expect("Should have last entry")
+                .read_to_end(&mut buf)
+                .unwrap();
+            assert_eq!(buf, b"three");
+        }
+    }
+
+    #[test]
+    fn test_cursor_last_multi_level() {
+        // Tree with interior nodes, last() returns highest key
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert enough to force splits (creating interior nodes)
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 0..100u64 {
+                cursor.insert(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // Call last() and verify we get key 99
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.last();
+
+            let mut buf = [0u8; 8];
+            cursor
+                .get_entry()
+                .expect("Should have last entry")
+                .read(&mut buf)
+                .unwrap();
+            assert_eq!(u64::from_be_bytes(buf), 99);
+        }
+    }
+
+    #[test]
+    fn test_cursor_last_then_prev() {
+        // last() then prev() navigates backward correctly
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1-5
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=5u64 {
+                cursor.insert(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // last() should give us 5, then prev() should give us 4, 3, 2, 1
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.last();
+
+            for expected in (1..=5u64).rev() {
+                let mut buf = [0u8; 8];
+                cursor
+                    .get_entry()
+                    .unwrap_or_else(|| panic!("Should have key {}", expected))
+                    .read(&mut buf)
+                    .unwrap();
+                assert_eq!(u64::from_be_bytes(buf), expected);
+                cursor.prev();
+            }
+
+            // After prev from key 1, should be at beginning (None)
+            assert!(cursor.get_entry().is_none());
         }
     }
 }
