@@ -158,16 +158,20 @@ where
     ///
     /// Non-root split — insert a new child pointer into the parent:
     ///
+    /// ```text
     ///        [parent]              [parent]
     ///           |            =>    /      \
     ///       [overfull]         [left]  [right]
+    /// ```
     ///
     /// Root split — the root page index stays stable (the SQLite approach).
     /// The two halves move to new pages; the root is rewritten as an interior node:
     ///
+    /// ```text
     ///       [root:overfull]       [root:interior]
     ///                        =>    /          \
     ///                          [left]      [right]
+    /// ```
     ///
     fn split_page(&mut self, overfull_page: NodePage, mut stack: Vec<u32>) {
         let overfull_idx = stack.pop().unwrap();

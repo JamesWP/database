@@ -11,8 +11,8 @@ A single-file relational database library in Rust, similar to SQLite. Implements
 ```bash
 cargo build              # Debug build
 cargo build --release    # Release build
-cargo test               # Run all tests (lib + integration)
-cargo test --lib         # Run library tests only
+cargo test               # Run all tests (lib + integration + doctests) - THE BASELINE
+cargo test --lib         # Run library unit tests only
 cargo test --test sql_runner  # Run SQL integration tests
 cargo test <test_name>   # Run single test
 cargo test -- --nocapture  # Run tests with output
@@ -40,10 +40,10 @@ cargo fmt -- --check     # Check if code is formatted
 **Verification at Each Step:**
 ```bash
 # Before starting a task
-cargo test --lib  # Baseline tests
+cargo test  # Baseline: all tests (unit + integration + doctests)
 
 # After completing implementation
-cargo test --lib  # Verify tests pass
+cargo test  # Verify all tests pass
 cargo build 2>&1 | grep -i warning  # Check warnings
 
 # Before committing
@@ -58,9 +58,10 @@ git diff --cached --stat  # User review
 ### Test-Driven Development (TDD)
 
 - **Always use TDD where possible**: Write tests before or alongside implementation
-- **Run tests before making changes**: Establish a baseline with `cargo test --lib`
-- **Run tests after making changes**: Verify nothing broke with `cargo test --lib`
+- **Run tests before making changes**: Establish a baseline with `cargo test`
+- **Run tests after making changes**: Verify nothing broke with `cargo test`
 - **Add regression tests**: When fixing bugs, add tests that would have caught the bug
+- **Full test suite**: `cargo test` runs unit tests, integration tests, and doctests - all must pass
 
 ### Manual Testing
 
@@ -193,11 +194,11 @@ Refactor expression compiler
 ```bash
 cargo fmt -- --check        # Check formatting first
 cargo build                 # Check for warnings before changes
-cargo test --lib            # Run tests before changes
+cargo test                  # Run all tests before changes
 # ... make changes ...
 cargo fmt                   # Format code
 cargo build                 # Check for new warnings
-cargo test --lib            # Run tests after changes
+cargo test                  # Run all tests after changes
 git add <files>
 git commit -m "message"
 ```
