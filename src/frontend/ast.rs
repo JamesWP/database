@@ -49,6 +49,7 @@ pub enum ColumnExpression {
         expression: Box<Expression>,
     },
     Anonyomous(Box<Expression>),
+    Wildcard,
 }
 
 #[allow(dead_code)]

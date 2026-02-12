@@ -273,15 +273,28 @@ impl Parser {
     fn parse_column_expressions(&mut self) -> ParseResult<Vec<ast::ColumnExpression>> {
         let mut exprs = Vec::new();
 
-        let expr = self.parse_named_column_expression()?;
-        exprs.push(expr);
+        // Parse first column expression (could be * or a regular expression)
+        if let lexer::Type::Star = self.input.peek() {
+            self.input.advance();
+            exprs.push(ast::ColumnExpression::Wildcard);
+        } else {
+            let expr = self.parse_named_column_expression()?;
+            exprs.push(expr);
+        }
 
+        // Continue parsing additional column expressions
         loop {
             match self.input.peek() {
                 lexer::Type::Comma => {
                     self.input.advance();
-                    let expr = self.parse_named_column_expression()?;
-                    exprs.push(expr);
+                    // Check for * in subsequent positions
+                    if let lexer::Type::Star = self.input.peek() {
+                        self.input.advance();
+                        exprs.push(ast::ColumnExpression::Wildcard);
+                    } else {
+                        let expr = self.parse_named_column_expression()?;
+                        exprs.push(expr);
+                    }
                 }
                 _ => {
                     return Ok(exprs);
@@ -783,6 +796,65 @@ mod test {
                 assert_eq!(ins.values[1].len(), 3);
             }
             _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_star() {
+        let stmt = parse("SELECT * FROM users").unwrap();
+        match stmt {
+            ast::Statement::Select(select) => {
+                assert_eq!(select.columns.len(), 1);
+                match &select.columns[0] {
+                    ast::ColumnExpression::Wildcard => {
+                        // Success - wildcard parsed correctly
+                    }
+                    other => panic!("Expected Wildcard, got {:?}", other),
+                }
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_star_with_expr() {
+        let stmt = parse("SELECT *, 1 FROM users").unwrap();
+        match stmt {
+            ast::Statement::Select(select) => {
+                assert_eq!(select.columns.len(), 2);
+                // First should be wildcard
+                assert!(matches!(select.columns[0], ast::ColumnExpression::Wildcard));
+                // Second should be the literal 1
+                match &select.columns[1] {
+                    ast::ColumnExpression::Anonyomous(expr) => match expr.as_ref() {
+                        ast::Expression::Value(ast::ScalarValue::IntegerNumber(1)) => {}
+                        other => panic!("Expected integer 1, got {:?}", other),
+                    },
+                    other => panic!("Expected Anonymous expression, got {:?}", other),
+                }
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_expr_star() {
+        let stmt = parse("SELECT 999, * FROM users").unwrap();
+        match stmt {
+            ast::Statement::Select(select) => {
+                assert_eq!(select.columns.len(), 2);
+                // First should be literal 999
+                match &select.columns[0] {
+                    ast::ColumnExpression::Anonyomous(expr) => match expr.as_ref() {
+                        ast::Expression::Value(ast::ScalarValue::IntegerNumber(999)) => {}
+                        other => panic!("Expected integer 999, got {:?}", other),
+                    },
+                    other => panic!("Expected Anonymous expression, got {:?}", other),
+                }
+                // Second should be wildcard
+                assert!(matches!(select.columns[1], ast::ColumnExpression::Wildcard));
+            }
+            _ => panic!("Expected Select statement"),
         }
     }
 }

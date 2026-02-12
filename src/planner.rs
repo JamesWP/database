@@ -234,8 +234,20 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
 
     // 3. Collect all column references from SELECT and WHERE
     let mut columns_needed = HashSet::new();
-    for col_expr in &select.columns {
-        collect_columns_from_column_expr(col_expr, &mut columns_needed);
+    let has_wildcard = select
+        .columns
+        .iter()
+        .any(|col| matches!(col, ast::ColumnExpression::Wildcard));
+
+    if has_wildcard {
+        // If SELECT *, include all columns from the table
+        for col in &table.columns {
+            columns_needed.insert(col.name.clone());
+        }
+    } else {
+        for col_expr in &select.columns {
+            collect_columns_from_column_expr(col_expr, &mut columns_needed);
+        }
     }
     if let Some(ref filter) = select.filter {
         collect_columns(filter, &mut columns_needed);
@@ -254,7 +266,22 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     let project_exprs: Vec<PlanExpr> = select
         .columns
         .iter()
-        .map(|col_expr| convert_column_expr(col_expr, &ctx))
+        .flat_map(|col_expr| {
+            match col_expr {
+                ast::ColumnExpression::Wildcard => {
+                    // Expand wildcard to all columns in table order
+                    table
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, _col)| {
+                            Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
+                        })
+                        .collect::<Vec<_>>()
+                }
+                _ => vec![convert_column_expr(col_expr, &ctx)],
+            }
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     // 7. Build plan bottom-up: Scan → Filter? → Project → Limit?
@@ -440,6 +467,10 @@ fn convert_column_expr(
     match col_expr {
         ast::ColumnExpression::Named { expression, .. } => convert_expr(expression, ctx),
         ast::ColumnExpression::Anonyomous(expression) => convert_expr(expression, ctx),
+        ast::ColumnExpression::Wildcard => {
+            // Wildcard should be expanded before calling this function
+            panic!("Wildcard should be expanded earlier in planning")
+        }
     }
 }
 
@@ -606,6 +637,9 @@ fn collect_columns_from_column_expr(
         }
         ast::ColumnExpression::Anonyomous(expression) => {
             collect_columns(expression, columns);
+        }
+        ast::ColumnExpression::Wildcard => {
+            // Wildcard is handled specially in plan_select
         }
     }
 }
@@ -1240,7 +1274,6 @@ mod tests {
     /// Scan { columns: [0, 1, 2] } reads all columns
     /// Project outputs them in order
     #[test]
-    #[ignore = "parser does not yet support SELECT *"]
     fn test_select_star() {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT * FROM users");
@@ -1256,6 +1289,113 @@ mod tests {
                 PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
                 PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
                 PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
+            ],
+        };
+
+        assert_eq!(plan, expected);
+    }
+
+    #[test]
+    fn test_select_star_multi_column() {
+        // Create table with 5 columns
+        let mut test = TestDb::default();
+        let root = test.btree.create_tree();
+        test.btree.insert_schema_entry(
+            1,
+            "table",
+            "data",
+            "data",
+            root,
+            "CREATE TABLE data (a INTEGER, b INTEGER, c INTEGER, d INTEGER, e INTEGER)",
+        );
+
+        let stmt = parse_sql("SELECT * FROM data");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: root,
+                columns: vec![0, 1, 2, 3, 4], // all 5 columns
+            }),
+            columns: vec![
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 3 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 4 }),
+            ],
+        };
+
+        assert_eq!(plan, expected);
+    }
+
+    #[test]
+    fn test_select_star_with_literal() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("SELECT *, 999 FROM users");
+
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: users_root,
+                columns: vec![0, 1, 2], // all columns
+            }),
+            columns: vec![
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
+                PlanExpr::Literal(Literal::Integer(999)),
+            ],
+        };
+
+        assert_eq!(plan, expected);
+    }
+
+    #[test]
+    fn test_select_literal_star() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("SELECT 999, * FROM users");
+
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: users_root,
+                columns: vec![0, 1, 2], // all columns
+            }),
+            columns: vec![
+                PlanExpr::Literal(Literal::Integer(999)),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
+            ],
+        };
+
+        assert_eq!(plan, expected);
+    }
+
+    #[test]
+    fn test_select_star_with_expression() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("SELECT *, age + 10 FROM users");
+
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: users_root,
+                columns: vec![0, 1, 2], // all columns
+            }),
+            columns: vec![
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
+                PlanExpr::BinaryOp {
+                    op: BinaryOp::Add,
+                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })),
+                    right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
+                },
             ],
         };
 
