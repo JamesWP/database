@@ -6,11 +6,13 @@ use crate::frontend::{parse, ParseError};
 use crate::planner::{self, PlanError};
 use crate::storage::BTree;
 
+#[derive(Debug)]
 pub enum ExecuteResult {
     CreateTable { table_name: String },
     Query(QueryExecution),
 }
 
+#[derive(Debug)]
 pub struct QueryExecution {
     rows: Vec<Vec<ScalarValue>>,
     pos: usize,
@@ -274,6 +276,220 @@ mod tests {
                 assert!(q.next().is_none());
             }
             _ => panic!("Expected Query result"),
+        }
+    }
+
+    #[test]
+    fn test_persistence() {
+        use tempfile::NamedTempFile;
+
+        // Create a persistent temp file
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap().to_string();
+
+        // First session: create table and insert data
+        {
+            let mut btree = BTree::new(&path);
+            execute(
+                "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+                &mut btree,
+            )
+            .unwrap();
+
+            execute("INSERT INTO users VALUES (1, 'alice', 30)", &mut btree).unwrap();
+            execute("INSERT INTO users VALUES (2, 'bob', 25)", &mut btree).unwrap();
+            // btree dropped here, flushes to disk
+        }
+
+        // Second session: reopen database and verify data
+        {
+            let mut btree = BTree::new(&path);
+            let result = execute("SELECT id, name, age FROM users", &mut btree).unwrap();
+            match result {
+                ExecuteResult::Query(mut q) => {
+                    let row1 = q.next().expect("Expected row 1");
+                    assert_eq!(row1[0], ScalarValue::Integer(1));
+                    assert_eq!(row1[1], ScalarValue::String("alice".to_string()));
+                    assert_eq!(row1[2], ScalarValue::Integer(30));
+
+                    let row2 = q.next().expect("Expected row 2");
+                    assert_eq!(row2[0], ScalarValue::Integer(2));
+                    assert_eq!(row2[1], ScalarValue::String("bob".to_string()));
+                    assert_eq!(row2[2], ScalarValue::Integer(25));
+
+                    assert!(q.next().is_none());
+                }
+                _ => panic!("Expected Query result"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_multi_table() {
+        let mut test = TestDb::default();
+
+        // Create two tables
+        execute(
+            "CREATE TABLE users (id INTEGER, name TEXT)",
+            &mut test.btree,
+        )
+        .unwrap();
+        execute(
+            "CREATE TABLE products (id INTEGER, title TEXT, price INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+
+        // Insert into first table
+        execute("INSERT INTO users VALUES (1, 'alice')", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (2, 'bob')", &mut test.btree).unwrap();
+
+        // Insert into second table
+        execute(
+            "INSERT INTO products VALUES (10, 'laptop', 999)",
+            &mut test.btree,
+        )
+        .unwrap();
+        execute(
+            "INSERT INTO products VALUES (11, 'mouse', 25)",
+            &mut test.btree,
+        )
+        .unwrap();
+
+        // Query first table
+        let result = execute("SELECT id, name FROM users", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(mut q) => {
+                let row1 = q.next().expect("Expected row 1");
+                assert_eq!(row1[0], ScalarValue::Integer(1));
+                assert_eq!(row1[1], ScalarValue::String("alice".to_string()));
+
+                let row2 = q.next().expect("Expected row 2");
+                assert_eq!(row2[0], ScalarValue::Integer(2));
+                assert_eq!(row2[1], ScalarValue::String("bob".to_string()));
+
+                assert!(q.next().is_none());
+            }
+            _ => panic!("Expected Query result"),
+        }
+
+        // Query second table
+        let result = execute("SELECT title, price FROM products", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(mut q) => {
+                let row1 = q.next().expect("Expected row 1");
+                assert_eq!(row1[0], ScalarValue::String("laptop".to_string()));
+                assert_eq!(row1[1], ScalarValue::Integer(999));
+
+                let row2 = q.next().expect("Expected row 2");
+                assert_eq!(row2[0], ScalarValue::String("mouse".to_string()));
+                assert_eq!(row2[1], ScalarValue::Integer(25));
+
+                assert!(q.next().is_none());
+            }
+            _ => panic!("Expected Query result"),
+        }
+    }
+
+    #[test]
+    fn test_large_insert() {
+        let mut test = TestDb::default();
+        execute(
+            "CREATE TABLE numbers (id INTEGER, value INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+
+        // Insert 150 rows
+        for i in 0..150 {
+            let sql = format!("INSERT INTO numbers VALUES ({}, {})", i, i * 10);
+            let mut q = match execute(&sql, &mut test.btree).unwrap() {
+                ExecuteResult::Query(q) => q,
+                _ => panic!(),
+            };
+            while q.next().is_some() {}
+        }
+
+        // Select with WHERE filter: value > 500 should give us rows with id >= 51
+        let result = execute(
+            "SELECT id, value FROM numbers WHERE value > 500",
+            &mut test.btree,
+        )
+        .unwrap();
+
+        match result {
+            ExecuteResult::Query(mut q) => {
+                let mut count = 0;
+                let mut last_id = 50;
+                while let Some(row) = q.next() {
+                    count += 1;
+                    let id = match row[0] {
+                        ScalarValue::Integer(i) => i,
+                        _ => panic!("Expected integer id"),
+                    };
+                    let value = match row[1] {
+                        ScalarValue::Integer(v) => v,
+                        _ => panic!("Expected integer value"),
+                    };
+                    assert!(id > last_id, "Rows should be ordered by id");
+                    assert_eq!(value, id * 10);
+                    assert!(value > 500);
+                    last_id = id;
+                }
+                // value > 500 means id > 50, so we should have 99 rows (51..149)
+                assert_eq!(count, 99);
+            }
+            _ => panic!("Expected Query result"),
+        }
+    }
+
+    #[test]
+    fn test_select_nonexistent_table() {
+        let mut test = TestDb::default();
+        let result = execute("SELECT id FROM nonexistent", &mut test.btree);
+
+        match result {
+            Err(ExecuteError::Plan(PlanError::TableNotFound(name))) => {
+                assert_eq!(name, "nonexistent");
+            }
+            _ => panic!("Expected TableNotFound error, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_insert_wrong_column_count() {
+        let mut test = TestDb::default();
+        execute(
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+
+        // Too few values
+        let result = execute("INSERT INTO users VALUES (1, 'alice')", &mut test.btree);
+        match result {
+            Err(ExecuteError::Plan(PlanError::ColumnCountMismatch { .. })) => {
+                // Expected error
+            }
+            _ => panic!(
+                "Expected ColumnCountMismatch error for too few values, got: {:?}",
+                result
+            ),
+        }
+
+        // Too many values
+        let result = execute(
+            "INSERT INTO users VALUES (1, 'alice', 30, 'extra')",
+            &mut test.btree,
+        );
+        match result {
+            Err(ExecuteError::Plan(PlanError::ColumnCountMismatch { .. })) => {
+                // Expected error
+            }
+            _ => panic!(
+                "Expected ColumnCountMismatch error for too many values, got: {:?}",
+                result
+            ),
         }
     }
 }
