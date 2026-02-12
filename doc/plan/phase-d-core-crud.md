@@ -13,6 +13,7 @@ Phase D adds mutation operations (UPDATE, DELETE, DROP TABLE) and the storage-la
 | 23 | 5.4 | Cursor stack invalidation | 19 |
 
 ---
+Important: Each item should be committed seperately, follow 'Git Workflow' in CLAUDE.md
 
 ## 19. B-tree Delete (Track 3.1)
 

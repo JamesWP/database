@@ -15,6 +15,7 @@ Phase B adds high-visibility SQL features (SELECT *, NULL), completes cursor API
 | 13 | 7.2 | SQL test scripts | Phase A item 1 |
 
 ---
+Important: Each item should be committed seperately, follow 'Git Workflow' in CLAUDE.md
 
 ## 7. SELECT * (Track 1.1)
 

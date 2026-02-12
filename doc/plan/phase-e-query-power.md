@@ -12,6 +12,7 @@ Phase E adds expressive query capabilities: sorting, aggregation, grouping, and 
 | 27 | 4.2 | LIKE operator | — |
 
 ---
+Important: Each item should be committed seperately, follow 'Git Workflow' in CLAUDE.md
 
 ## 24. ORDER BY (Track 1.6)
 
