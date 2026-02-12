@@ -66,3 +66,11 @@ Each feature should follow TDD per CLAUDE.md:
 - Implement the feature
 - Run `cargo test --bin database` to confirm all tests pass
 - `cargo fmt && cargo build 2>&1 | grep warning` before committing
+
+## Example prompt
+
+```txt
+implement the plan in @doc/plan/phase-b-sql-wins.md
+overall plan structure in @doc/plan/README.md       
+of course, follow general project guidance in @CLAUDE.md 
+```
