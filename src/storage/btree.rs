@@ -297,9 +297,9 @@ where
     }
 
     /// Move the cursor to point at the row in the btree identified by the given key
-    /// This may result in the cursor not pointing to a row if there is no
-    /// row found with that key to point to
-    pub fn find(&mut self, key: u64) {
+    /// Returns true if the key was found, false if not found.
+    /// When false, the cursor is positioned where the key would be inserted.
+    pub fn find(&mut self, key: u64) -> bool {
         let mut page_idx = self.cursor_state.root_page;
 
         loop {
@@ -308,12 +308,11 @@ where
             match page.search(&key) {
                 SearchResult::Found(index) => {
                     self.cursor_state.leaf_iterator = Some((page_idx, index));
-                    return;
+                    return true;
                 }
                 SearchResult::NotPresent(index) => {
                     self.cursor_state.leaf_iterator = Some((page_idx, index));
-                    // TODO: does the caller need to know this isnt what they were looking for?
-                    return;
+                    return false;
                 }
                 SearchResult::GoDown(c_idx, c) => {
                     self.cursor_state.stack.push((page_idx, c_idx));
@@ -1409,6 +1408,71 @@ mod test {
 
             // After prev from key 1, should be at beginning (None)
             assert!(cursor.get_entry().is_none());
+        }
+    }
+
+    #[test]
+    fn test_find_returns_true_for_existing() {
+        // find() returns true when key exists
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert key 42
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(42, b"the answer".to_vec());
+        }
+
+        // find(42) should return true
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            let found = cursor.find(42);
+            assert!(found, "find() should return true for existing key");
+
+            // Verify we can read the value
+            let mut buf = vec![];
+            cursor
+                .get_entry()
+                .expect("Cursor should be positioned at found key")
+                .read_to_end(&mut buf)
+                .unwrap();
+            assert_eq!(buf, b"the answer");
+        }
+    }
+
+    #[test]
+    fn test_find_returns_false_for_missing() {
+        // find() returns false when key doesn't exist
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1, 3, 5
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(1, b"one".to_vec());
+            cursor.insert(3, b"three".to_vec());
+            cursor.insert(5, b"five".to_vec());
+        }
+
+        // find(2) should return false (2 doesn't exist)
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            let found = cursor.find(2);
+            assert!(!found, "find() should return false for non-existent key");
+        }
+
+        // find(4) should also return false
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            let found = cursor.find(4);
+            assert!(!found, "find() should return false for non-existent key");
         }
     }
 }
