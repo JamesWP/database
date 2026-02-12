@@ -1142,4 +1142,185 @@ mod test {
         }
         assert_eq!(count, 100, "All 100 rows should be accessible");
     }
+
+    #[test]
+    fn test_empty_table_scan() {
+        // Verify first() on empty tree returns None
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_readonly();
+        cursor.first();
+
+        assert!(
+            cursor.get_entry().is_none(),
+            "Empty table should return None"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_key_insert() {
+        // Insert same key twice with different values, verify overwrite
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert key=1 with value "first"
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(1, b"first".to_vec());
+        }
+
+        // Insert key=1 again with value "second"
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(1, b"second".to_vec());
+        }
+
+        // Read back and verify it's "second"
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.find(1);
+            let mut buf = vec![];
+            cursor
+                .get_entry()
+                .expect("Key should exist")
+                .read_to_end(&mut buf)
+                .unwrap();
+            assert_eq!(buf, b"second", "Value should be overwritten");
+        }
+    }
+
+    #[test]
+    fn test_find_nonexistent_key() {
+        // find() for key not in tree
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1, 3, 5
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(1, b"one".to_vec());
+            cursor.insert(3, b"three".to_vec());
+            cursor.insert(5, b"five".to_vec());
+        }
+
+        // Try to find key 2 (doesn't exist)
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.find(2);
+            // After find() for non-existent key, cursor should be positioned
+            // but get_entry() should return None (or positioned at next key)
+            // Current implementation positions at the spot where it would be inserted
+            // For now, just verify it doesn't panic
+        }
+    }
+
+    #[test]
+    fn test_cursor_prev_from_middle() {
+        // Insert 10 keys, navigate to middle, call prev(), verify correct key
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 0-9
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 0..10u64 {
+                cursor.insert(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // Navigate to middle and go backwards
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+
+            // Find key 5
+            cursor.find(5);
+            let mut buf = [0u8; 8];
+            cursor
+                .get_entry()
+                .expect("Key 5 should exist")
+                .read(&mut buf)
+                .unwrap();
+            assert_eq!(u64::from_be_bytes(buf), 5);
+
+            // Move to prev (key 4)
+            cursor.prev();
+            let mut buf = [0u8; 8];
+            cursor
+                .get_entry()
+                .expect("Key 4 should exist")
+                .read(&mut buf)
+                .unwrap();
+            assert_eq!(u64::from_be_bytes(buf), 4);
+
+            // Move to prev again (key 3)
+            cursor.prev();
+            let mut buf = [0u8; 8];
+            cursor
+                .get_entry()
+                .expect("Key 3 should exist")
+                .read(&mut buf)
+                .unwrap();
+            assert_eq!(u64::from_be_bytes(buf), 3);
+        }
+    }
+
+    #[test]
+    fn test_large_tree_ordering() {
+        // Insert 1000+ keys in random order, scan and verify sorted
+        use rand::seq::SliceRandom;
+        use rand::SeedableRng;
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Create shuffled keys
+        let mut keys: Vec<u64> = (0..1000).collect();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(12345);
+        keys.shuffle(&mut rng);
+
+        // Insert in random order
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for &key in &keys {
+                cursor.insert(key, key.to_be_bytes().to_vec());
+            }
+        }
+
+        // Scan and verify sorted order
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+
+            for expected_key in 0..1000u64 {
+                let mut buf = [0u8; 8];
+                cursor
+                    .get_entry()
+                    .unwrap_or_else(|| panic!("Key {} should exist", expected_key))
+                    .read(&mut buf)
+                    .unwrap();
+                let actual_key = u64::from_be_bytes(buf);
+                assert_eq!(actual_key, expected_key, "Keys should be in sorted order");
+                cursor.next();
+            }
+
+            // Should be at end
+            assert!(cursor.get_entry().is_none(), "Should be at end of tree");
+        }
+    }
 }
