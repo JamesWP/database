@@ -162,7 +162,10 @@ impl Pager {
                     )));
                 }
                 serde_json::error::Category::Eof => {
-                    return Err(EncodingError::SerializationError(format!("EOF error: {}", e)));
+                    return Err(EncodingError::SerializationError(format!(
+                        "EOF error: {}",
+                        e
+                    )));
                 }
             },
             _ => {}
