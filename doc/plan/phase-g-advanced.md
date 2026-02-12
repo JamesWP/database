@@ -16,6 +16,7 @@ Phase G adds advanced SQL features, indexing, performance infrastructure, and ex
 | 39 | 7.3 | Proptest expansion | — |
 
 ---
+Important: Each item should be committed seperately, follow 'Git Workflow' in CLAUDE.md
 
 ## 32. IS NULL / IS NOT NULL (Track 2.2)
 

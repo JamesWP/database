@@ -13,6 +13,7 @@ Phase C hardens the codebase by replacing panics with proper error handling, add
 | 18 | 7.1 | Engine tests | — |
 
 ---
+Important: Each item should be committed seperately, follow 'Git Workflow' in CLAUDE.md
 
 ## 14. Replace Panics with Result Returns (Track 6.3)
 

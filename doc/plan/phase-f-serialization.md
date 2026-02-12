@@ -12,6 +12,7 @@ Phase F replaces JSON-based serialization with compact binary formats, reducing 
 | 31 | 6.4 | ZeroPage free list | — |
 
 ---
+Important: Each item should be committed seperately, follow 'Git Workflow' in CLAUDE.md
 
 ## 28. Binary Cell Format (Track 3.2)
 
