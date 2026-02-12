@@ -1,0 +1,8 @@
+CREATE TABLE calc (id INTEGER, x INTEGER, y INTEGER)
+INSERT INTO calc VALUES (1, 10, 5)
+INSERT INTO calc VALUES (2, 20, 8)
+INSERT INTO calc VALUES (3, 15, 3)
+SELECT id, x+y FROM calc
+SELECT id, x-y FROM calc
+SELECT id, x*y FROM calc
+SELECT id, x/y FROM calc
