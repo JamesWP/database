@@ -47,10 +47,7 @@ fn compile_literal(lit: &Literal, ctx: &mut ExprContext) -> Reg {
         Literal::Float(f) => ScalarValue::Floating(*f),
         Literal::Bool(b) => ScalarValue::Boolean(*b),
         Literal::String(s) => ScalarValue::String(s.clone()),
-        Literal::Null => {
-            // TODO: Add proper NULL support to ScalarValue and VM
-            panic!("NULL literals not yet supported")
-        }
+        Literal::Null => ScalarValue::Null,
     };
     ctx.emitter.emit(Operation::StoreValue(dest, scalar));
     dest

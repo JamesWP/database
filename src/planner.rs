@@ -384,6 +384,7 @@ fn convert_scalar_no_context(scalar: &ast::ScalarValue) -> Result<PlanExpr, Plan
         ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
         ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
         ast::ScalarValue::StringLiteral(s) => Ok(PlanExpr::Literal(Literal::String(s.clone()))),
+        ast::ScalarValue::Null => Ok(PlanExpr::Literal(Literal::Null)),
         ast::ScalarValue::Identifier(_) | ast::ScalarValue::MultiPartIdentifier(_, _) => {
             Err(PlanError::UnsupportedStatement)
         }
@@ -550,6 +551,7 @@ fn convert_scalar(scalar: &ast::ScalarValue, ctx: &ExprContext) -> Result<PlanEx
         ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
         ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
         ast::ScalarValue::StringLiteral(s) => Ok(PlanExpr::Literal(Literal::String(s.clone()))),
+        ast::ScalarValue::Null => Ok(PlanExpr::Literal(Literal::Null)),
         ast::ScalarValue::Identifier(name) => {
             let pos = ctx
                 .columns
@@ -620,7 +622,8 @@ fn collect_columns_scalar(scalar: &ast::ScalarValue, columns: &mut HashSet<Strin
         }
         ast::ScalarValue::IntegerNumber(_)
         | ast::ScalarValue::FloatingNumber(_)
-        | ast::ScalarValue::StringLiteral(_) => {
+        | ast::ScalarValue::StringLiteral(_)
+        | ast::ScalarValue::Null => {
             // Literals don't reference columns
         }
     }
@@ -1431,6 +1434,46 @@ mod tests {
                 column: "nonexistent".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn test_select_null_literal() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("SELECT NULL FROM users");
+
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: users_root,
+                columns: vec![], // No columns needed from scan
+            }),
+            columns: vec![PlanExpr::Literal(Literal::Null)],
+        };
+
+        assert_eq!(plan, expected);
+    }
+
+    #[test]
+    fn test_select_null_with_columns() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("SELECT id, NULL, name FROM users");
+
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: users_root,
+                columns: vec![0, 1], // id, name
+            }),
+            columns: vec![
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::Literal(Literal::Null),
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
+            ],
+        };
+
+        assert_eq!(plan, expected);
     }
 
     // ========================================================================

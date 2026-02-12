@@ -11,10 +11,7 @@ fn literal_to_scalar(lit: &Literal) -> ScalarValue {
         Literal::Float(f) => ScalarValue::Floating(*f),
         Literal::String(s) => ScalarValue::String(s.clone()),
         Literal::Bool(b) => ScalarValue::Boolean(*b),
-        Literal::Null => {
-            // TODO: Add proper NULL support to ScalarValue
-            panic!("NULL literals not yet supported")
-        }
+        Literal::Null => ScalarValue::Null,
     }
 }
 

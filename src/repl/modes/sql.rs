@@ -9,6 +9,7 @@ fn plain_value(v: &ScalarValue) -> String {
         ScalarValue::Floating(f) => f.to_string(),
         ScalarValue::Boolean(b) => b.to_string(),
         ScalarValue::String(s) => format!("\"{}\"", s),
+        ScalarValue::Null => "NULL".to_string(),
     }
 }
 

@@ -5,6 +5,7 @@ pub enum ScalarValue {
     Floating(f64),
     Boolean(bool),
     String(String),
+    Null,
 }
 
 impl Eq for ScalarValue {}
@@ -20,6 +21,8 @@ macro_rules! numeric_ops {
                 let f_op = t::<f64>::$function;
 
                 match (self, rhs) {
+                    // NULL propagation: any operation with NULL returns NULL
+                    (ScalarValue::Null, _) | (_, ScalarValue::Null) => ScalarValue::Null,
                     (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => {
                         ScalarValue::Integer(i_op(lhs, rhs))
                     }
@@ -54,6 +57,7 @@ impl core::ops::Neg for ScalarValue {
 
     fn neg(self) -> Self::Output {
         match self {
+            ScalarValue::Null => ScalarValue::Null,
             ScalarValue::Integer(v) => ScalarValue::Integer(-v),
             ScalarValue::Floating(v) => ScalarValue::Floating(-v),
             ScalarValue::Boolean(_) | ScalarValue::String(_) => {
@@ -68,6 +72,8 @@ impl core::ops::Add for ScalarValue {
 
     fn add(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
+            // NULL propagation: any operation with NULL returns NULL
+            (ScalarValue::Null, _) | (_, ScalarValue::Null) => ScalarValue::Null,
             (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => {
                 ScalarValue::Integer(lhs + rhs)
             }
@@ -94,6 +100,8 @@ impl core::ops::Add for ScalarValue {
 impl PartialOrd for ScalarValue {
     fn partial_cmp(&self, rhs: &Self) -> Option<std::cmp::Ordering> {
         match (self, rhs) {
+            // NULL comparison always returns None (SQL NULL semantics)
+            (ScalarValue::Null, _) | (_, ScalarValue::Null) => None,
             (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => lhs.partial_cmp(rhs),
             (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => lhs.partial_cmp(rhs),
             (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => {
@@ -114,6 +122,8 @@ impl PartialOrd for ScalarValue {
 impl PartialEq for ScalarValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            // NULL is never equal to anything, including itself (SQL semantics)
+            (Self::Null, _) | (_, Self::Null) => false,
             (Self::Integer(left), Self::Integer(right)) => left == right,
             (Self::Boolean(left), Self::Boolean(right)) => left == right,
             (Self::Floating(left), Self::Floating(right)) => (left - right).abs() < 0.00001,
@@ -127,6 +137,8 @@ impl PartialEq for ScalarValue {
 impl PartialEq for ScalarValue {
     fn eq(&self, right: &Self) -> bool {
         match (self, right) {
+            // NULL is never equal to anything, including itself (SQL semantics)
+            (Self::Null, _) | (_, Self::Null) => false,
             (Self::Integer(left), Self::Integer(right)) => left == right,
             (Self::Boolean(left), Self::Boolean(right)) => left == right,
             (Self::Floating(left), Self::Floating(right)) => left == right,
@@ -144,6 +156,7 @@ impl std::fmt::Display for ScalarValue {
             ScalarValue::Floating(fl) => write!(f, "{}", fl.to_string().green()),
             ScalarValue::Boolean(b) => write!(f, "{}", b.to_string().green()),
             ScalarValue::String(s) => write!(f, "{}", format!("\"{}\"", s).green()),
+            ScalarValue::Null => write!(f, "{}", "NULL".dimmed()),
         }
     }
 }
@@ -205,5 +218,52 @@ mod tests {
         let i = ScalarValue::Integer(42);
 
         assert!(s.partial_cmp(&i).is_none());
+    }
+
+    #[test]
+    fn test_null_arithmetic() {
+        let null = ScalarValue::Null;
+        let one = ScalarValue::Integer(1);
+
+        // NULL + 1 = NULL
+        assert!(matches!(null.clone() + one.clone(), ScalarValue::Null));
+        // 1 + NULL = NULL
+        assert!(matches!(one.clone() + null.clone(), ScalarValue::Null));
+        // NULL * 2 = NULL
+        assert!(matches!(
+            null.clone() * ScalarValue::Integer(2),
+            ScalarValue::Null
+        ));
+        // NULL - NULL = NULL
+        assert!(matches!(null.clone() - null.clone(), ScalarValue::Null));
+    }
+
+    #[test]
+    fn test_null_comparison() {
+        let null = ScalarValue::Null;
+        let one = ScalarValue::Integer(1);
+
+        // NULL compared to anything returns None (SQL NULL semantics)
+        assert_eq!(null.partial_cmp(&null), None);
+        assert_eq!(null.partial_cmp(&one), None);
+        assert_eq!(one.partial_cmp(&null), None);
+    }
+
+    #[test]
+    fn test_null_equality() {
+        let null = ScalarValue::Null;
+        let one = ScalarValue::Integer(1);
+
+        // In SQL, NULL = NULL is NULL (not true), so PartialEq should return false
+        assert_ne!(null, null);
+        assert_ne!(null, one);
+        assert_ne!(one, null);
+    }
+
+    #[test]
+    fn test_null_negation() {
+        let null = ScalarValue::Null;
+        // -NULL = NULL
+        assert!(matches!(-null, ScalarValue::Null));
     }
 }

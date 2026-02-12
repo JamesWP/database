@@ -10,6 +10,7 @@ fn format_scalar(val: &ScalarValue) -> String {
         ScalarValue::Floating(f) => f.to_string(),
         ScalarValue::String(s) => s.clone(),
         ScalarValue::Boolean(b) => b.to_string(),
+        ScalarValue::Null => "NULL".to_string(),
     }
 }
 

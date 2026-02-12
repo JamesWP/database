@@ -641,6 +641,10 @@ impl Parser {
                 self.input.advance();
                 Ok(ast::Expression::Value(ast::ScalarValue::StringLiteral(s)))
             }
+            lexer::Type::Null => {
+                self.input.advance();
+                Ok(ast::Expression::Value(ast::ScalarValue::Null))
+            }
             lexer::Type::LeftParen => {
                 self.input.advance();
                 let expr = self.parse_expression()?;

@@ -301,6 +301,10 @@ impl Engine {
                             let value = ScalarValue::String(s);
                             *self.registers.get_mut(*reg) = RegisterValue::ScalarValue(value);
                         }
+                        serde_json::Value::Null => {
+                            *self.registers.get_mut(*reg) =
+                                RegisterValue::ScalarValue(ScalarValue::Null);
+                        }
                         _ => todo!(),
                     }
                 }
@@ -333,6 +337,7 @@ impl Engine {
                             }
                             ScalarValue::Boolean(b) => serde_json::Value::Bool(*b),
                             ScalarValue::String(s) => serde_json::Value::String(s.clone()),
+                            ScalarValue::Null => serde_json::Value::Null,
                         }
                     })
                     .collect();

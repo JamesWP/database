@@ -65,6 +65,7 @@ pub enum ScalarValue {
     StringLiteral(String),
     Identifier(String),
     MultiPartIdentifier(Box<Expression>, String),
+    Null,
 }
 
 #[derive(Debug)]
@@ -154,6 +155,7 @@ impl Expression {
             Expression::Value(ScalarValue::FloatingNumber(_)) => vec![],
             Expression::Value(ScalarValue::IntegerNumber(_)) => vec![],
             Expression::Value(ScalarValue::StringLiteral(_)) => vec![],
+            Expression::Value(ScalarValue::Null) => vec![],
             Expression::UnaryOp { expression, .. } => expression.get_column_references(),
             Expression::BinaryOp { lhs, rhs, .. } => {
                 let mut lhs = lhs.get_column_references();
