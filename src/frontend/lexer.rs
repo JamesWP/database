@@ -67,6 +67,8 @@ pub enum Type {
     Insert,
     Into,
     Values,
+    Update,
+    Set,
 
     #[allow(dead_code)]
     Error(Error),
@@ -432,7 +434,14 @@ impl<'a> Lexer<'a> {
         let ident = ident.as_str();
 
         let tipe = match ident.chars().next().unwrap() {
-            's' => match_reserved(ident, "select", Type::Select),
+            's' => match ident.chars().nth(1) {
+                Some('e') => match ident.chars().nth(2) {
+                    Some('l') => match_reserved(ident, "select", Type::Select),
+                    Some('t') => match_reserved(ident, "set", Type::Set),
+                    _ => Type::Identifier(ident.to_owned()),
+                },
+                _ => Type::Identifier(ident.to_owned()),
+            },
             'a' => match ident.chars().nth(1) {
                 Some('s') => match_reserved(ident, "as", Type::As),
                 Some('n') => match_reserved(ident, "and", Type::And),
@@ -467,6 +476,7 @@ impl<'a> Lexer<'a> {
                 Some('e') => match_reserved(ident, "text", Type::Text),
                 _ => Type::Identifier(ident.to_owned()),
             },
+            'u' => match_reserved(ident, "update", Type::Update),
             'v' => match_reserved(ident, "values", Type::Values),
             'w' => match_reserved(ident, "where", Type::Where),
             _ => Type::Identifier(ident.to_owned()),

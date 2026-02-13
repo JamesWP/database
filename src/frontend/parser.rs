@@ -83,6 +83,14 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::Update, lexer::Type::Update) => {
+                self.advance();
+                Ok(())
+            }
+            (Expect::Set, lexer::Type::Set) => {
+                self.advance();
+                Ok(())
+            }
             // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
@@ -119,6 +127,8 @@ pub enum Expect {
     Insert,
     Into,
     Values,
+    Update,
+    Set,
 }
 
 impl lexer::Type {
@@ -166,6 +176,7 @@ impl Parser {
                 self.parse_create_table_statement()?,
             )),
             lexer::Type::Insert => Ok(ast::Statement::Insert(self.parse_insert_statement()?)),
+            lexer::Type::Update => Ok(ast::Statement::Update(self.parse_update_statement()?)),
             _ => todo!(),
         }
     }
@@ -219,6 +230,49 @@ impl Parser {
         }
         self.input.expect(Expect::RightParen)?;
         Ok(exprs)
+    }
+
+    fn parse_update_statement(&mut self) -> ParseResult<ast::UpdateStatement> {
+        self.input.expect(Expect::Update)?;
+        let table_name = self.parse_identifier()?;
+        self.input.expect(Expect::Set)?;
+
+        // Parse SET assignments: col1=expr1, col2=expr2, ...
+        let mut assignments = Vec::new();
+        loop {
+            let column_name = self.parse_identifier()?;
+            // Expect '=' token
+            if !matches!(self.input.peek(), lexer::Type::Equal) {
+                return Err(ParseError::UnexpectedToken(
+                    Expect::PrimaryExpression, // Reuse this for '='
+                    self.input.peek(),
+                ));
+            }
+            self.input.advance();
+            let expr = self.parse_expression()?;
+            assignments.push((column_name, expr));
+
+            // Check for more assignments
+            if matches!(self.input.peek(), lexer::Type::Comma) {
+                self.input.advance();
+            } else {
+                break;
+            }
+        }
+
+        // Optional WHERE clause
+        let filter = if matches!(self.input.peek(), lexer::Type::Where) {
+            self.input.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        Ok(ast::UpdateStatement {
+            table_name,
+            assignments,
+            filter,
+        })
     }
 
     fn parse_create_table_statement(&mut self) -> ParseResult<ast::CreateTableStatement> {

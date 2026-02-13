@@ -702,6 +702,124 @@ pub fn codegen_insert(
     }
 }
 
+/// Generate bytecode for an Update node.
+///
+/// Update scans a table, evaluates assignments for matching rows, and rewrites them.
+/// Uses the same key for reinsert (which overwrites existing value).
+/// Returns row count of updated rows.
+#[allow(clippy::too_many_arguments)]
+pub fn codegen_update(
+    rootpage: u32,
+    table_columns: &[usize],
+    assignments: &[(usize, PlanExpr)],
+    filter: &Option<PlanExpr>,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    let cursor_reg = ctx.registers.alloc();
+    let key_reg = ctx.registers.alloc();
+    let counter_reg = ctx.registers.alloc();
+    let flag_reg = ctx.registers.alloc();
+
+    // Allocate registers for reading all table columns
+    let read_regs = ctx.registers.alloc_block(table_columns.len());
+
+    // INIT: open cursor, position to first, init counter
+    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
+    ctx.init_emitter
+        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
+    ctx.init_emitter
+        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
+
+    // BODY: scan loop
+    let loop_start = ctx.body_emitter.create_label();
+    let loop_done = ctx.body_emitter.create_label();
+
+    ctx.body_emitter.bind_label(loop_start);
+    ctx.body_emitter
+        .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
+    ctx.body_emitter.emit_goto_if_false(loop_done, flag_reg);
+
+    // Read key and all columns
+    ctx.body_emitter
+        .emit(Operation::ReadKey(key_reg, cursor_reg));
+    ctx.body_emitter
+        .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
+
+    // Evaluate filter if present
+    if let Some(filter_expr) = filter {
+        let filter_reg = {
+            let mut expr_ctx = ExprContext {
+                emitter: &mut ctx.body_emitter,
+                registers: &mut ctx.registers,
+            };
+            compile_expr(filter_expr, &read_regs, &mut expr_ctx)
+        };
+        let skip_label = ctx.body_emitter.create_label();
+        ctx.body_emitter.emit_goto_if_false(skip_label, filter_reg);
+
+        // Filter matched: compute new values and update
+        let new_values = read_regs.clone();
+        for (col_idx, expr) in assignments {
+            let value_reg = {
+                let mut expr_ctx = ExprContext {
+                    emitter: &mut ctx.body_emitter,
+                    registers: &mut ctx.registers,
+                };
+                compile_expr(expr, &read_regs, &mut expr_ctx)
+            };
+            ctx.body_emitter
+                .emit(Operation::CopyValue(new_values[*col_idx], value_reg));
+        }
+
+        // Rewrite with same key
+        ctx.body_emitter
+            .emit(Operation::WriteCursor(cursor_reg, key_reg, new_values));
+        ctx.body_emitter
+            .emit(Operation::IncrementValue(counter_reg));
+
+        ctx.body_emitter.bind_label(skip_label);
+    } else {
+        // No filter: update all rows
+        let new_values = read_regs.clone();
+        for (col_idx, expr) in assignments {
+            let value_reg = {
+                let mut expr_ctx = ExprContext {
+                    emitter: &mut ctx.body_emitter,
+                    registers: &mut ctx.registers,
+                };
+                compile_expr(expr, &read_regs, &mut expr_ctx)
+            };
+            ctx.body_emitter
+                .emit(Operation::CopyValue(new_values[*col_idx], value_reg));
+        }
+
+        ctx.body_emitter
+            .emit(Operation::WriteCursor(cursor_reg, key_reg, new_values));
+        ctx.body_emitter
+            .emit(Operation::IncrementValue(counter_reg));
+    }
+
+    // Advance to next row
+    ctx.body_emitter
+        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
+    ctx.body_emitter.emit_goto(loop_start);
+
+    // Loop done: yield count
+    ctx.body_emitter.bind_label(loop_done);
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // After yielding, halt
+    let update_done = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(update_done);
+    ctx.body_emitter.emit_goto(cont.on_done);
+
+    NodeOutput {
+        next: update_done,
+        output_regs: vec![counter_reg],
+    }
+}
+
 /// Main codegen dispatch function.
 /// Routes to the appropriate codegen based on plan type.
 pub fn codegen(
@@ -722,6 +840,12 @@ pub fn codegen(
             table_columns,
             input,
         } => codegen_insert(*rootpage, table_columns, input, cont, ctx),
+        LogicalPlan::Update {
+            rootpage,
+            table_columns,
+            assignments,
+            filter,
+        } => codegen_update(*rootpage, table_columns, assignments, filter, cont, ctx),
     }
 }
 

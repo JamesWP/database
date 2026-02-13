@@ -143,6 +143,16 @@ pub enum LogicalPlan {
         table_columns: Vec<usize>,
         input: Box<LogicalPlan>,
     },
+
+    /// Update rows in a table
+    /// Scans table, applies filter, updates matching rows.
+    /// Output: single integer column containing the count of rows updated.
+    Update {
+        rootpage: u32,
+        table_columns: Vec<usize>,
+        assignments: Vec<(usize, PlanExpr)>, // (column_index, new_value_expr)
+        filter: Option<PlanExpr>,
+    },
     // Future: Join { left: Box<LogicalPlan>, right: Box<LogicalPlan>, ... }
 }
 
@@ -195,6 +205,7 @@ pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanErro
         Statement::Select(select) => plan_select(select, btree),
         Statement::CreateTable(_) => Err(PlanError::UnsupportedStatement),
         Statement::Insert(insert) => plan_insert(insert, btree),
+        Statement::Update(update) => plan_update(update, btree),
     }
 }
 
@@ -359,6 +370,55 @@ fn plan_insert(insert: ast::InsertStatement, btree: &BTree) -> Result<LogicalPla
         rootpage: table.rootpage,
         table_columns,
         input: Box::new(LogicalPlan::Values { rows }),
+    })
+}
+
+fn plan_update(update: ast::UpdateStatement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
+    let table = resolve_table(&update.table_name, btree)?;
+
+    // Build column mapping: all table columns in order
+    let mut column_map = HashMap::new();
+    for (i, col) in table.columns.iter().enumerate() {
+        column_map.insert(col.name.clone(), i);
+    }
+
+    // Create expression context
+    let ctx = ExprContext {
+        table_ref: &update.table_name,
+        columns: &column_map,
+    };
+
+    // Resolve assignment column names to indices and plan their expressions
+    let mut assignments = Vec::new();
+    for (col_name, expr) in update.assignments {
+        let col_idx = table
+            .columns
+            .iter()
+            .position(|c| c.name == col_name)
+            .ok_or_else(|| PlanError::ColumnNotFound {
+                table: update.table_name.clone(),
+                column: col_name.clone(),
+            })?;
+
+        // Plan the expression (column refs refer to table schema)
+        let expr_plan = convert_expr(&expr, &ctx)?;
+        assignments.push((col_idx, expr_plan));
+    }
+
+    // Plan the filter expression if present
+    let filter = match update.filter {
+        Some(expr) => Some(convert_expr(&expr, &ctx)?),
+        None => None,
+    };
+
+    // Get all table column indices
+    let table_columns: Vec<usize> = (0..table.columns.len()).collect();
+
+    Ok(LogicalPlan::Update {
+        rootpage: table.rootpage,
+        table_columns,
+        assignments,
+        filter,
     })
 }
 
