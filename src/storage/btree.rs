@@ -225,6 +225,45 @@ where
                 .unwrap();
         }
     }
+
+    /// Delete a key from the B-tree.
+    /// If the key exists, it is removed. If not, this is a no-op.
+    /// Cursor state is invalidated after deletion.
+    pub fn delete(&mut self, key: u64) {
+        // Use find to position the cursor on the target leaf
+        let found = self.find(key);
+
+        if !found {
+            // Key doesn't exist, nothing to delete
+            return;
+        }
+
+        // Get the leaf page and cell index where the key was found
+        let (leaf_page_idx, cell_index) = self.cursor_state.leaf_iterator.unwrap();
+
+        // Load the leaf page
+        let mut page: NodePage = self.pager.get_and_decode(leaf_page_idx);
+
+        // Remove the cell from the leaf
+        match &mut page {
+            NodePage::Leaf(leaf) => {
+                // TODO: Free overflow pages if the deleted cell had them
+                // For v1, we accept leaked overflow pages
+                leaf.remove_cell(cell_index);
+            }
+            _ => panic!("Expected leaf node after find()"),
+        }
+
+        // Write the modified page back
+        // Note: We skip rebalancing for v1 - sparse pages are acceptable
+        self.pager
+            .encode_and_set(leaf_page_idx, page)
+            .expect("Deletion should not cause page overflow");
+
+        // Invalidate cursor state - caller must reposition after delete
+        self.cursor_state.stack.clear();
+        self.cursor_state.leaf_iterator = None;
+    }
 }
 
 /// Imutable cursor implementation
@@ -1473,6 +1512,184 @@ mod test {
             let mut cursor = cursor_handle.open_readonly();
             let found = cursor.find(4);
             assert!(!found, "find() should return false for non-existent key");
+        }
+    }
+
+    #[test]
+    fn test_btree_delete_single() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert a single key-value pair
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(42, b"hello".to_vec());
+        }
+
+        // Verify it exists
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            let found = cursor.find(42);
+            assert!(found, "Key 42 should exist before deletion");
+        }
+
+        // Delete the key
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.delete(42);
+        }
+
+        // Verify it's gone
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            let found = cursor.find(42);
+            assert!(!found, "Key 42 should not exist after deletion");
+        }
+    }
+
+    #[test]
+    fn test_btree_delete_nonexistent() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert some keys
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(10, b"ten".to_vec());
+            cursor.insert(20, b"twenty".to_vec());
+        }
+
+        // Try to delete a non-existent key (should be no-op)
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.delete(15); // Key 15 doesn't exist
+        }
+
+        // Verify original keys still exist
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            assert!(cursor.find(10), "Key 10 should still exist");
+            assert!(cursor.find(20), "Key 20 should still exist");
+        }
+    }
+
+    #[test]
+    fn test_btree_delete_from_multi_page() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert enough keys to force splits (200 keys should be sufficient)
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=200u64 {
+                let value = format!("value_{}", i).into_bytes();
+                cursor.insert(i, value);
+            }
+        }
+
+        // Delete a key from the middle
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.delete(100);
+        }
+
+        // Verify key 100 is gone but neighbors exist
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            assert!(cursor.find(99), "Key 99 should still exist");
+            assert!(!cursor.find(100), "Key 100 should be deleted");
+            assert!(cursor.find(101), "Key 101 should still exist");
+        }
+    }
+
+    #[test]
+    fn test_btree_delete_then_scan() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1, 2, 3, 4, 5
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=5u64 {
+                cursor.insert(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // Delete key 3
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.delete(3);
+        }
+
+        // Scan and verify we see 1, 2, 4, 5 (not 3)
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+
+            let mut keys = Vec::new();
+            while let Some(entry) = cursor.get_entry() {
+                keys.push(entry.key());
+                cursor.next();
+            }
+
+            assert_eq!(
+                keys,
+                vec![1, 2, 4, 5],
+                "Should see all keys except deleted key 3"
+            );
+        }
+    }
+
+    #[test]
+    fn test_btree_delete_all() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1 through 10
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=10u64 {
+                cursor.insert(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // Delete all keys one by one
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=10u64 {
+                cursor.delete(i);
+            }
+        }
+
+        // Verify tree is empty
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            assert!(
+                cursor.get_entry().is_none(),
+                "Tree should be empty after deleting all keys"
+            );
         }
     }
 }

@@ -133,6 +133,12 @@ impl LeafNodePage {
         self.cells.insert(index, cell);
     }
 
+    pub fn remove_cell(&mut self, index: usize) {
+        if index < self.cells.len() {
+            self.cells.remove(index);
+        }
+    }
+
     pub fn get_item_at_index<'a>(&'a self, entry_index: usize) -> Option<&'a Cell> {
         self.cells.get(entry_index)
     }
