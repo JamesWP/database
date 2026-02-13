@@ -41,10 +41,13 @@ The SQL test runner (`tests/sql_runner.rs`) executes `.sql` scripts and compares
    SQL_TEST_FILE=where_clauses cargo test test_sql_scripts
    ```
 
-3. **Test Update Mode**: Auto-update `.expected` files from actual output (coming in Item 16)
+3. **Test Update Mode**: Auto-update `.expected` files from actual output
    ```bash
    UPDATE_EXPECTED=1 cargo test test_sql_scripts
    ```
+   - When mismatches are detected, writes actual output to `.expected` files
+   - Prints summary of updated files and suggests `git diff` for review
+   - Useful for quickly updating tests after intentional behavior changes
 
 **Example error test** (`tests/sql/error_cases.sql`):
 ```sql

@@ -18,16 +18,15 @@ fn format_row(row: &[ScalarValue]) -> String {
     row.iter().map(format_scalar).collect::<Vec<_>>().join("\t")
 }
 
-fn run_sql_test(sql_path: PathBuf, expected_path: PathBuf) {
+/// Execute SQL script and return output lines
+fn execute_sql_script(sql_path: &PathBuf) -> Vec<String> {
     // Create a temporary database
     let temp_file = tempfile::NamedTempFile::new().unwrap();
     let temp_path = temp_file.path().to_str().unwrap();
     let mut btree = BTree::new(temp_path);
 
-    // Read SQL script and expected output
-    let sql_content = fs::read_to_string(&sql_path).unwrap();
-    let expected_content = fs::read_to_string(&expected_path).unwrap();
-    let expected_lines: Vec<&str> = expected_content.lines().collect();
+    // Read SQL script
+    let sql_content = fs::read_to_string(sql_path).unwrap();
 
     // Execute each SQL statement and collect output
     let mut actual_output = Vec::new();
@@ -65,28 +64,38 @@ fn run_sql_test(sql_path: PathBuf, expected_path: PathBuf) {
         }
     }
 
-    // Compare
+    actual_output
+}
+
+/// Compare actual output with expected output, return error message if mismatch
+fn compare_output(
+    actual_output: &[String],
+    expected_lines: &[&str],
+    test_name: &str,
+) -> Result<(), String> {
+    // Check line count
     if actual_output.len() != expected_lines.len() {
-        panic!(
+        return Err(format!(
             "Output line count mismatch in {:?}:\nExpected {} lines, got {} lines\n\nExpected:\n{}\n\nActual:\n{}",
-            sql_path.file_name().unwrap(),
+            test_name,
             expected_lines.len(),
             actual_output.len(),
-            expected_content,
+            expected_lines.join("\n"),
             actual_output.join("\n")
-        );
+        ));
     }
 
+    // Check each line
     for (i, (actual, expected)) in actual_output.iter().zip(expected_lines.iter()).enumerate() {
         if expected.starts_with("ERROR:") {
             // Error line - check that actual is also an error
             if !actual.starts_with("ERROR:") {
-                panic!(
+                return Err(format!(
                     "Output mismatch at line {} in {:?}:\nExpected error but got: {}",
                     i + 1,
-                    sql_path.file_name().unwrap(),
+                    test_name,
                     actual
-                );
+                ));
             }
             // Extract pattern and actual error message
             let pattern = expected.strip_prefix("ERROR:").unwrap().trim();
@@ -97,26 +106,54 @@ fn run_sql_test(sql_path: PathBuf, expected_path: PathBuf) {
                 .to_lowercase()
                 .contains(&pattern.to_lowercase())
             {
-                panic!(
+                return Err(format!(
                     "Error pattern mismatch at line {} in {:?}:\nExpected pattern: {}\nActual error:    {}",
-                    i + 1,
-                    sql_path.file_name().unwrap(),
-                    pattern,
-                    actual_error
-                );
+                    i + 1, test_name, pattern, actual_error
+                ));
             }
         } else {
             // Normal line - require exact match
             if actual != expected {
-                panic!(
+                return Err(format!(
                     "Output mismatch at line {} in {:?}:\nExpected: {}\nActual:   {}",
                     i + 1,
-                    sql_path.file_name().unwrap(),
+                    test_name,
                     expected,
                     actual
-                );
+                ));
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Update expected file with actual output
+fn update_expected_file(expected_path: &PathBuf, actual_output: &[String]) {
+    fs::write(expected_path, actual_output.join("\n") + "\n").unwrap();
+}
+
+/// Run a single SQL test: execute, compare, and optionally update
+fn run_sql_test(sql_path: PathBuf, expected_path: PathBuf) -> Option<String> {
+    let update_expected = std::env::var("UPDATE_EXPECTED").is_ok();
+
+    // Execute SQL script
+    let actual_output = execute_sql_script(&sql_path);
+
+    if update_expected {
+        // Update mode: write actual output to expected file
+        update_expected_file(&expected_path, &actual_output);
+        let filename = expected_path.file_name().unwrap().to_str().unwrap();
+        println!("Updated: {}", filename);
+        Some(filename.to_string())
+    } else {
+        // Normal mode: compare and panic if mismatch
+        let expected_content = fs::read_to_string(&expected_path).unwrap();
+        let expected_lines: Vec<&str> = expected_content.lines().collect();
+        let test_name = sql_path.file_name().unwrap().to_str().unwrap();
+
+        compare_output(&actual_output, &expected_lines, test_name).unwrap();
+        None
     }
 }
 
@@ -163,8 +200,20 @@ fn test_sql_scripts() {
     }
 
     // Run each test
+    let mut updated_files = Vec::new();
     for (sql_path, expected_path) in test_files {
         println!("Running SQL test: {:?}", sql_path.file_name().unwrap());
-        run_sql_test(sql_path, expected_path);
+        if let Some(updated_file) = run_sql_test(sql_path, expected_path) {
+            updated_files.push(updated_file);
+        }
+    }
+
+    // Print summary of updated files
+    if !updated_files.is_empty() {
+        println!("\nUpdated {} .expected file(s):", updated_files.len());
+        for file in &updated_files {
+            println!("  - {}", file);
+        }
+        println!("\nReview changes with: git diff tests/sql/");
     }
 }
