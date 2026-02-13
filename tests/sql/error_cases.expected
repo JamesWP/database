@@ -1,0 +1,8 @@
+Table 'users' created
+ERROR: already exists
+ERROR: TableNotFound
+1
+ERROR: ColumnCountMismatch
+ERROR: ColumnCountMismatch
+ERROR: Parse error
+ERROR: Parse error

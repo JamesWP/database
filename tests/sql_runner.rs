@@ -24,13 +24,15 @@ fn run_sql_test(sql_path: PathBuf, expected_path: PathBuf) {
     let temp_path = temp_file.path().to_str().unwrap();
     let mut btree = BTree::new(temp_path);
 
-    // Read SQL script
+    // Read SQL script and expected output
     let sql_content = fs::read_to_string(&sql_path).unwrap();
+    let expected_content = fs::read_to_string(&expected_path).unwrap();
+    let expected_lines: Vec<&str> = expected_content.lines().collect();
 
     // Execute each SQL statement and collect output
     let mut actual_output = Vec::new();
 
-    for (line_num, line) in sql_content.lines().enumerate() {
+    for (_line_num, line) in sql_content.lines().enumerate() {
         let line = line.trim();
 
         // Skip empty lines and comments
@@ -57,19 +59,11 @@ fn run_sql_test(sql_path: PathBuf, expected_path: PathBuf) {
                 }
             },
             Err(e) => {
-                panic!(
-                    "SQL execution failed at line {}: {}\nSQL: {}",
-                    line_num + 1,
-                    e,
-                    line
-                );
+                // Collect error for later validation
+                actual_output.push(format!("ERROR: {}", e));
             }
         }
     }
-
-    // Read expected output
-    let expected_content = fs::read_to_string(&expected_path).unwrap();
-    let expected_lines: Vec<&str> = expected_content.lines().collect();
 
     // Compare
     if actual_output.len() != expected_lines.len() {
@@ -84,14 +78,44 @@ fn run_sql_test(sql_path: PathBuf, expected_path: PathBuf) {
     }
 
     for (i, (actual, expected)) in actual_output.iter().zip(expected_lines.iter()).enumerate() {
-        if actual != expected {
-            panic!(
-                "Output mismatch at line {} in {:?}:\nExpected: {}\nActual:   {}",
-                i + 1,
-                sql_path.file_name().unwrap(),
-                expected,
-                actual
-            );
+        if expected.starts_with("ERROR:") {
+            // Error line - check that actual is also an error
+            if !actual.starts_with("ERROR:") {
+                panic!(
+                    "Output mismatch at line {} in {:?}:\nExpected error but got: {}",
+                    i + 1,
+                    sql_path.file_name().unwrap(),
+                    actual
+                );
+            }
+            // Extract pattern and actual error message
+            let pattern = expected.strip_prefix("ERROR:").unwrap().trim();
+            let actual_error = actual.strip_prefix("ERROR:").unwrap().trim();
+
+            // Check if actual error contains pattern (case-insensitive substring match)
+            if !actual_error
+                .to_lowercase()
+                .contains(&pattern.to_lowercase())
+            {
+                panic!(
+                    "Error pattern mismatch at line {} in {:?}:\nExpected pattern: {}\nActual error:    {}",
+                    i + 1,
+                    sql_path.file_name().unwrap(),
+                    pattern,
+                    actual_error
+                );
+            }
+        } else {
+            // Normal line - require exact match
+            if actual != expected {
+                panic!(
+                    "Output mismatch at line {} in {:?}:\nExpected: {}\nActual:   {}",
+                    i + 1,
+                    sql_path.file_name().unwrap(),
+                    expected,
+                    actual
+                );
+            }
         }
     }
 }
