@@ -27,6 +27,39 @@ cargo fmt -- --check     # Check if code is formatted
 - **Integration tests**: Located in `tests/` directory
 - **SQL tests**: Automated end-to-end tests in `tests/sql/*.sql` with `.expected` files
 
+**SQL Test Runner Features:**
+
+The SQL test runner (`tests/sql_runner.rs`) executes `.sql` scripts and compares output against `.expected` files:
+
+1. **Error Testing**: Test expected errors using `ERROR: <pattern>` syntax in `.expected` files
+   - Pattern matching is case-insensitive substring match
+   - Example: `ERROR: already exists` matches "Table 'users' already exists"
+   - Enables testing error handling paths and documenting expected error messages
+
+2. **Single Test Execution**: Run a specific test file for faster iteration
+   ```bash
+   SQL_TEST_FILE=where_clauses cargo test test_sql_scripts
+   ```
+
+3. **Test Update Mode**: Auto-update `.expected` files from actual output (coming in Item 16)
+   ```bash
+   UPDATE_EXPECTED=1 cargo test test_sql_scripts
+   ```
+
+**Example error test** (`tests/sql/error_cases.sql`):
+```sql
+CREATE TABLE users (id INTEGER, name TEXT);
+CREATE TABLE users (id INTEGER, name TEXT);  -- Duplicate table
+SELECT id FROM nonexistent;                   -- Missing table
+```
+
+**Expected output** (`tests/sql/error_cases.expected`):
+```
+Table 'users' created
+ERROR: already exists
+ERROR: TableNotFound
+```
+
 ## Development Practices
 
 ### Working Through Implementation Phases

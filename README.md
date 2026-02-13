@@ -11,6 +11,32 @@ cargo test               # Run all tests
 cargo run -- <db_file>   # Run interactive CLI
 ```
 
+## Testing
+
+The project includes comprehensive automated tests:
+
+- **Unit tests**: 201 tests embedded in source files
+- **SQL integration tests**: End-to-end tests in `tests/sql/` with `.sql` scripts and `.expected` output files
+
+**Run a single SQL test** (faster iteration during development):
+```bash
+SQL_TEST_FILE=where_clauses cargo test test_sql_scripts
+```
+
+**Test error cases**: The SQL test runner supports testing expected errors using `ERROR: <pattern>` syntax:
+```sql
+-- error_cases.sql
+CREATE TABLE users (id INTEGER);
+CREATE TABLE users (id INTEGER);  -- Should error
+```
+```
+-- error_cases.expected
+Table 'users' created
+ERROR: already exists
+```
+
+**See also**: [`manual_tests/`](manual_tests/) for manual end-to-end test scripts
+
 ## Architecture
 
 ```

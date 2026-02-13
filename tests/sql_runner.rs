@@ -124,6 +124,9 @@ fn run_sql_test(sql_path: PathBuf, expected_path: PathBuf) {
 fn test_sql_scripts() {
     let sql_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sql");
 
+    // Check if we should run a single test
+    let single_test = std::env::var("SQL_TEST_FILE").ok();
+
     // Discover all .sql files
     let entries = fs::read_dir(&sql_dir).unwrap();
     let mut test_files = Vec::new();
@@ -133,6 +136,14 @@ fn test_sql_scripts() {
         let path = entry.path();
 
         if path.extension().and_then(|s| s.to_str()) == Some("sql") {
+            // Filter by filename if SQL_TEST_FILE is set
+            if let Some(ref filter) = single_test {
+                let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if file_stem != filter {
+                    continue;
+                }
+            }
+
             let expected_path = path.with_extension("expected");
             if expected_path.exists() {
                 test_files.push((path, expected_path));
@@ -144,7 +155,11 @@ fn test_sql_scripts() {
     test_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     if test_files.is_empty() {
-        panic!("No SQL test files found in {:?}", sql_dir);
+        if let Some(filter) = single_test {
+            panic!("No SQL test file found matching '{}'", filter);
+        } else {
+            panic!("No SQL test files found in {:?}", sql_dir);
+        }
     }
 
     // Run each test
