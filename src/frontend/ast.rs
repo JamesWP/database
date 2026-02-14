@@ -60,6 +60,19 @@ pub struct SelectStatement {
     pub from: NamedTupleSource,
     pub filter: Option<Expression>,
     pub limit: Option<Expression>,
+    pub order_by: Option<Vec<OrderByClause>>,
+}
+
+#[derive(Debug)]
+pub struct OrderByClause {
+    pub expression: Expression,
+    pub direction: OrderDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OrderDirection {
+    Asc,
+    Desc,
 }
 
 #[derive(Debug)]

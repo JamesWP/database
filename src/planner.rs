@@ -73,6 +73,13 @@ pub enum Literal {
     Null,
 }
 
+/// Sort key specification for Sort node
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortKey {
+    pub expr: PlanExpr,
+    pub descending: bool,
+}
+
 /// Planner's expression type - like ast::Expression but with resolved columns
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanExpr {
@@ -121,6 +128,14 @@ pub enum LogicalPlan {
     /// Pass-through: outputs all columns from its child unchanged.
     /// Only emits up to `count` rows.
     Limit { input: Box<LogicalPlan>, count: u64 },
+
+    /// Sort rows based on sort keys (1 input)
+    /// Pass-through: outputs all columns from its child unchanged.
+    /// Materializes all rows, sorts them, then yields in sorted order.
+    Sort {
+        input: Box<LogicalPlan>,
+        sort_keys: Vec<SortKey>,
+    },
 
     /// Count rows from input (1 input)
     /// Consumes all rows from child and outputs a single row with the count.
@@ -258,7 +273,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     // 2. Look up table in catalog
     let table = resolve_table(&table_name, btree)?;
 
-    // 3. Collect all column references from SELECT and WHERE
+    // 3. Collect all column references from SELECT, WHERE, and ORDER BY
     let mut columns_needed = HashSet::new();
     let has_wildcard = select
         .columns
@@ -277,6 +292,11 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     }
     if let Some(ref filter) = select.filter {
         collect_columns(filter, &mut columns_needed);
+    }
+    if let Some(ref order_by) = select.order_by {
+        for clause in order_by {
+            collect_columns(&clause.expression, &mut columns_needed);
+        }
     }
 
     // 4. Build column mapping
@@ -329,6 +349,33 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
         input: Box::new(plan),
         columns: project_exprs,
     };
+
+    // Add Sort if ORDER BY clause exists
+    // Note: ORDER BY expressions are resolved against the projected output,
+    // so we need a new context based on the projection
+    if let Some(ref order_by) = select.order_by {
+        // Build context for ORDER BY expressions - they refer to projected columns
+        let projected_ctx = ExprContext {
+            table_ref: &table_ref,
+            columns: &mapping.column_map,
+        };
+
+        let sort_keys: Result<Vec<SortKey>, _> = order_by
+            .iter()
+            .map(|clause| {
+                let expr = convert_expr(&clause.expression, &projected_ctx)?;
+                Ok(SortKey {
+                    expr,
+                    descending: clause.direction == ast::OrderDirection::Desc,
+                })
+            })
+            .collect();
+
+        plan = LogicalPlan::Sort {
+            input: Box::new(plan),
+            sort_keys: sort_keys?,
+        };
+    }
 
     // Add Limit if LIMIT clause exists
     if let Some(ref limit_expr) = select.limit {

@@ -1,0 +1,6 @@
+-- Simple ORDER BY test
+CREATE TABLE nums (val INTEGER);
+INSERT INTO nums VALUES (3);
+INSERT INTO nums VALUES (1);
+INSERT INTO nums VALUES (2);
+SELECT val FROM nums ORDER BY val ASC;

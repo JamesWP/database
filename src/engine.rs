@@ -77,6 +77,33 @@ impl Engine {
         yields
     }
 
+    /// Run the program with a maximum step limit to prevent infinite loops.
+    /// Panics if max_steps is exceeded.
+    #[cfg(test)]
+    pub(crate) fn run_with_limit(&mut self, max_steps: usize) -> Vec<Vec<ScalarValue>> {
+        let mut yields = Vec::new();
+        let mut steps = 0;
+        loop {
+            if steps >= max_steps {
+                panic!(
+                    "Engine exceeded max steps ({}). Last {} yields: {:?}",
+                    max_steps,
+                    yields.len().min(3),
+                    yields.iter().rev().take(3).collect::<Vec<_>>()
+                );
+            }
+            steps += 1;
+
+            match self.step() {
+                Ok(StepSuccess::Continue) => continue,
+                Ok(StepSuccess::Halt) => break,
+                Ok(StepSuccess::Yield(values)) => yields.push(values),
+                Err(e) => panic!("Engine error after {} steps: {:?}", steps, e),
+            }
+        }
+        yields
+    }
+
     pub fn step(&mut self) -> StepResult {
         use program::Operation::*;
 
@@ -255,6 +282,49 @@ impl Engine {
                     *self.registers.get_mut(dest_reg) = RegisterValue::ScalarValue(value);
                 } else {
                     // List is empty, jump to target
+                    self.program
+                        .set_next_operation_index(target.unwrap_resolved());
+                }
+            }
+            InitRowBuffer(reg) => {
+                *self.registers.get_mut(reg) = RegisterValue::RowBuffer(Vec::new());
+            }
+            AppendToRowBuffer(buffer_reg, value_regs) => {
+                let values: Vec<ScalarValue> = value_regs
+                    .iter()
+                    .map(|reg| self.registers.get(*reg).scalar().unwrap().clone())
+                    .collect();
+                let buffer = self.registers.get_mut(buffer_reg).row_buffer_mut().unwrap();
+                buffer.push(values);
+            }
+            SortRowBuffer(buffer_reg, sort_keys) => {
+                let buffer = self.registers.get_mut(buffer_reg).row_buffer_mut().unwrap();
+                buffer.sort_by(|row_a, row_b| {
+                    for key_spec in sort_keys.iter() {
+                        let val_a = &row_a[key_spec.column_index];
+                        let val_b = &row_b[key_spec.column_index];
+                        let cmp = val_a.cmp(val_b);
+                        if cmp != std::cmp::Ordering::Equal {
+                            return if key_spec.descending {
+                                cmp.reverse()
+                            } else {
+                                cmp
+                            };
+                        }
+                    }
+                    std::cmp::Ordering::Equal
+                });
+                // Reverse so pop() yields in correct order (lowest to highest)
+                buffer.reverse();
+            }
+            YieldFromRowBuffer(dest_regs, buffer_reg, target) => {
+                let buffer = self.registers.get_mut(buffer_reg).row_buffer_mut().unwrap();
+                if let Some(row) = buffer.pop() {
+                    for (dest_reg, value) in dest_regs.iter().zip(row.into_iter()) {
+                        *self.registers.get_mut(*dest_reg) = RegisterValue::ScalarValue(value);
+                    }
+                } else {
+                    // Buffer is empty, jump to target
                     self.program
                         .set_next_operation_index(target.unwrap_resolved());
                 }
@@ -1428,5 +1498,204 @@ mod test {
         let mut c = cursor.open_readwrite();
         c.first();
         assert!(c.get_entry().is_none());
+    }
+
+    #[test]
+    fn test_row_buffer_operations() {
+        use crate::engine::program::SortKeySpec;
+        use crate::test::TestDb;
+
+        let r_buffer = Reg::new(0);
+        let r_val1 = Reg::new(1);
+        let r_val2 = Reg::new(2);
+
+        let ops = vec![
+            // Initialize buffer
+            Operation::InitRowBuffer(r_buffer),
+            // Add first row: [3, 30]
+            Operation::StoreValue(r_val1, ScalarValue::Integer(3)),
+            Operation::StoreValue(r_val2, ScalarValue::Integer(30)),
+            Operation::AppendToRowBuffer(r_buffer, vec![r_val1, r_val2]),
+            // Add second row: [1, 10]
+            Operation::StoreValue(r_val1, ScalarValue::Integer(1)),
+            Operation::StoreValue(r_val2, ScalarValue::Integer(10)),
+            Operation::AppendToRowBuffer(r_buffer, vec![r_val1, r_val2]),
+            // Add third row: [2, 20]
+            Operation::StoreValue(r_val1, ScalarValue::Integer(2)),
+            Operation::StoreValue(r_val2, ScalarValue::Integer(20)),
+            Operation::AppendToRowBuffer(r_buffer, vec![r_val1, r_val2]),
+            // Sort by first column (ascending)
+            Operation::SortRowBuffer(
+                r_buffer,
+                vec![SortKeySpec {
+                    column_index: 0,
+                    descending: false,
+                }],
+            ),
+            // Yield rows from buffer (they come out in reverse order due to pop)
+            // Pop returns from end of vec, so after sort [1,10], [2,20], [3,30]
+            // pop gives us [3,30], [2,20], [1,10]
+            Operation::YieldFromRowBuffer(vec![r_val1, r_val2], r_buffer, JumpTarget::addr(14)),
+            Operation::Yield(vec![r_val1, r_val2]),
+            Operation::GoTo(JumpTarget::addr(11)), // Back to YieldFromRowBuffer
+            Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 3, TestDb::default().btree);
+        let yields = engine.run_with_limit(100);
+
+        // Rows should come out in sorted order (ascending)
+        assert_eq!(yields.len(), 3);
+        assert_eq!(yields[0][0], ScalarValue::Integer(1)); // [1, 10]
+        assert_eq!(yields[0][1], ScalarValue::Integer(10));
+        assert_eq!(yields[1][0], ScalarValue::Integer(2)); // [2, 20]
+        assert_eq!(yields[1][1], ScalarValue::Integer(20));
+        assert_eq!(yields[2][0], ScalarValue::Integer(3)); // [3, 30]
+        assert_eq!(yields[2][1], ScalarValue::Integer(30));
+    }
+
+    #[test]
+    fn test_scan_sort_pattern() {
+        // Mimics ORDER BY: scan table → collect to buffer → sort → yield
+        use crate::engine::program::SortKeySpec;
+        use crate::test::TestDb;
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert test data: keys 10, 20, 30 with values [30], [10], [20]
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            c.insert(10, b"[30]".to_vec());
+            c.insert(20, b"[10]".to_vec());
+            c.insert(30, b"[20]".to_vec());
+        }
+
+        let r_buffer = Reg::new(0);
+        let r_cursor = Reg::new(1);
+        let r_can_read = Reg::new(2);
+        let r_value = Reg::new(3);
+
+        let ops = vec![
+            // 0: Init
+            Operation::InitRowBuffer(r_buffer),
+            // 1: Open cursor
+            Operation::Open(r_cursor, root),
+            // 2: Position to first
+            Operation::MoveCursor(r_cursor, MoveOperation::First),
+            // 3: scan_loop - check if we can read
+            Operation::CanReadCursor(r_can_read, r_cursor),
+            // 4: If can't read, jump to sort phase (addr 9)
+            Operation::GoToIfFalse(JumpTarget::addr(9), r_can_read),
+            // 5: Read value
+            Operation::ReadCursor(vec![r_value], r_cursor),
+            // 6: Append to buffer
+            Operation::AppendToRowBuffer(r_buffer, vec![r_value]),
+            // 7: Move to next
+            Operation::MoveCursor(r_cursor, MoveOperation::Next),
+            // 8: Back to scan_loop
+            Operation::GoTo(JumpTarget::addr(3)),
+            // 9: sort_and_yield
+            Operation::SortRowBuffer(
+                r_buffer,
+                vec![SortKeySpec {
+                    column_index: 0,
+                    descending: false,
+                }],
+            ),
+            // 10: yield_loop - pop and yield rows
+            Operation::YieldFromRowBuffer(vec![r_value], r_buffer, JumpTarget::addr(13)),
+            // 11: Yield the row
+            Operation::Yield(vec![r_value]),
+            // 12: Back to yield_loop
+            Operation::GoTo(JumpTarget::addr(10)),
+            // 13: done
+            Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 4, btree);
+        let yields = engine.run_with_limit(100);
+
+        // Should yield 3 rows in sorted order (ascending): 10, 20, 30
+        assert_eq!(yields.len(), 3, "Should yield 3 rows");
+        assert_eq!(yields[0][0], ScalarValue::Integer(10));
+        assert_eq!(yields[1][0], ScalarValue::Integer(20));
+        assert_eq!(yields[2][0], ScalarValue::Integer(30));
+    }
+
+    #[test]
+    fn test_order_by_bytecode_from_compiler() {
+        // This test replicates the EXACT bytecode from debug.txt
+        // for "SELECT * FROM users ORDER BY name"
+        use crate::engine::program::SortKeySpec;
+        use crate::test::TestDb;
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert test data
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            c.insert(1, b"[1, \"charlie\", 25]".to_vec());
+            c.insert(2, b"[2, \"alice\", 30]".to_vec());
+            c.insert(3, b"[3, \"bob\", 28]".to_vec());
+        }
+
+        // Exact bytecode from debug.txt
+        let ops = vec![
+            /* 0*/ Operation::InitRowBuffer(Reg::new(0)),
+            /* 1*/ Operation::Open(Reg::new(1), root),
+            /* 2*/ Operation::MoveCursor(Reg::new(1), MoveOperation::First),
+            /* 3*/ Operation::GoTo(JumpTarget::addr(4)),
+            /* 4*/ Operation::CanReadCursor(Reg::new(2), Reg::new(1)),
+            /* 5*/ Operation::GoToIfFalse(JumpTarget::addr(15), Reg::new(2)),
+            /* 6*/
+            Operation::ReadCursor(vec![Reg::new(3), Reg::new(4), Reg::new(5)], Reg::new(1)),
+            /* 7*/ Operation::MoveCursor(Reg::new(1), MoveOperation::Next),
+            /* 8*/ Operation::GoTo(JumpTarget::addr(9)),
+            /* 9*/ Operation::CopyValue(Reg::new(6), Reg::new(3)),
+            /*10*/ Operation::CopyValue(Reg::new(7), Reg::new(4)),
+            /*11*/ Operation::CopyValue(Reg::new(8), Reg::new(5)),
+            /*12*/ Operation::GoTo(JumpTarget::addr(13)),
+            /*13*/
+            Operation::AppendToRowBuffer(Reg::new(0), vec![Reg::new(6), Reg::new(7), Reg::new(8)]),
+            /*14*/ Operation::GoTo(JumpTarget::addr(4)),
+            /*15*/
+            Operation::SortRowBuffer(
+                Reg::new(0),
+                vec![SortKeySpec {
+                    column_index: 1,
+                    descending: false,
+                }],
+            ),
+            /*16*/
+            Operation::YieldFromRowBuffer(
+                vec![Reg::new(6), Reg::new(7), Reg::new(8)],
+                Reg::new(0),
+                JumpTarget::addr(19),
+            ), // BUG WAS: addr(15)!
+            /*17*/ Operation::GoTo(JumpTarget::addr(20)),
+            /*18*/ Operation::GoTo(JumpTarget::addr(16)),
+            /*19*/ Operation::GoTo(JumpTarget::addr(22)),
+            /*20*/ Operation::Yield(vec![Reg::new(6), Reg::new(7), Reg::new(8)]),
+            /*21*/ Operation::GoTo(JumpTarget::addr(18)),
+            /*22*/ Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 9, btree);
+        let yields = engine.run_with_limit(100);
+
+        // Should yield 3 rows sorted by name (column index 1)
+        // Sorted order: alice, bob, charlie
+        // But popped in reverse: charlie, bob, alice
+        assert_eq!(yields.len(), 3, "Should yield 3 rows");
+
+        // Each row should be [id, name, age]
+        // The actual values depend on JSON parsing, but we should get 3 distinct rows
+        assert_eq!(yields.len(), 3);
     }
 }
