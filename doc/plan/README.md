@@ -35,6 +35,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **B** | Quick SQL wins + backfill tests | 7 | [phase-b-sql-wins.md](phase-b-sql-wins.md) |
 | **C** | API cleanup + more SQL | 5 | [phase-c-api-cleanup.md](phase-c-api-cleanup.md) |
 | **D** | Core CRUD | 5 | [phase-d-core-crud.md](phase-d-core-crud.md) |
+| **D2** | Refinements (cursor + functions) | 3 | [phase-d2-refinements.md](phase-d2-refinements.md) |
 | **E** | Query power | 4 | [phase-e-query-power.md](phase-e-query-power.md) |
 | **F** | Serialization overhaul | 4 | [phase-f-serialization.md](phase-f-serialization.md) |
 | **G** | Advanced capabilities | 8 | [phase-g-advanced.md](phase-g-advanced.md) |
