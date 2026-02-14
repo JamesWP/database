@@ -314,7 +314,7 @@ impl Engine {
             }
             CanReadCursor(dest, reg) => {
                 let cursor = self.registers.get_mut(reg).cursor_mut().unwrap();
-                let cursor = cursor.open_readonly();
+                let mut cursor = cursor.open_readonly();
                 let value = cursor.get_entry().is_some();
                 // we must drop cursror before we can mutate registers
                 drop(cursor);
@@ -323,7 +323,7 @@ impl Engine {
             }
             ReadCursor(regs, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let cursor = cursor.open_readwrite();
+                let mut cursor = cursor.open_readwrite();
                 let mut value = cursor.get_entry().unwrap();
                 let values = value.decode_as_json_array();
                 // we must drop cursror before we can mutate registers
@@ -360,7 +360,7 @@ impl Engine {
             }
             ReadKey(dest, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let cursor = cursor.open_readonly();
+                let mut cursor = cursor.open_readonly();
                 let entry = cursor.get_entry().unwrap();
                 let key = entry.key();
                 drop(cursor);

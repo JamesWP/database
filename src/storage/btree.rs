@@ -15,13 +15,29 @@ use super::node::{self, InteriorNodePage};
 use super::pager::{self, Pager};
 use super::{btree_graph, btree_verify, CellReader};
 
+/// Cursor position state machine
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CursorPosition {
+    /// Initial state, or after an operation that leaves cursor unpositioned
+    Unpositioned,
+
+    /// Cursor is at a valid leaf cell — fast path, use indices directly
+    Valid {
+        stack: Vec<InteriorNodeIterator>,
+        leaf: LeafNodeIterator,
+    },
+
+    /// Position was invalidated by a mutation — lazy seek on next use
+    RequiresSeek { saved_key: u64 },
+
+    /// Iterated past the last key
+    AtEnd,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CursorState {
     root_page: u32,
-
-    /// key for the item pointed to by the cursor
-    stack: Vec<InteriorNodeIterator>,
-    leaf_iterator: Option<LeafNodeIterator>,
+    position: CursorPosition,
 }
 
 impl CursorState {}
@@ -78,6 +94,19 @@ where
     pub fn insert(&mut self, key: u64, value: Value) {
         assert!(value.len() > 0);
 
+        // Save current cursor key if positioned, for RequiresSeek after insert
+        let saved_cursor_key = match &self.cursor_state.position {
+            CursorPosition::Valid { leaf, .. } => {
+                let (leaf_page_idx, cell_index) = *leaf;
+                let page: NodePage = self.pager.get_and_decode(leaf_page_idx);
+                match &page {
+                    NodePage::Leaf(leaf) => Some(leaf.get_key(cell_index)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
         // values must be small enough so that a few can fit on each page
         // this is to ensure when splitting nodes we always end up with at least 50% free space
         let (first_part, continuation) = if value.len() > CHUNK_THRESHOLD {
@@ -126,6 +155,11 @@ where
                     stack.push(child_page_idx);
                 }
             }
+        }
+
+        // Invalidate cursor position after insert (may cause page splits)
+        if let Some(saved_key) = saved_cursor_key {
+            self.cursor_state.position = CursorPosition::RequiresSeek { saved_key };
         }
     }
 
@@ -231,17 +265,25 @@ where
     /// Delete the row at the current cursor position.
     /// The cursor must be positioned (via find, first, next, etc.) before calling.
     ///
-    /// Note: With the two-phase collect-then-mutate pattern for DELETE/UPDATE statements,
-    /// cursor invalidation is no longer necessary. The scanning cursor has already moved
-    /// past this position before deletion happens.
+    /// After deletion, the cursor enters RequiresSeek state with the deleted key saved.
+    /// On next use, it will seek to find the next key >= saved_key (the successor).
     pub fn delete_current(&mut self) {
         // Cursor must be positioned
-        let (leaf_page_idx, cell_index) = self
-            .cursor_state
-            .leaf_iterator
-            .expect("Cursor must be positioned before delete_current");
+        let (leaf_page_idx, cell_index) = match &self.cursor_state.position {
+            CursorPosition::Valid { leaf, .. } => *leaf,
+            _ => panic!("Cursor must be positioned before delete_current"),
+        };
 
-        // Load the leaf page
+        // Read the key before deletion
+        let deleted_key = {
+            let page: NodePage = self.pager.get_and_decode(leaf_page_idx);
+            match &page {
+                NodePage::Leaf(leaf) => leaf.get_key(cell_index),
+                _ => panic!("Expected leaf node at cursor position"),
+            }
+        };
+
+        // Load the leaf page again for mutation
         let mut page: NodePage = self.pager.get_and_decode(leaf_page_idx);
 
         // Remove the cell from the leaf
@@ -259,6 +301,11 @@ where
         self.pager
             .encode_and_set(leaf_page_idx, page)
             .expect("Deletion should not cause page overflow");
+
+        // Save position for lazy reseek
+        self.cursor_state.position = CursorPosition::RequiresSeek {
+            saved_key: deleted_key,
+        };
     }
 
     /// Delete a key from the B-tree.
@@ -282,29 +329,52 @@ impl<'a, PagerRef> Cursor<'a, PagerRef>
 where
     PagerRef: Deref<Target = Pager>,
 {
+    /// Restore cursor position after a mutation by seeking to the saved key.
+    /// If the cursor is in RequiresSeek state, performs a find() to reposition.
+    /// Returns true if the saved key was found, false if positioned at insertion point.
+    fn ensure_positioned(&mut self) -> bool {
+        if let CursorPosition::RequiresSeek { saved_key } = self.cursor_state.position {
+            let found = self.find(saved_key);
+            // find() sets position to Valid
+            // - If found=true: positioned at the saved key
+            // - If found=false: positioned at insertion point (successor of saved key)
+            found
+        } else {
+            // Already positioned, return true to indicate normal case
+            true
+        }
+    }
+
     /// Move the cursor to point at the first row in the btree
     /// This may result in the cursor not pointing to a row if there is no
     /// first row to point to
     pub fn first(&mut self) {
         // Take the tree identified by the root page number, and find its left most node and
         // find its smallest entry
-        self.select_leftmost_of_idx(self.cursor_state.root_page)
+        self.select_leftmost_of_idx(self.cursor_state.root_page, Vec::new())
     }
 
-    fn select_leftmost_of_idx(&mut self, page_idx: u32) {
+    fn select_leftmost_of_idx(&mut self, page_idx: u32, mut stack: Vec<InteriorNodeIterator>) {
         let mut page_idx = page_idx;
 
         loop {
             let page: NodePage = self.pager.get_and_decode(page_idx);
             match page {
-                node::NodePage::Leaf(_l) => {
+                node::NodePage::Leaf(l) => {
                     // We found the first leaf in the tree.
-                    // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
-                    self.cursor_state.leaf_iterator = Some((page_idx, 0));
+                    if l.num_items() == 0 {
+                        // Empty tree
+                        self.cursor_state.position = CursorPosition::AtEnd;
+                    } else {
+                        self.cursor_state.position = CursorPosition::Valid {
+                            stack,
+                            leaf: (page_idx, 0),
+                        };
+                    }
                     return;
                 }
                 node::NodePage::Interior(i) => {
-                    self.cursor_state.stack.push((page_idx, 0));
+                    stack.push((page_idx, 0));
                     page_idx = i.get_child_page_by_index(0);
                 }
                 NodePage::OverflowPage(_) => panic!(),
@@ -312,7 +382,7 @@ where
         }
     }
 
-    fn select_rightmost_of_idx(&mut self, page_idx: u32) {
+    fn select_rightmost_of_idx(&mut self, page_idx: u32, mut stack: Vec<InteriorNodeIterator>) {
         let mut page_idx = page_idx;
 
         loop {
@@ -320,16 +390,19 @@ where
             match page {
                 node::NodePage::Leaf(l) => {
                     // We found the rightmost leaf in the tree.
-                    // TODO: Maybe store a readonly copy of this leaf node instead of this `leaf_iterator`
                     if l.num_items() == 0 {
-                        self.cursor_state.leaf_iterator = None;
+                        // Empty tree
+                        self.cursor_state.position = CursorPosition::Unpositioned;
                     } else {
-                        self.cursor_state.leaf_iterator = Some((page_idx, l.num_items() - 1));
+                        self.cursor_state.position = CursorPosition::Valid {
+                            stack,
+                            leaf: (page_idx, l.num_items() - 1),
+                        };
                     }
                     return;
                 }
                 node::NodePage::Interior(i) => {
-                    self.cursor_state.stack.push((page_idx, i.num_edges() - 1));
+                    stack.push((page_idx, i.num_edges() - 1));
                     page_idx = i.get_child_page_by_index(i.num_edges() - 1);
                 }
                 NodePage::OverflowPage(_) => panic!(),
@@ -343,7 +416,7 @@ where
     pub fn last(&mut self) {
         // Take the tree identified by the root page number, and find its right most node and
         // find its largest entry.
-        self.select_rightmost_of_idx(self.cursor_state.root_page)
+        self.select_rightmost_of_idx(self.cursor_state.root_page, Vec::new())
     }
 
     /// Move the cursor to point at the row in the btree identified by the given key
@@ -351,21 +424,28 @@ where
     /// When false, the cursor is positioned where the key would be inserted.
     pub fn find(&mut self, key: u64) -> bool {
         let mut page_idx = self.cursor_state.root_page;
+        let mut stack = Vec::new();
 
         loop {
             let page: NodePage = self.pager.get_and_decode(page_idx);
 
             match page.search(&key) {
                 SearchResult::Found(index) => {
-                    self.cursor_state.leaf_iterator = Some((page_idx, index));
+                    self.cursor_state.position = CursorPosition::Valid {
+                        stack,
+                        leaf: (page_idx, index),
+                    };
                     return true;
                 }
                 SearchResult::NotPresent(index) => {
-                    self.cursor_state.leaf_iterator = Some((page_idx, index));
+                    self.cursor_state.position = CursorPosition::Valid {
+                        stack,
+                        leaf: (page_idx, index),
+                    };
                     return false;
                 }
                 SearchResult::GoDown(c_idx, c) => {
-                    self.cursor_state.stack.push((page_idx, c_idx));
+                    stack.push((page_idx, c_idx));
                     // we should continue searching at the child page below
                     page_idx = c;
                 }
@@ -374,20 +454,52 @@ where
     }
 
     #[allow(dead_code)]
-    fn row_key(&self) -> Option<u64> {
+    fn row_key(&mut self) -> Option<u64> {
         let cell = self.get_entry()?;
 
         Some(cell.key())
     }
 
-    pub fn get_entry<'b>(&'b self) -> Option<CellReader<'b>> {
-        let (leaf_page_number, entry_index) = self.cursor_state.leaf_iterator?;
-
-        CellReader::new(&self.pager, leaf_page_number, entry_index)
+    pub fn get_entry<'b>(&'b mut self) -> Option<CellReader<'b>> {
+        let _ = self.ensure_positioned();
+        match &self.cursor_state.position {
+            CursorPosition::Valid { leaf, .. } => {
+                let (leaf_page_number, entry_index) = *leaf;
+                CellReader::new(&self.pager, leaf_page_number, entry_index)
+            }
+            _ => None,
+        }
     }
 
     /// Move the cursor to point at the next item in the btree
     pub fn next(&mut self) {
+        // Check if we need to reposition due to a mutation
+        let needs_reseek = matches!(
+            self.cursor_state.position,
+            CursorPosition::RequiresSeek { .. }
+        );
+
+        let key_found = self.ensure_positioned();
+
+        // If we just repositioned after a mutation:
+        // - If key was NOT found (delete case): we're at the successor, don't advance
+        // - If key WAS found (insert case): we're at the saved position, advance normally
+        if needs_reseek && !key_found {
+            // Positioned at insertion point (successor after delete)
+            // Check if the position is actually valid (could be past the end)
+            if let CursorPosition::Valid { leaf, .. } = &self.cursor_state.position {
+                let (page_idx, cell_index) = *leaf;
+                let page: NodePage = self.pager.get_and_decode(page_idx);
+                if let Some(leaf) = page.leaf() {
+                    if cell_index >= leaf.num_items() {
+                        // Positioned past the end
+                        self.cursor_state.position = CursorPosition::AtEnd;
+                    }
+                }
+            }
+            return;
+        }
+
         // function takes a curent index and the number of indexes, and returns Some(idx) where idx is the next index to consider
         // or none if there are no more on this page
         let next_idx = |curent: usize, count| {
@@ -406,6 +518,12 @@ where
 
     /// Move the cursor to point at the next item in the btree
     pub fn prev(&mut self) {
+        self.ensure_positioned();
+
+        // For prev(), we always retreat, regardless of whether we just repositioned
+        // This is correct for both delete (at successor, retreat to predecessor)
+        // and insert (at saved position, retreat to previous) cases
+
         // function takes a curent index and the number of indexes, and returns Some(idx) where idx is the next index to consider
         // or none if there are no more on this page
         let next_idx = |curent: usize, _count| {
@@ -425,29 +543,38 @@ where
     fn move_in_direction(
         &mut self,
         next_idx: impl Fn(usize, usize) -> Option<usize>,
-        select_first_in_direction: impl Fn(&mut Self, u32),
+        select_first_in_direction: impl Fn(&mut Self, u32, Vec<InteriorNodeIterator>),
     ) {
-        if self.cursor_state.leaf_iterator.is_none() {
-            return;
-        }
-        let (page_number, entry_index) = self.cursor_state.leaf_iterator.unwrap();
+        // Extract current position
+        let (mut stack, leaf) = match &self.cursor_state.position {
+            CursorPosition::Valid { stack, leaf } => (stack.clone(), *leaf),
+            _ => {
+                // If not positioned, no-op
+                return;
+            }
+        };
+
+        let (page_number, entry_index) = leaf;
         let page: NodePage = self.pager.get_and_decode(page_number);
         let page = page
             .leaf()
             .expect("Values are always supposed to be in leaf pages");
         let num_items_in_leaf = page.num_items();
         if let Some(entry_index) = next_idx(entry_index, num_items_in_leaf) {
-            self.cursor_state.leaf_iterator = Some((page_number, entry_index));
+            self.cursor_state.position = CursorPosition::Valid {
+                stack,
+                leaf: (page_number, entry_index),
+            };
             return;
         }
         loop {
             // if the stack is empty then we have no more places to go
-            if self.cursor_state.stack.is_empty() {
-                self.cursor_state.leaf_iterator = None;
+            if stack.is_empty() {
+                self.cursor_state.position = CursorPosition::AtEnd;
                 return;
             }
 
-            let (curent_interior_idx, curent_edge) = self.cursor_state.stack.pop().unwrap();
+            let (curent_interior_idx, curent_edge) = stack.pop().unwrap();
 
             let curent_interior: NodePage = self.pager.get_and_decode(curent_interior_idx);
 
@@ -459,15 +586,13 @@ where
             // if we there are more edges to the right:
             if let Some(next_edge) = next_idx(curent_edge, edge_count) {
                 // select the next edge in the curent page
-                self.cursor_state
-                    .stack
-                    .push((curent_interior_idx, next_edge));
+                stack.push((curent_interior_idx, next_edge));
 
                 // find the page_idx for the new edge
                 let curent_edge_idx = curent_interior.get_child_page_by_index(next_edge);
 
                 // then select the first item in the leftmost leaf of that subtree
-                select_first_in_direction(self, curent_edge_idx);
+                select_first_in_direction(self, curent_edge_idx, stack);
                 return;
             }
 
@@ -579,9 +704,8 @@ impl BTree {
 
     pub fn open(&self, root_page: u32) -> CursorHandle {
         let state = CursorState {
-            stack: vec![],
-            leaf_iterator: None,
             root_page,
+            position: CursorPosition::Unpositioned,
         };
 
         CursorHandle {
@@ -721,7 +845,7 @@ mod test {
     use std::collections::BTreeMap;
     use std::io::Read;
 
-    use super::BTree;
+    use super::{BTree, CursorPosition};
 
     #[test]
     fn test_create_blank() {
@@ -1735,6 +1859,259 @@ mod test {
                 cursor.get_entry().is_none(),
                 "Tree should be empty after deleting all keys"
             );
+        }
+    }
+
+    #[test]
+    fn test_cursor_position_states() {
+        // Verify cursor position state transitions
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let mut cursor_handle = btree.open(root);
+
+        // Initial state should be Unpositioned
+        assert_eq!(cursor_handle.state.position, CursorPosition::Unpositioned);
+
+        // Insert some values
+        {
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(1, b"one".to_vec());
+            cursor.insert(2, b"two".to_vec());
+            cursor.insert(3, b"three".to_vec());
+        }
+
+        // After first(), should be Valid
+        {
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            assert!(matches!(
+                cursor.cursor_state.position,
+                CursorPosition::Valid { .. }
+            ));
+            assert_eq!(cursor.get_entry().unwrap().key(), 1);
+        }
+
+        // Navigate through all entries
+        {
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            cursor.next(); // Move to key 2
+            assert!(matches!(
+                cursor.cursor_state.position,
+                CursorPosition::Valid { .. }
+            ));
+            assert_eq!(cursor.get_entry().unwrap().key(), 2);
+
+            cursor.next(); // Move to key 3
+            assert!(matches!(
+                cursor.cursor_state.position,
+                CursorPosition::Valid { .. }
+            ));
+            assert_eq!(cursor.get_entry().unwrap().key(), 3);
+
+            cursor.next(); // Move past end
+            assert_eq!(cursor.cursor_state.position, CursorPosition::AtEnd);
+            assert!(cursor.get_entry().is_none());
+        }
+
+        // Test empty tree → AtEnd
+        {
+            let empty_root = btree.create_tree();
+            let mut empty_cursor = btree.open(empty_root);
+            let mut cursor = empty_cursor.open_readonly();
+            cursor.first();
+            assert_eq!(cursor.cursor_state.position, CursorPosition::AtEnd);
+            assert!(cursor.get_entry().is_none());
+        }
+    }
+
+    #[test]
+    fn test_cursor_next_after_delete() {
+        // Delete current key, verify next() lands on correct successor
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1, 2, 3, 4, 5
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=5u64 {
+                cursor.insert(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // Position at key 3, delete it, verify next() gives us 4
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find(3);
+            cursor.delete_current();
+
+            // After delete, cursor is in RequiresSeek state with saved_key=3
+            // next() should call ensure_positioned() -> find(3) -> lands on 4
+            cursor.next();
+            assert_eq!(cursor.get_entry().unwrap().key(), 4);
+        }
+    }
+
+    #[test]
+    fn test_cursor_next_after_delete_last() {
+        // Delete the last key, verify next() reaches AtEnd
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1, 2, 3
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=3u64 {
+                cursor.insert(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // Delete key 3 (last), verify next() reaches AtEnd
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find(3);
+            cursor.delete_current();
+            cursor.next();
+            assert_eq!(cursor.cursor_state.position, CursorPosition::AtEnd);
+            assert!(cursor.get_entry().is_none());
+        }
+    }
+
+    #[test]
+    fn test_cursor_next_after_insert() {
+        // Insert during scan, verify iteration continues correctly
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1, 3, 5
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(1, b"one".to_vec());
+            cursor.insert(3, b"three".to_vec());
+            cursor.insert(5, b"five".to_vec());
+        }
+
+        // Position at key 1, insert key 2, verify we can continue iteration
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find(1);
+            cursor.insert(2, b"two".to_vec());
+            // After insert, cursor is in RequiresSeek state with saved_key=1
+            cursor.next();
+            assert_eq!(cursor.get_entry().unwrap().key(), 2);
+        }
+    }
+
+    #[test]
+    fn test_cursor_survives_split() {
+        // Insert enough to trigger page split, verify all keys still visited
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1-50
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=50u64 {
+                cursor.insert(i, format!("value_{}", i).into_bytes());
+            }
+        }
+
+        // Position at key 10, insert more keys to force split, verify iteration
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find(10);
+
+            // Insert 50 more keys to force splits
+            for i in 51..=100u64 {
+                cursor.insert(i, format!("value_{}", i).into_bytes());
+            }
+
+            // Cursor should still be able to navigate from key 10
+            assert_eq!(cursor.get_entry().unwrap().key(), 10);
+            cursor.next();
+            assert_eq!(cursor.get_entry().unwrap().key(), 11);
+        }
+    }
+
+    #[test]
+    fn test_cursor_delete_all_forward() {
+        // Delete every key via first() + loop of delete_current() + next()
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1-10
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=10u64 {
+                cursor.insert(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // Delete all keys forward
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.first();
+
+            while cursor.get_entry().is_some() {
+                cursor.delete_current();
+                // After delete_current, cursor is in RequiresSeek state
+                // next() will reposition to the next key (successor of deleted key)
+                cursor.next();
+            }
+        }
+
+        // Verify tree is empty
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            assert!(cursor.get_entry().is_none());
+        }
+    }
+
+    #[test]
+    fn test_cursor_get_entry_after_mutation() {
+        // Verify get_entry() works after insert/delete
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert keys 1, 2, 3
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=3u64 {
+                cursor.insert(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // Position at key 2, delete it, verify get_entry() still works
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find(2);
+            cursor.delete_current();
+
+            // get_entry() should trigger ensure_positioned() and find key 3
+            let entry = cursor.get_entry().unwrap();
+            assert_eq!(entry.key(), 3);
         }
     }
 

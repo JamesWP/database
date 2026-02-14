@@ -147,6 +147,10 @@ impl LeafNodePage {
         self.cells.len()
     }
 
+    pub fn get_key(&self, index: usize) -> Key {
+        self.cells[index].key()
+    }
+
     pub fn verify_key_ordering(&self) -> Result<(), VerifyError> {
         let keys = || self.cells.iter().map(Cell::key);
 
