@@ -1,162 +1,206 @@
 # Phase D2 — Refinements
 
-Phase D2 completes deferred work from Phase C and Phase D. It eliminates cursor invalidation by making cursors robust to mutations, allowing UPDATE and DELETE to work naively without collect-then-update workarounds. Also adds expression functions (LENGTH, UPPER, LOWER, ABS).
+Phase D2 completes deferred work from Phase C and Phase D. It fixes multi-row DELETE/UPDATE by adopting SQLite's collect-then-mutate pattern, then cleans up cursor invalidation. Also adds expression functions (LENGTH, UPPER, LOWER, ABS).
 
 ## Items
 
 | # | Track | Item | Depends on |
 |---|-------|------|------------|
-| 24 | 5.4 | Key-based cursor positioning | — |
-| 25 | 5.4 | Remove cursor invalidation and collect workarounds | 24 |
+| 24 | 5.4 | Collect-then-mutate bytecode infrastructure | — |
+| 25 | 5.4 | Rewrite DELETE/UPDATE codegen and clean up cursor invalidation | 24 |
 | 26 | 4.1 | Expression functions (LENGTH, UPPER, LOWER, ABS) | — |
 
 ---
 Important: Each item should be committed separately, follow 'Git Workflow' in CLAUDE.md
 
-## 24. Key-Based Cursor Positioning (Track 5.4)
+## 24. Collect-Then-Mutate Bytecode Infrastructure (Track 5.4)
 
 ### What Changes
 
-Redesign cursor navigation to use key-based positioning instead of page/cell indices, making cursors robust to structural changes during iteration.
+Add bytecode operations for collecting keys during a scan phase and replaying them during a mutation phase. This is the foundation for fixing DELETE and UPDATE to use SQLite's proven collect-then-mutate pattern.
 
 ### Current Problem
 
-Cursor navigation uses `leaf_iterator: Option<(page_idx, cell_index)>` which becomes invalid when:
-- Insert causes page split (page indices change)
-- Delete removes cells (cell indices shift)
-- This forces collect-then-update patterns in DELETE and UPDATE
+DELETE and UPDATE currently mutate the B-tree during cursor iteration. After `DeleteCursor` calls `invalidate()` (clears `leaf_iterator` and `stack`), `next()` becomes a no-op and the loop terminates after processing only the first matching row.
+
+**Evidence**: `DELETE FROM temp` on 3 rows deletes only 1 — confirmed in `tests/sql/delete.expected`.
+
+### How SQLite Solves This
+
+SQLite uses a **two-phase collect-then-mutate** pattern for DELETE and UPDATE:
+- Phase 1: Scan with a read cursor, collect matching rowids into a `RowSet`
+- Phase 2: Iterate the `RowSet`, seek to each rowid, delete/update
+
+SQLite has dedicated opcodes for this: `OP_RowSetAdd` (add rowid to set) and `OP_RowSetRead` (read next rowid, jump if empty).
+
+The separate cursor save/restore mechanism (`CURSOR_REQUIRESEEK`) exists for *other* cursors that happen to be open on the same tree (subqueries, triggers) — not for the scanning cursor itself.
+
+PostgreSQL avoids the problem entirely via Lehman-Yao B-link trees and MVCC — too complex for our embedded use case.
 
 ### Key Files
 
-- `src/storage/btree.rs` — CursorState, navigation methods (first, next, prev, find)
-- `src/storage/node.rs` — may need key-at-index helpers
+- `src/engine/program.rs` — `Operation` enum, `MoveOperation` enum
+- `src/engine/registers.rs` — `RegisterValue` enum
+- `src/engine.rs` — operation execution
+- `src/storage/btree.rs` — need `Find` cursor movement
 
 ### Implementation Approach
 
-**Core idea**: Instead of storing (page, cell_index), store the current key and use find() to reposition.
-
-**Option A: Store current key**
+**New register type:**
 ```rust
-pub struct CursorState {
-    root_page: u32,
-    stack: Vec<InteriorNodeIterator>,
-    // OLD: leaf_iterator: Option<(u32, usize)>,
-    // NEW: current_key: Option<u64>,
-    current_key: Option<u64>,
-    at_end: bool,  // Distinguish "after last key" from "no position"
+pub enum RegisterValue {
+    None,
+    ScalarValue(ScalarValue),
+    CursorHandle(CursorHandle),
+    KeyList(Vec<u64>),   // NEW: collected keys for two-phase mutations
 }
 ```
 
-**Navigation changes**:
-
-1. **first()**: Set `current_key = None`, find first key in tree, set `current_key = Some(first_key)`
-
-2. **next()**:
-   - If `current_key.is_none()`, no-op
-   - Find current_key to position cursor
-   - Read next cell in leaf; if exists, update current_key
-   - If no next cell in leaf, scan up tree to find next interior node, descend to next leaf
-   - If no next key exists, set `at_end = true`
-
-3. **prev()**: Similar to next() but in reverse
-
-4. **find(key)**: Set `current_key = Some(key)` if found, perform find operation
-
-5. **get_entry()**:
-   - If `current_key.is_none()` or `at_end`, return None
-   - Use find(current_key) to position, read entry
-
-**Key insight**: Every cursor operation (except first/last) internally does find() to establish position. This is less efficient but makes cursors immune to mutations.
-
-**Optimization**: Cache the page/cell position as a hint:
+**New bytecode operations:**
 ```rust
-pub struct CursorState {
-    root_page: u32,
-    stack: Vec<InteriorNodeIterator>,
-    current_key: Option<u64>,
-    at_end: bool,
-    // Hint: last known position (may be stale)
-    position_hint: Option<(u32, usize)>,
+// Initialize empty key list in register
+InitKeyList(Reg),
+
+// Append key from src_reg to list in list_reg
+AppendKey(/*list*/ Reg, /*key*/ Reg),
+
+// Pop next key into dest_reg. If list is empty, jump to target.
+PopKey(/*dest*/ Reg, /*list*/ Reg, JumpTarget),
+```
+
+**New cursor movement:**
+```rust
+pub enum MoveOperation {
+    First,
+    Next,
+    Last,
+    Find(Reg),  // NEW: seek to key in register
 }
 ```
 
-Before doing find(), check if hint is still valid:
-- Read page at position_hint
-- Check if cell at index still has current_key
-- If yes, use it; if no, fall back to find()
-
-This gives O(1) when no mutations, O(log n) after mutations.
-
-**Option B: Iterator-style with key tracking**
-Store (current_key, direction) and implement stateless iteration:
-- Each next() call: find(current_key) + advance
-- More expensive but maximally robust
-
-**Recommended**: Option A with position hint for good balance.
+The `Find(key_reg)` movement positions the cursor at the given key using `cursor.find(key)`. This is generally useful beyond just collect-then-mutate.
 
 ### Implementation Steps
 
-1. Add `current_key` and `at_end` fields to CursorState
-2. Update `first()` to set current_key to first key in tree
-3. Update `next()`:
-   - Use find(current_key) to position
-   - Advance to next key
-   - Update current_key
-4. Update `prev()` similarly
-5. Update `get_entry()` to use find(current_key) if needed
-6. Remove page/cell index from CursorState (or keep as hint)
-7. Remove invalidate() calls (no longer needed)
+1. Add `KeyList(Vec<u64>)` variant to `RegisterValue`
+2. Add `InitKeyList`, `AppendKey`, `PopKey` to `Operation` enum
+3. Add `Find(Reg)` to `MoveOperation`
+4. Implement execution for each new operation in `engine.rs`:
+   - `InitKeyList(reg)`: set register to `KeyList(Vec::new())`
+   - `AppendKey(list, key)`: push key (as u64) onto the list
+   - `PopKey(dest, list, jump)`: pop from list into dest, or jump if empty
+   - `MoveCursor(cursor, Find(key_reg))`: call `cursor.find(key)` to position
+5. Add register accessor helpers: `key_list_mut()`, etc.
 
 ### Tests
 
-- `test_cursor_survives_insert_during_scan` — insert while iterating, verify iteration continues correctly
-- `test_cursor_survives_delete_during_scan` — delete while iterating, verify iteration continues
-- `test_cursor_survives_split` — trigger page split during iteration
-- `test_cursor_next_after_delete_current` — delete current position, next() still works
-- Performance: benchmark before/after to measure overhead
+Unit tests in `engine.rs`:
+- `test_key_list_append_and_pop` — init, append 3 keys, pop all 3 in order, verify jump on empty
+- `test_move_cursor_find` — open cursor, insert keys, use `Find` to seek to specific key
+- `test_collect_then_delete_pattern` — hand-written bytecode: scan → collect → seek → delete, verify all rows removed
 
 ---
 
-## 25. Remove Cursor Invalidation and Collect Workarounds (Track 5.4)
+## 25. Rewrite DELETE/UPDATE Codegen and Clean Up Invalidation (Track 5.4)
 
 ### What Changes
 
-Remove cursor invalidation logic and simplify DELETE/UPDATE to work naively now that cursors survive mutations.
+Rewrite `codegen_delete` and `codegen_update` to use the collect-then-mutate pattern from item 24. Then remove cursor invalidation since mutations no longer happen during scans.
 
 ### Key Files
 
-- `src/storage/btree.rs` — remove invalidate() calls and TODO comments
-- `src/compiler/nodes.rs` — simplify codegen_delete to not collect keys first
+- `src/compiler/nodes.rs` — `codegen_delete()`, `codegen_update()`
+- `src/storage/btree.rs` — remove `invalidate()`, remove TODO comments
+- `tests/sql/delete.sql` / `delete.expected` — fix expected output
 
 ### Implementation Approach
 
-1. **Remove invalidation**:
-   - Delete `CursorState::invalidate()` method (no longer needed)
-   - Remove all calls to `invalidate()` from insert() and delete_current()
-   - Remove TODO comments about invalidation
+**DELETE codegen (two-phase):**
+```
+INIT:
+  Open(cursor, rootpage)
+  MoveCursor(cursor, First)
+  InitKeyList(key_list)
+  StoreValue(counter, 0)
 
-2. **Simplify DELETE** (if using collect pattern):
-   - Change from collect-then-delete to delete-during-scan
-   - Scan loop: read key, check filter, delete_current(), next()
-   - Cursor automatically repositions after delete_current()
-   - No need to collect keys first
+PHASE 1 — COLLECT:
+  collect_start:
+    CanReadCursor(flag, cursor)
+    GoToIfFalse(phase2, flag)
+    ReadCursor(read_regs, cursor)     // read for filter
+    [evaluate filter if present]
+    ReadKey(key_reg, cursor)
+    AppendKey(key_list, key_reg)
+    IncrementValue(counter)
+    MoveCursor(cursor, Next)
+    GoTo(collect_start)
 
-3. **Verify UPDATE** (already works naively):
-   - UPDATE already does mutate-during-iteration
-   - Should work without changes after item 24
-   - Verify test suite passes
+PHASE 2 — DELETE:
+  phase2:
+    PopKey(key_reg, key_list, done)
+    MoveCursor(cursor, Find(key_reg))
+    DeleteCursor(cursor)
+    GoTo(phase2)
 
-4. **Document behavior**:
-   - Add doc comments: "Cursors use key-based positioning and survive mutations"
-   - Note performance characteristics: find() on each navigation after mutation
+  done:
+    Yield(counter)
+```
+
+**UPDATE codegen (two-phase):**
+```
+INIT:
+  Open(cursor, rootpage)
+  MoveCursor(cursor, First)
+  InitKeyList(key_list)
+  StoreValue(counter, 0)
+
+PHASE 1 — COLLECT:
+  collect_start:
+    CanReadCursor(flag, cursor)
+    GoToIfFalse(phase2, flag)
+    ReadCursor(read_regs, cursor)     // read for filter
+    [evaluate filter if present]
+    ReadKey(key_reg, cursor)
+    AppendKey(key_list, key_reg)
+    IncrementValue(counter)
+    MoveCursor(cursor, Next)
+    GoTo(collect_start)
+
+PHASE 2 — UPDATE:
+  phase2:
+    PopKey(key_reg, key_list, done)
+    MoveCursor(cursor, Find(key_reg))
+    ReadCursor(read_regs, cursor)     // re-read current values
+    [compute new values from assignments]
+    WriteCursor(cursor, key_reg, new_values)
+    GoTo(phase2)
+
+  done:
+    Yield(counter)
+```
+
+Note: UPDATE re-reads the row in phase 2 after seeking. This is slightly redundant (values were already read in phase 1 for filtering) but keeps the implementation simple and correct. The row won't have changed between phases in our single-threaded model.
+
+**Clean up cursor invalidation:**
+1. Remove `CursorState::invalidate()` method — no longer called from anywhere
+2. Remove the commented-out `self.cursor_state.invalidate()` and TODO in `insert()`
+3. Remove the `invalidate()` call in `delete_current()` — the scanning cursor has already moved past this position before deletion happens in phase 2
+4. Add doc comments noting the two-phase mutation pattern
 
 ### Tests
 
-- Run existing DELETE and UPDATE tests (should all pass)
-- Remove cursor invalidation tests or update them to verify NO invalidation
-- Add tests:
-  - `test_delete_all_via_iteration` — DELETE in a simple loop, no collect
-  - `test_update_all_via_iteration` — UPDATE in a simple loop, no collect
+SQL integration tests — fix existing + add new:
+- Fix `tests/sql/delete.expected`: `DELETE FROM temp` (3 rows) should show `3` deleted, empty SELECT
+- Add to `tests/sql/delete.sql`:
+  - `DELETE FROM table WHERE condition` matching multiple rows
+  - `DELETE FROM table` followed by INSERT to verify table is reusable
+- Add to `tests/sql/update.sql` (or verify existing):
+  - `UPDATE table SET col = val` affecting all rows
+  - `UPDATE table SET col = col + 1 WHERE condition` affecting multiple rows
+
+Unit tests:
+- `test_codegen_delete_bytecode` — verify two-phase pattern in emitted bytecode
+- Run full `cargo test` to verify no regressions
 
 ---
 
