@@ -871,16 +871,14 @@ pub fn codegen_delete(
         ctx.body_emitter.emit_goto_if_false(skip_label, filter_reg);
 
         // Filter matched: delete row at current cursor position
-        ctx.body_emitter
-            .emit(Operation::DeleteCursor(cursor_reg));
+        ctx.body_emitter.emit(Operation::DeleteCursor(cursor_reg));
         ctx.body_emitter
             .emit(Operation::IncrementValue(counter_reg));
 
         ctx.body_emitter.bind_label(skip_label);
     } else {
         // No filter: delete all rows
-        ctx.body_emitter
-            .emit(Operation::DeleteCursor(cursor_reg));
+        ctx.body_emitter.emit(Operation::DeleteCursor(cursor_reg));
         ctx.body_emitter
             .emit(Operation::IncrementValue(counter_reg));
     }
