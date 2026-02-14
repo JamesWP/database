@@ -49,6 +49,19 @@ The SQL test runner (`tests/sql_runner.rs`) executes `.sql` scripts and compares
    - Prints summary of updated files and suggests `git diff` for review
    - Useful for quickly updating tests after intentional behavior changes
 
+**SQL Test Helper Script** (`test-sql.sh`):
+
+A convenience wrapper for running SQL tests with environment variables. Use this for consistent commands that are easier to auto-approve in Claude Code:
+
+```bash
+./test-sql.sh                    # Run all SQL tests
+./test-sql.sh delete             # Run specific test file (delete.sql)
+./test-sql.sh delete --update    # Run test and update .expected file
+./test-sql.sh --update           # Update all .expected files
+```
+
+**When to use**: Prefer this script over raw `cargo test` commands when working with SQL integration tests during development. It provides a consistent interface and avoids having to remember environment variable syntax.
+
 **Example error test** (`tests/sql/error_cases.sql`):
 ```sql
 CREATE TABLE users (id INTEGER, name TEXT);
