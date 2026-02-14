@@ -87,6 +87,10 @@ pub enum PlanExpr {
         op: UnaryOp,
         operand: Box<PlanExpr>,
     },
+    FunctionCall {
+        name: String,
+        args: Vec<PlanExpr>,
+    },
 }
 
 /// Logical plan nodes - relational algebra operators
@@ -478,6 +482,33 @@ fn convert_expr_no_context(expr: &ast::Expression) -> Result<PlanExpr, PlanError
             op: convert_unary_op(op),
             operand: Box::new(convert_expr_no_context(expression)?),
         }),
+        ast::Expression::FunctionCall { name, args } => {
+            // Validate function name
+            let name_upper = name.to_uppercase();
+            let supported_functions = ["LENGTH", "UPPER", "LOWER", "ABS"];
+
+            if !supported_functions.contains(&name_upper.as_str()) {
+                return Err(PlanError::UnknownFunction(name.clone()));
+            }
+
+            // For v1, all functions take exactly 1 argument
+            if args.len() != 1 {
+                return Err(PlanError::InvalidFunctionArguments {
+                    function: name.clone(),
+                    expected: 1,
+                    got: args.len(),
+                });
+            }
+
+            // Convert arguments
+            let plan_args: Result<Vec<_>, _> =
+                args.iter().map(convert_expr_no_context).collect();
+
+            Ok(PlanExpr::FunctionCall {
+                name: name_upper,
+                args: plan_args?,
+            })
+        }
     }
 }
 
@@ -512,6 +543,7 @@ fn eval_constant(expr: &PlanExpr) -> Result<Literal, PlanError> {
             eval_binary_constant(op, &l, &r)
         }
         PlanExpr::ColumnRef(_) => Err(PlanError::UnsupportedStatement),
+        PlanExpr::FunctionCall { .. } => Err(PlanError::UnsupportedStatement),
     }
 }
 
@@ -594,9 +626,21 @@ fn extract_limit_value(expr: &ast::Expression) -> Result<u64, PlanError> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanError {
     TableNotFound(String),
-    ColumnNotFound { table: String, column: String },
-    ColumnCountMismatch { expected: usize, got: usize },
+    ColumnNotFound {
+        table: String,
+        column: String,
+    },
+    ColumnCountMismatch {
+        expected: usize,
+        got: usize,
+    },
     UnsupportedStatement,
+    UnknownFunction(String),
+    InvalidFunctionArguments {
+        function: String,
+        expected: usize,
+        got: usize,
+    },
 }
 
 // ============================================================================
@@ -645,6 +689,33 @@ fn convert_expr(expr: &ast::Expression, ctx: &ExprContext) -> Result<PlanExpr, P
             op: convert_unary_op(op),
             operand: Box::new(convert_expr(expression, ctx)?),
         }),
+        ast::Expression::FunctionCall { name, args } => {
+            // Validate function name (case-insensitive)
+            let name_upper = name.to_uppercase();
+            let supported_functions = ["LENGTH", "UPPER", "LOWER", "ABS"];
+
+            if !supported_functions.contains(&name_upper.as_str()) {
+                return Err(PlanError::UnknownFunction(name.clone()));
+            }
+
+            // For v1, all functions take exactly 1 argument
+            if args.len() != 1 {
+                return Err(PlanError::InvalidFunctionArguments {
+                    function: name.clone(),
+                    expected: 1,
+                    got: args.len(),
+                });
+            }
+
+            // Convert arguments
+            let plan_args: Result<Vec<_>, _> =
+                args.iter().map(|arg| convert_expr(arg, ctx)).collect();
+
+            Ok(PlanExpr::FunctionCall {
+                name: name_upper,
+                args: plan_args?,
+            })
+        }
     }
 }
 
@@ -709,6 +780,11 @@ fn collect_columns(expr: &ast::Expression, columns: &mut HashSet<String>) {
         }
         ast::Expression::UnaryOp { expression, .. } => {
             collect_columns(expression, columns);
+        }
+        ast::Expression::FunctionCall { args, .. } => {
+            for arg in args {
+                collect_columns(arg, columns);
+            }
         }
     }
 }

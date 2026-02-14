@@ -713,7 +713,32 @@ impl Parser {
         match self.input.peek() {
             lexer::Type::Identifier(id) => {
                 self.input.advance();
-                Ok(ast::Expression::Value(ast::ScalarValue::Identifier(id)))
+                // Check if this is a function call (identifier followed by '(')
+                if matches!(self.input.peek(), lexer::Type::LeftParen) {
+                    self.input.advance(); // consume '('
+
+                    // Parse argument list
+                    let mut args = Vec::new();
+
+                    // Check for empty argument list
+                    if !matches!(self.input.peek(), lexer::Type::RightParen) {
+                        loop {
+                            args.push(self.parse_expression()?);
+
+                            if matches!(self.input.peek(), lexer::Type::Comma) {
+                                self.input.advance(); // consume ','
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    self.input.expect(Expect::RightParen)?;
+
+                    Ok(ast::Expression::FunctionCall { name: id, args })
+                } else {
+                    Ok(ast::Expression::Value(ast::ScalarValue::Identifier(id)))
+                }
             }
             lexer::Type::IntegerNumber(value) => {
                 self.input.advance();

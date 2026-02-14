@@ -1964,7 +1964,7 @@ mod tests {
     #[test]
     fn test_codegen_delete_bytecode_structure() {
         let test = TestDb::default();
-        let btree = test.btree;
+        let _btree = test.btree;
         let root = 42; // Dummy root page
 
         // Test DELETE with no filter (delete all)
