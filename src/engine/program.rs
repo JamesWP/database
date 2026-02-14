@@ -76,6 +76,7 @@ pub enum Operation {
     ReadCursor(Vec<Reg>, Reg), // ReadCursor(dest_regs, cursor): read row values
     ReadKey(Reg, Reg),         // ReadKey(dest, cursor): read btree key as integer
     WriteCursor(Reg, Reg, Vec<Reg>), // WriteCursor(cursor, key, values): insert row
+    DeleteCursor(Reg),         // DeleteCursor(cursor): delete row at current cursor position
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
 
     // Control Flow
@@ -229,6 +230,9 @@ impl std::fmt::Display for Operation {
                     key,
                     regs_str.join(", ")
                 )
+            }
+            DeleteCursor(cursor) => {
+                write!(f, "{:10} {}", "Delete".cyan().bold(), cursor)
             }
             CanReadCursor(dest, cursor) => {
                 write!(f, "{:10} {}, {}", "CanRead".cyan().bold(), dest, cursor)

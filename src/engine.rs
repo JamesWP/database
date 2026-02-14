@@ -349,6 +349,12 @@ impl Engine {
                 let mut cursor = cursor.open_readwrite();
                 cursor.insert(key, bytes);
             }
+            DeleteCursor(cursor_reg) => {
+                // Delete at current cursor position
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let mut cursor = cursor.open_readwrite();
+                cursor.delete_current();
+            }
         };
 
         StepResult::Ok(StepSuccess::Continue)

@@ -226,6 +226,40 @@ where
         }
     }
 
+    /// Delete the row at the current cursor position.
+    /// The cursor must be positioned (via find, first, next, etc.) before calling.
+    /// Cursor state is invalidated after deletion.
+    pub fn delete_current(&mut self) {
+        // Cursor must be positioned
+        let (leaf_page_idx, cell_index) = self
+            .cursor_state
+            .leaf_iterator
+            .expect("Cursor must be positioned before delete_current");
+
+        // Load the leaf page
+        let mut page: NodePage = self.pager.get_and_decode(leaf_page_idx);
+
+        // Remove the cell from the leaf
+        match &mut page {
+            NodePage::Leaf(leaf) => {
+                // TODO: Free overflow pages if the deleted cell had them
+                // For v1, we accept leaked overflow pages
+                leaf.remove_cell(cell_index);
+            }
+            _ => panic!("Expected leaf node at cursor position"),
+        }
+
+        // Write the modified page back
+        // Note: We skip rebalancing for v1 - sparse pages are acceptable
+        self.pager
+            .encode_and_set(leaf_page_idx, page)
+            .expect("Deletion should not cause page overflow");
+
+        // Invalidate cursor state - caller must reposition after delete
+        self.cursor_state.stack.clear();
+        self.cursor_state.leaf_iterator = None;
+    }
+
     /// Delete a key from the B-tree.
     /// If the key exists, it is removed. If not, this is a no-op.
     /// Cursor state is invalidated after deletion.
@@ -238,31 +272,8 @@ where
             return;
         }
 
-        // Get the leaf page and cell index where the key was found
-        let (leaf_page_idx, cell_index) = self.cursor_state.leaf_iterator.unwrap();
-
-        // Load the leaf page
-        let mut page: NodePage = self.pager.get_and_decode(leaf_page_idx);
-
-        // Remove the cell from the leaf
-        match &mut page {
-            NodePage::Leaf(leaf) => {
-                // TODO: Free overflow pages if the deleted cell had them
-                // For v1, we accept leaked overflow pages
-                leaf.remove_cell(cell_index);
-            }
-            _ => panic!("Expected leaf node after find()"),
-        }
-
-        // Write the modified page back
-        // Note: We skip rebalancing for v1 - sparse pages are acceptable
-        self.pager
-            .encode_and_set(leaf_page_idx, page)
-            .expect("Deletion should not cause page overflow");
-
-        // Invalidate cursor state - caller must reposition after delete
-        self.cursor_state.stack.clear();
-        self.cursor_state.leaf_iterator = None;
+        // Delete at the current cursor position
+        self.delete_current();
     }
 }
 

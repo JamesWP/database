@@ -4,6 +4,7 @@ pub enum Statement {
     CreateTable(CreateTableStatement),
     Insert(InsertStatement),
     Update(UpdateStatement),
+    Delete(DeleteStatement),
 }
 
 #[derive(Debug)]
@@ -17,6 +18,12 @@ pub struct InsertStatement {
 pub struct UpdateStatement {
     pub table_name: String,
     pub assignments: Vec<(String, Expression)>,
+    pub filter: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub struct DeleteStatement {
+    pub table_name: String,
     pub filter: Option<Expression>,
 }
 

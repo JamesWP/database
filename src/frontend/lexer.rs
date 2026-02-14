@@ -69,6 +69,8 @@ pub enum Type {
     Values,
     Update,
     Set,
+    Delete,
+    Drop,
 
     #[allow(dead_code)]
     Error(Error),
@@ -449,6 +451,11 @@ impl<'a> Lexer<'a> {
             },
             'b' => match_reserved(ident, "blob", Type::Blob),
             'c' => match_reserved(ident, "create", Type::Create),
+            'd' => match ident.chars().nth(1) {
+                Some('e') => match_reserved(ident, "delete", Type::Delete),
+                Some('r') => match_reserved(ident, "drop", Type::Drop),
+                _ => Type::Identifier(ident.to_owned()),
+            },
             'f' => match ident.chars().nth(1) {
                 Some('r') => match_reserved(ident, "from", Type::From),
                 Some('a') => match_reserved(ident, "false", Type::False),

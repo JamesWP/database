@@ -820,6 +820,91 @@ pub fn codegen_update(
     }
 }
 
+/// Generate bytecode for a Delete node.
+///
+/// Delete scans a table, collects keys of matching rows, then deletes them.
+/// Returns row count of deleted rows.
+pub fn codegen_delete(
+    rootpage: u32,
+    table_columns: &[usize],
+    filter: &Option<PlanExpr>,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    let cursor_reg = ctx.registers.alloc();
+    let counter_reg = ctx.registers.alloc();
+    let flag_reg = ctx.registers.alloc();
+
+    // Allocate registers for reading all table columns (needed for filter evaluation)
+    let read_regs = ctx.registers.alloc_block(table_columns.len());
+
+    // INIT: open cursor, position to first, init counter
+    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
+    ctx.init_emitter
+        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
+    ctx.init_emitter
+        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
+
+    // BODY: scan loop
+    let loop_start = ctx.body_emitter.create_label();
+    let loop_done = ctx.body_emitter.create_label();
+
+    ctx.body_emitter.bind_label(loop_start);
+    ctx.body_emitter
+        .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
+    ctx.body_emitter.emit_goto_if_false(loop_done, flag_reg);
+
+    // Read all columns (needed for filter evaluation)
+    ctx.body_emitter
+        .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
+
+    // Evaluate filter if present
+    if let Some(filter_expr) = filter {
+        let filter_reg = {
+            let mut expr_ctx = ExprContext {
+                emitter: &mut ctx.body_emitter,
+                registers: &mut ctx.registers,
+            };
+            compile_expr(filter_expr, &read_regs, &mut expr_ctx)
+        };
+        let skip_label = ctx.body_emitter.create_label();
+        ctx.body_emitter.emit_goto_if_false(skip_label, filter_reg);
+
+        // Filter matched: delete row at current cursor position
+        ctx.body_emitter
+            .emit(Operation::DeleteCursor(cursor_reg));
+        ctx.body_emitter
+            .emit(Operation::IncrementValue(counter_reg));
+
+        ctx.body_emitter.bind_label(skip_label);
+    } else {
+        // No filter: delete all rows
+        ctx.body_emitter
+            .emit(Operation::DeleteCursor(cursor_reg));
+        ctx.body_emitter
+            .emit(Operation::IncrementValue(counter_reg));
+    }
+
+    // Advance to next row
+    ctx.body_emitter
+        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
+    ctx.body_emitter.emit_goto(loop_start);
+
+    // Loop done: yield count
+    ctx.body_emitter.bind_label(loop_done);
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // After yielding, halt
+    let delete_done = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(delete_done);
+    ctx.body_emitter.emit_goto(cont.on_done);
+
+    NodeOutput {
+        next: delete_done,
+        output_regs: vec![counter_reg],
+    }
+}
+
 /// Main codegen dispatch function.
 /// Routes to the appropriate codegen based on plan type.
 pub fn codegen(
@@ -846,6 +931,11 @@ pub fn codegen(
             assignments,
             filter,
         } => codegen_update(*rootpage, table_columns, assignments, filter, cont, ctx),
+        LogicalPlan::Delete {
+            rootpage,
+            table_columns,
+            filter,
+        } => codegen_delete(*rootpage, table_columns, filter, cont, ctx),
     }
 }
 

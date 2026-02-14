@@ -91,6 +91,10 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::Delete, lexer::Type::Delete) => {
+                self.advance();
+                Ok(())
+            }
             // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
@@ -129,6 +133,7 @@ pub enum Expect {
     Values,
     Update,
     Set,
+    Delete,
 }
 
 impl lexer::Type {
@@ -177,6 +182,7 @@ impl Parser {
             )),
             lexer::Type::Insert => Ok(ast::Statement::Insert(self.parse_insert_statement()?)),
             lexer::Type::Update => Ok(ast::Statement::Update(self.parse_update_statement()?)),
+            lexer::Type::Delete => Ok(ast::Statement::Delete(self.parse_delete_statement()?)),
             _ => todo!(),
         }
     }
@@ -273,6 +279,22 @@ impl Parser {
             assignments,
             filter,
         })
+    }
+
+    fn parse_delete_statement(&mut self) -> ParseResult<ast::DeleteStatement> {
+        self.input.expect(Expect::Delete)?;
+        self.input.expect(Expect::From)?;
+        let table_name = self.parse_identifier()?;
+
+        // Optional WHERE clause
+        let filter = if matches!(self.input.peek(), lexer::Type::Where) {
+            self.input.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        Ok(ast::DeleteStatement { table_name, filter })
     }
 
     fn parse_create_table_statement(&mut self) -> ParseResult<ast::CreateTableStatement> {

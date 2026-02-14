@@ -153,6 +153,15 @@ pub enum LogicalPlan {
         assignments: Vec<(usize, PlanExpr)>, // (column_index, new_value_expr)
         filter: Option<PlanExpr>,
     },
+
+    /// Delete rows from a table
+    /// Scans table, applies filter, deletes matching rows by key.
+    /// Output: single integer column containing the count of rows deleted.
+    Delete {
+        rootpage: u32,
+        table_columns: Vec<usize>,
+        filter: Option<PlanExpr>,
+    },
     // Future: Join { left: Box<LogicalPlan>, right: Box<LogicalPlan>, ... }
 }
 
@@ -206,6 +215,7 @@ pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanErro
         Statement::CreateTable(_) => Err(PlanError::UnsupportedStatement),
         Statement::Insert(insert) => plan_insert(insert, btree),
         Statement::Update(update) => plan_update(update, btree),
+        Statement::Delete(delete) => plan_delete(delete, btree),
     }
 }
 
@@ -418,6 +428,37 @@ fn plan_update(update: ast::UpdateStatement, btree: &BTree) -> Result<LogicalPla
         rootpage: table.rootpage,
         table_columns,
         assignments,
+        filter,
+    })
+}
+
+fn plan_delete(delete: ast::DeleteStatement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
+    let table = resolve_table(&delete.table_name, btree)?;
+
+    // Build column mapping: all table columns in order
+    let mut column_map = HashMap::new();
+    for (i, col) in table.columns.iter().enumerate() {
+        column_map.insert(col.name.clone(), i);
+    }
+
+    // Create expression context
+    let ctx = ExprContext {
+        table_ref: &delete.table_name,
+        columns: &column_map,
+    };
+
+    // Plan the filter expression if present
+    let filter = match delete.filter {
+        Some(expr) => Some(convert_expr(&expr, &ctx)?),
+        None => None,
+    };
+
+    // Get all table column indices
+    let table_columns: Vec<usize> = (0..table.columns.len()).collect();
+
+    Ok(LogicalPlan::Delete {
+        rootpage: table.rootpage,
+        table_columns,
         filter,
     })
 }

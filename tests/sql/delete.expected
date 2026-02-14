@@ -1,0 +1,19 @@
+Table 'users' created
+3
+1
+2	bob	25
+3	charlie	35
+Table 'temp' created
+3
+1
+2	b
+3	c
+Table 'items' created
+2
+0
+1	foo
+2	bar
+1
+1
+2	bar
+1	new_foo
