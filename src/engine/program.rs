@@ -44,6 +44,7 @@ pub enum MoveOperation {
     First,
     Next,
     Last,
+    Find(Reg),
 }
 
 // TODO: switch to using {} and named members
@@ -69,6 +70,11 @@ pub enum Operation {
     NotValue(Reg, Reg),                     // Reg = !Reg
     NegateValue(Reg, Reg),                  // Reg = -Reg (arithmetic negation)
     CopyValue(Reg, Reg),                    // Reg = Reg (copy value)
+
+    // Key List (for collect-then-mutate pattern)
+    InitKeyList(Reg),             // Initialize empty key list
+    AppendKey(Reg, Reg),          // AppendKey(list, key): append key to list
+    PopKey(Reg, Reg, JumpTarget), // PopKey(dest, list, jump): pop key or jump if empty
 
     // Db
     Open(Reg, u32),
@@ -160,6 +166,7 @@ impl std::fmt::Display for MoveOperation {
             MoveOperation::First => write!(f, "First"),
             MoveOperation::Next => write!(f, "Next"),
             MoveOperation::Last => write!(f, "Last"),
+            MoveOperation::Find(reg) => write!(f, "Find({})", reg),
         }
     }
 }
@@ -194,6 +201,20 @@ impl std::fmt::Display for Operation {
             NotValue(d, s) => write!(f, "{:10} {}, {}", "Not".cyan().bold(), d, s),
             NegateValue(d, s) => write!(f, "{:10} {}, {}", "Neg".cyan().bold(), d, s),
             CopyValue(d, s) => write!(f, "{:10} {}, {}", "Copy".cyan().bold(), d, s),
+
+            // Key list operations
+            InitKeyList(r) => write!(f, "{:10} {}", "InitKList".cyan().bold(), r),
+            AppendKey(list, key) => write!(f, "{:10} {}, {}", "AppendKey".cyan().bold(), list, key),
+            PopKey(dest, list, target) => {
+                write!(
+                    f,
+                    "{:10} {}, {}, {}",
+                    "PopKey".cyan().bold(),
+                    dest,
+                    list,
+                    target
+                )
+            }
 
             // Database operations
             Open(r, rootpage) => {
