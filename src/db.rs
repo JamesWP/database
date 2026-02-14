@@ -9,6 +9,7 @@ use crate::storage::BTree;
 #[derive(Debug)]
 pub enum ExecuteResult {
     CreateTable { table_name: String },
+    DropTable { table_name: String },
     Query(QueryExecution),
 }
 
@@ -40,6 +41,7 @@ pub enum ExecuteError {
     Parse(ParseError),
     Plan(PlanError),
     TableAlreadyExists(String),
+    TableNotFound(String),
 }
 
 impl std::fmt::Display for ExecuteError {
@@ -49,6 +51,9 @@ impl std::fmt::Display for ExecuteError {
             ExecuteError::Plan(e) => write!(f, "Planning error: {:?}", e),
             ExecuteError::TableAlreadyExists(name) => {
                 write!(f, "Table '{}' already exists", name)
+            }
+            ExecuteError::TableNotFound(name) => {
+                write!(f, "Table '{}' not found", name)
             }
         }
     }
@@ -77,6 +82,25 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                 .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
             btree.insert_schema_entry(key, "table", name, name, root_page, &ddl);
             Ok(ExecuteResult::CreateTable {
+                table_name: name.clone(),
+            })
+        }
+        Statement::Drop(_) => {
+            let drop = match stmt {
+                Statement::Drop(d) => d,
+                _ => unreachable!(),
+            };
+            let name = &drop.table_name;
+
+            // Check if table exists
+            if btree.lookup_table(name).is_none() {
+                return Err(ExecuteError::TableNotFound(name.clone()));
+            }
+
+            // Delete the catalog entry
+            btree.delete_schema_entry(name);
+
+            Ok(ExecuteResult::DropTable {
                 table_name: name.clone(),
             })
         }

@@ -5,6 +5,7 @@ pub enum Statement {
     Insert(InsertStatement),
     Update(UpdateStatement),
     Delete(DeleteStatement),
+    Drop(DropTableStatement),
 }
 
 #[derive(Debug)]
@@ -25,6 +26,11 @@ pub struct UpdateStatement {
 pub struct DeleteStatement {
     pub table_name: String,
     pub filter: Option<Expression>,
+}
+
+#[derive(Debug)]
+pub struct DropTableStatement {
+    pub table_name: String,
 }
 
 #[derive(Debug)]

@@ -653,6 +653,40 @@ impl BTree {
         }
     }
 
+    /// Delete a schema entry (table) from the catalog by table name.
+    /// Returns true if the table was found and deleted, false if not found.
+    pub fn delete_schema_entry(&mut self, table_name: &str) -> bool {
+        let schema_root = match self.schema_root_page() {
+            Some(root) => root,
+            None => return false,
+        };
+
+        // Scan to find the row with matching name, then delete it
+        let mut cursor = self.open(schema_root);
+        let mut c = cursor.open_readwrite();
+        c.first();
+        loop {
+            let mut entry = match c.get_entry() {
+                None => return false, // End of scan, not found
+                Some(reader) => reader,
+            };
+
+            let values = entry.decode_as_json_array();
+            // Row format: [type, name, tbl_name, rootpage, sql]
+            if values.len() >= 5 {
+                let obj_type = values[0].as_str().unwrap_or("");
+                let name = values[1].as_str().unwrap_or("");
+                if obj_type == "table" && name == table_name {
+                    // Found it - delete at current cursor position
+                    c.delete_current();
+                    return true;
+                }
+            }
+
+            c.next();
+        }
+    }
+
     #[allow(dead_code)]
     pub fn debug(&self, message: &str) {
         self.pager.borrow().debug(message)

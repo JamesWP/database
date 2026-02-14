@@ -95,6 +95,10 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::Drop, lexer::Type::Drop) => {
+                self.advance();
+                Ok(())
+            }
             // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
@@ -134,6 +138,7 @@ pub enum Expect {
     Update,
     Set,
     Delete,
+    Drop,
 }
 
 impl lexer::Type {
@@ -183,6 +188,7 @@ impl Parser {
             lexer::Type::Insert => Ok(ast::Statement::Insert(self.parse_insert_statement()?)),
             lexer::Type::Update => Ok(ast::Statement::Update(self.parse_update_statement()?)),
             lexer::Type::Delete => Ok(ast::Statement::Delete(self.parse_delete_statement()?)),
+            lexer::Type::Drop => Ok(ast::Statement::Drop(self.parse_drop_table_statement()?)),
             _ => todo!(),
         }
     }
@@ -295,6 +301,14 @@ impl Parser {
         };
 
         Ok(ast::DeleteStatement { table_name, filter })
+    }
+
+    fn parse_drop_table_statement(&mut self) -> ParseResult<ast::DropTableStatement> {
+        self.input.expect(Expect::Drop)?;
+        self.input.expect(Expect::Table)?;
+        let table_name = self.parse_identifier()?;
+
+        Ok(ast::DropTableStatement { table_name })
     }
 
     fn parse_create_table_statement(&mut self) -> ParseResult<ast::CreateTableStatement> {

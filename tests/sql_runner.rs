@@ -44,6 +44,9 @@ fn execute_sql_script(sql_path: &PathBuf) -> Vec<String> {
                 ExecuteResult::CreateTable { table_name } => {
                     actual_output.push(format!("Table '{}' created", table_name));
                 }
+                ExecuteResult::DropTable { table_name } => {
+                    actual_output.push(format!("Table '{}' dropped", table_name));
+                }
                 ExecuteResult::Query(mut query) => {
                     // Collect all rows
                     let mut row_count = 0;

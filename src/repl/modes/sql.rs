@@ -35,7 +35,10 @@ impl Mode for SqlMode {
 
         match db::execute(&sql, &mut shared.btree) {
             Ok(ExecuteResult::CreateTable { table_name }) => {
-                CommandResult::Message(format!("Created table '{}'", table_name))
+                CommandResult::Message(format!("Table '{}' created", table_name))
+            }
+            Ok(ExecuteResult::DropTable { table_name }) => {
+                CommandResult::Message(format!("Table '{}' dropped", table_name))
             }
             Ok(ExecuteResult::Query(mut query)) => {
                 use colored::Colorize;
