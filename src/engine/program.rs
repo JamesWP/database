@@ -47,6 +47,12 @@ pub enum MoveOperation {
     Find(Reg),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortKeySpec {
+    pub column_index: usize, // Index within the row (not register number)
+    pub descending: bool,
+}
+
 // TODO: switch to using {} and named members
 //
 // IMPORTANT: When adding new operations that contain JumpTarget fields,
@@ -86,6 +92,12 @@ pub enum Operation {
     InitKeyList(Reg),             // Initialize empty key list
     AppendKey(Reg, Reg),          // AppendKey(list, key): append key to list
     PopKey(Reg, Reg, JumpTarget), // PopKey(dest, list, jump): pop key or jump if empty
+
+    // Row Buffer (for sorting)
+    InitRowBuffer(Reg),                            // Initialize empty row buffer
+    AppendToRowBuffer(Reg, Vec<Reg>),              // Append row to buffer
+    SortRowBuffer(Reg, Vec<SortKeySpec>),          // Sort rows in buffer
+    YieldFromRowBuffer(Vec<Reg>, Reg, JumpTarget), // Pop row from buffer or jump if empty
 
     // Db
     Open(Reg, u32),
@@ -229,6 +241,31 @@ impl std::fmt::Display for Operation {
                     "PopKey".cyan().bold(),
                     dest,
                     list,
+                    target
+                )
+            }
+
+            // Row buffer operations
+            InitRowBuffer(r) => write!(f, "{:10} {}", "InitRBuf".cyan().bold(), r),
+            AppendToRowBuffer(buf, regs) => {
+                write!(f, "{:10} {}, [{:?}]", "AppendRow".cyan().bold(), buf, regs)
+            }
+            SortRowBuffer(buf, keys) => {
+                write!(
+                    f,
+                    "{:10} {}, {} keys",
+                    "SortRows".cyan().bold(),
+                    buf,
+                    keys.len()
+                )
+            }
+            YieldFromRowBuffer(regs, buf, target) => {
+                write!(
+                    f,
+                    "{:10} [{:?}], {}, {}",
+                    "YieldRow".cyan().bold(),
+                    regs,
+                    buf,
                     target
                 )
             }

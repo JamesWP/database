@@ -8,6 +8,7 @@ pub enum RegisterValue {
     ScalarValue(ScalarValue),
     CursorHandle(CursorHandle),
     KeyList(Vec<u64>),
+    RowBuffer(Vec<Vec<ScalarValue>>),
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +101,14 @@ impl RegisterValue {
     pub(crate) fn key_list_mut(&mut self) -> Option<&mut Vec<u64>> {
         if let RegisterValue::KeyList(ref mut list) = self {
             Some(list)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn row_buffer_mut(&mut self) -> Option<&mut Vec<Vec<ScalarValue>>> {
+        if let RegisterValue::RowBuffer(ref mut buffer) = self {
+            Some(buffer)
         } else {
             None
         }

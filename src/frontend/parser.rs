@@ -99,6 +99,10 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::By, lexer::Type::By) => {
+                self.advance();
+                Ok(())
+            }
             // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
@@ -139,6 +143,7 @@ pub enum Expect {
     Set,
     Delete,
     Drop,
+    By,
 }
 
 impl lexer::Type {
@@ -457,6 +462,15 @@ impl Parser {
             _ => None,
         };
 
+        let order_by = match self.input.peek() {
+            lexer::Type::Order => {
+                self.input.advance();
+                self.input.expect(Expect::By)?;
+                Some(self.parse_order_by_clauses()?)
+            }
+            _ => None,
+        };
+
         let limit = match self.input.peek() {
             lexer::Type::Limit => {
                 self.input.advance();
@@ -470,7 +484,41 @@ impl Parser {
             from,
             filter,
             limit,
+            order_by,
         })
+    }
+
+    fn parse_order_by_clauses(&mut self) -> ParseResult<Vec<ast::OrderByClause>> {
+        let mut clauses = Vec::new();
+
+        loop {
+            let expression = self.parse_expression()?;
+            let direction = match self.input.peek() {
+                lexer::Type::Asc => {
+                    self.input.advance();
+                    ast::OrderDirection::Asc
+                }
+                lexer::Type::Desc => {
+                    self.input.advance();
+                    ast::OrderDirection::Desc
+                }
+                _ => ast::OrderDirection::Asc, // Default to ASC
+            };
+
+            clauses.push(ast::OrderByClause {
+                expression,
+                direction,
+            });
+
+            // Check for comma (more sort keys)
+            if matches!(self.input.peek(), lexer::Type::Comma) {
+                self.input.advance();
+            } else {
+                break;
+            }
+        }
+
+        Ok(clauses)
     }
 }
 

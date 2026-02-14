@@ -117,6 +117,62 @@ impl PartialOrd for ScalarValue {
     }
 }
 
+/// Ord implementation for sorting
+/// NULL is ordered before all other values
+/// For floats, NaN is ordered before all other floats
+/// Mixed-type comparisons use a type precedence: Null < Boolean < Integer/Floating < String
+impl Ord for ScalarValue {
+    fn cmp(&self, rhs: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (self, rhs) {
+            (ScalarValue::Null, ScalarValue::Null) => Ordering::Equal,
+            (ScalarValue::Null, _) => Ordering::Less,
+            (_, ScalarValue::Null) => Ordering::Greater,
+
+            (ScalarValue::Integer(lhs), ScalarValue::Integer(rhs)) => lhs.cmp(rhs),
+            (ScalarValue::Floating(lhs), ScalarValue::Floating(rhs)) => {
+                // Handle NaN: NaN < all other floats
+                match (lhs.is_nan(), rhs.is_nan()) {
+                    (true, true) => Ordering::Equal,
+                    (true, false) => Ordering::Less,
+                    (false, true) => Ordering::Greater,
+                    (false, false) => lhs.partial_cmp(rhs).unwrap(),
+                }
+            }
+            (ScalarValue::Integer(lhs), ScalarValue::Floating(rhs)) => {
+                let lhs_f = *lhs as f64;
+                if rhs.is_nan() {
+                    Ordering::Greater
+                } else {
+                    lhs_f.partial_cmp(rhs).unwrap()
+                }
+            }
+            (ScalarValue::Floating(lhs), ScalarValue::Integer(rhs)) => {
+                let rhs_f = *rhs as f64;
+                if lhs.is_nan() {
+                    Ordering::Less
+                } else {
+                    lhs.partial_cmp(&rhs_f).unwrap()
+                }
+            }
+            (ScalarValue::String(lhs), ScalarValue::String(rhs)) => lhs.cmp(rhs),
+            (ScalarValue::Boolean(lhs), ScalarValue::Boolean(rhs)) => lhs.cmp(rhs),
+
+            // Mixed-type ordering: Boolean < Integer/Floating < String
+            (ScalarValue::Boolean(_), ScalarValue::Integer(_)) => Ordering::Less,
+            (ScalarValue::Boolean(_), ScalarValue::Floating(_)) => Ordering::Less,
+            (ScalarValue::Boolean(_), ScalarValue::String(_)) => Ordering::Less,
+            (ScalarValue::Integer(_), ScalarValue::Boolean(_)) => Ordering::Greater,
+            (ScalarValue::Floating(_), ScalarValue::Boolean(_)) => Ordering::Greater,
+            (ScalarValue::Integer(_), ScalarValue::String(_)) => Ordering::Less,
+            (ScalarValue::Floating(_), ScalarValue::String(_)) => Ordering::Less,
+            (ScalarValue::String(_), ScalarValue::Integer(_)) => Ordering::Greater,
+            (ScalarValue::String(_), ScalarValue::Floating(_)) => Ordering::Greater,
+            (ScalarValue::String(_), ScalarValue::Boolean(_)) => Ordering::Greater,
+        }
+    }
+}
+
 impl ScalarValue {
     /// LENGTH(s) returns the length of a string, or NULL for NULL.
     /// For non-string types, converts to string first.

@@ -103,6 +103,9 @@ impl BytecodeEmitter {
                 Operation::PopKey(_, _, ref mut target) => {
                     *target = resolve_target(target, label_positions);
                 }
+                Operation::YieldFromRowBuffer(_, _, ref mut target) => {
+                    *target = resolve_target(target, label_positions);
+                }
                 _ => {}
             }
         }

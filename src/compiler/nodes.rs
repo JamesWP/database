@@ -1,4 +1,4 @@
-use crate::engine::program::{JumpTarget, Label, MoveOperation, Operation, Reg};
+use crate::engine::program::{self, JumpTarget, Label, MoveOperation, Operation, Reg};
 use crate::engine::scalarvalue::ScalarValue;
 use crate::planner::{Literal, LogicalPlan, PlanExpr};
 
@@ -75,11 +75,15 @@ fn adjust_jump_targets(op: Operation, offset: usize) -> Operation {
         Operation::PopKey(dest, list, JumpTarget::Resolved(addr)) => {
             Operation::PopKey(dest, list, JumpTarget::Resolved(addr + offset))
         }
+        Operation::YieldFromRowBuffer(regs, buffer, JumpTarget::Resolved(addr)) => {
+            Operation::YieldFromRowBuffer(regs, buffer, JumpTarget::Resolved(addr + offset))
+        }
         // Unresolved labels should have been resolved by finalize()
         Operation::GoTo(JumpTarget::Unresolved(_))
         | Operation::GoToIfFalse(JumpTarget::Unresolved(_), _)
         | Operation::GoToIfEqualValue(JumpTarget::Unresolved(_), _, _)
-        | Operation::PopKey(_, _, JumpTarget::Unresolved(_)) => {
+        | Operation::PopKey(_, _, JumpTarget::Unresolved(_))
+        | Operation::YieldFromRowBuffer(_, _, JumpTarget::Unresolved(_)) => {
             panic!("Unresolved jump target after finalize")
         }
         // All other operations pass through unchanged
@@ -578,6 +582,109 @@ pub fn codegen_limit(
     }
 }
 
+/// Generate bytecode for a Sort node.
+///
+/// Sort materializes all rows from its child, sorts them based on sort keys,
+/// then yields them in sorted order.
+///
+/// ```text
+/// INIT (init_emitter):
+///   InitRowBuffer(buffer)
+///
+/// BODY (body_emitter):
+///   ... child code ...
+///   collect_row:
+///     AppendToRowBuffer(buffer, child_output_regs)
+///     GoTo(child.next)
+///   sort_and_yield:
+///     SortRowBuffer(buffer, sort_keys)
+///   yield_loop:
+///     YieldFromRowBuffer(child_output_regs, buffer, on_done)
+///     GoTo(on_tuple)
+///   sort_next:
+///     GoTo(yield_loop)
+/// ```
+pub fn codegen_sort(
+    sort_keys: &[crate::planner::SortKey],
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // Allocate register for row buffer
+    let buffer_reg = ctx.registers.alloc();
+
+    // INIT: initialize empty buffer
+    ctx.init_emitter.emit(Operation::InitRowBuffer(buffer_reg));
+
+    // Create labels
+    let collect_row = ctx.body_emitter.create_label();
+    let sort_and_yield = ctx.body_emitter.create_label();
+    let yield_loop = ctx.body_emitter.create_label();
+
+    // Child's on_tuple → collect_row
+    // Child's on_done → sort_and_yield
+    let child_cont = NodeContinuation {
+        on_tuple: collect_row,
+        on_done: sort_and_yield,
+    };
+
+    // Compile child
+    let child_output = codegen(input, &child_cont, ctx);
+
+    // collect_row: append row to buffer and continue
+    ctx.body_emitter.bind_label(collect_row);
+    ctx.body_emitter.emit(Operation::AppendToRowBuffer(
+        buffer_reg,
+        child_output.output_regs.clone(),
+    ));
+    ctx.body_emitter.emit_goto(child_output.next);
+
+    // sort_and_yield: sort the buffer, then fall through to yield loop
+    ctx.body_emitter.bind_label(sort_and_yield);
+
+    // Convert PlanExpr sort keys to column-index-based sort keys
+    // For now, we assume sort expressions are simple column references
+    let sort_key_specs: Vec<program::SortKeySpec> = sort_keys
+        .iter()
+        .map(|key| {
+            // Extract column index from PlanExpr
+            let column_idx = match &key.expr {
+                crate::planner::PlanExpr::ColumnRef(crate::planner::ColumnRef::Single {
+                    column_idx,
+                }) => *column_idx,
+                _ => panic!("ORDER BY only supports column references for now"),
+            };
+            program::SortKeySpec {
+                column_index: column_idx,
+                descending: key.descending,
+            }
+        })
+        .collect();
+
+    ctx.body_emitter
+        .emit(Operation::SortRowBuffer(buffer_reg, sort_key_specs));
+
+    // yield_loop: pop rows from buffer and yield
+    ctx.body_emitter.bind_label(yield_loop);
+    ctx.body_emitter.emit(Operation::YieldFromRowBuffer(
+        child_output.output_regs.clone(),
+        buffer_reg,
+        JumpTarget::Unresolved(cont.on_done),
+    ));
+    // If YieldFromRowBuffer succeeds (didn't jump to on_done), emit tuple
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // sort_next: after parent processes tuple, yield next row
+    let sort_next = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(sort_next);
+    ctx.body_emitter.emit_goto(yield_loop);
+
+    NodeOutput {
+        next: sort_next,
+        output_regs: child_output.output_regs,
+    }
+}
+
 /// Generate bytecode for an Insert node.
 ///
 /// Insert consumes all rows from its child (typically Values), writes each
@@ -977,6 +1084,7 @@ pub fn codegen(
         LogicalPlan::Project { columns, input } => codegen_project(columns, input, cont, ctx),
         LogicalPlan::Sequence { start, end } => codegen_sequence(*start, *end, cont, ctx),
         LogicalPlan::Limit { count, input } => codegen_limit(*count, input, cont, ctx),
+        LogicalPlan::Sort { sort_keys, input } => codegen_sort(sort_keys, input, cont, ctx),
         LogicalPlan::Insert {
             rootpage,
             table_columns,

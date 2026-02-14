@@ -71,6 +71,10 @@ pub enum Type {
     Set,
     Delete,
     Drop,
+    Order,
+    By,
+    Asc,
+    Desc,
 
     #[allow(dead_code)]
     Error(Error),
@@ -445,14 +449,25 @@ impl<'a> Lexer<'a> {
                 _ => Type::Identifier(ident.to_owned()),
             },
             'a' => match ident.chars().nth(1) {
-                Some('s') => match_reserved(ident, "as", Type::As),
+                Some('s') => match ident.chars().nth(2) {
+                    Some('c') => match_reserved(ident, "asc", Type::Asc),
+                    _ => match_reserved(ident, "as", Type::As),
+                },
                 Some('n') => match_reserved(ident, "and", Type::And),
                 _ => Type::Identifier(ident.to_owned()),
             },
-            'b' => match_reserved(ident, "blob", Type::Blob),
+            'b' => match ident.chars().nth(1) {
+                Some('l') => match_reserved(ident, "blob", Type::Blob),
+                Some('y') => match_reserved(ident, "by", Type::By),
+                _ => Type::Identifier(ident.to_owned()),
+            },
             'c' => match_reserved(ident, "create", Type::Create),
             'd' => match ident.chars().nth(1) {
-                Some('e') => match_reserved(ident, "delete", Type::Delete),
+                Some('e') => match ident.chars().nth(2) {
+                    Some('l') => match_reserved(ident, "delete", Type::Delete),
+                    Some('s') => match_reserved(ident, "desc", Type::Desc),
+                    _ => Type::Identifier(ident.to_owned()),
+                },
                 Some('r') => match_reserved(ident, "drop", Type::Drop),
                 _ => Type::Identifier(ident.to_owned()),
             },
@@ -475,7 +490,13 @@ impl<'a> Lexer<'a> {
             },
             'l' => match_reserved(ident, "limit", Type::Limit),
             'n' => match_reserved(ident, "null", Type::Null),
-            'o' => match_reserved(ident, "or", Type::Or),
+            'o' => match ident.chars().nth(1) {
+                Some('r') => match ident.chars().nth(2) {
+                    Some('d') => match_reserved(ident, "order", Type::Order),
+                    _ => match_reserved(ident, "or", Type::Or),
+                },
+                _ => Type::Identifier(ident.to_owned()),
+            },
             'r' => match_reserved(ident, "real", Type::Real),
             't' => match ident.chars().nth(1) {
                 Some('r') => match_reserved(ident, "true", Type::True),
