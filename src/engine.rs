@@ -217,6 +217,26 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            LengthValue(dest, src) => {
+                let src = self.registers.get(src).scalar().unwrap();
+                let result = src.length();
+                *self.registers.get_mut(dest) = RegisterValue::ScalarValue(result);
+            }
+            UpperValue(dest, src) => {
+                let src = self.registers.get(src).scalar().unwrap();
+                let result = src.to_uppercase();
+                *self.registers.get_mut(dest) = RegisterValue::ScalarValue(result);
+            }
+            LowerValue(dest, src) => {
+                let src = self.registers.get(src).scalar().unwrap();
+                let result = src.to_lowercase();
+                *self.registers.get_mut(dest) = RegisterValue::ScalarValue(result);
+            }
+            AbsValue(dest, src) => {
+                let src = self.registers.get(src).scalar().unwrap();
+                let result = src.abs();
+                *self.registers.get_mut(dest) = RegisterValue::ScalarValue(result);
+            }
             InitKeyList(reg) => {
                 *self.registers.get_mut(reg) = RegisterValue::KeyList(Vec::new());
             }

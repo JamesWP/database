@@ -117,6 +117,57 @@ impl PartialOrd for ScalarValue {
     }
 }
 
+impl ScalarValue {
+    /// LENGTH(s) returns the length of a string, or NULL for NULL.
+    /// For non-string types, converts to string first.
+    pub fn length(&self) -> ScalarValue {
+        match self {
+            ScalarValue::Null => ScalarValue::Null,
+            ScalarValue::String(s) => ScalarValue::Integer(s.len() as i64),
+            ScalarValue::Integer(i) => ScalarValue::Integer(i.to_string().len() as i64),
+            ScalarValue::Floating(f) => ScalarValue::Integer(f.to_string().len() as i64),
+            ScalarValue::Boolean(b) => ScalarValue::Integer(b.to_string().len() as i64),
+        }
+    }
+
+    /// UPPER(s) returns the uppercase version of a string, or NULL for NULL.
+    /// For non-string types, converts to string first.
+    pub fn to_uppercase(&self) -> ScalarValue {
+        match self {
+            ScalarValue::Null => ScalarValue::Null,
+            ScalarValue::String(s) => ScalarValue::String(s.to_uppercase()),
+            ScalarValue::Integer(i) => ScalarValue::String(i.to_string().to_uppercase()),
+            ScalarValue::Floating(f) => ScalarValue::String(f.to_string().to_uppercase()),
+            ScalarValue::Boolean(b) => ScalarValue::String(b.to_string().to_uppercase()),
+        }
+    }
+
+    /// LOWER(s) returns the lowercase version of a string, or NULL for NULL.
+    /// For non-string types, converts to string first.
+    pub fn to_lowercase(&self) -> ScalarValue {
+        match self {
+            ScalarValue::Null => ScalarValue::Null,
+            ScalarValue::String(s) => ScalarValue::String(s.to_lowercase()),
+            ScalarValue::Integer(i) => ScalarValue::String(i.to_string().to_lowercase()),
+            ScalarValue::Floating(f) => ScalarValue::String(f.to_string().to_lowercase()),
+            ScalarValue::Boolean(b) => ScalarValue::String(b.to_string().to_lowercase()),
+        }
+    }
+
+    /// ABS(n) returns the absolute value of a number, or NULL for NULL.
+    /// For non-numeric types, panics.
+    pub fn abs(&self) -> ScalarValue {
+        match self {
+            ScalarValue::Null => ScalarValue::Null,
+            ScalarValue::Integer(i) => ScalarValue::Integer(i.abs()),
+            ScalarValue::Floating(f) => ScalarValue::Floating(f.abs()),
+            ScalarValue::Boolean(_) | ScalarValue::String(_) => {
+                panic!("ABS requires numeric type")
+            }
+        }
+    }
+}
+
 /// Only implemented for testing purposes, actual code shouldn't compare these types directly
 #[cfg(test)]
 impl PartialEq for ScalarValue {

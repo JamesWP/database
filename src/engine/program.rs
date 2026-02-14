@@ -76,6 +76,12 @@ pub enum Operation {
     NegateValue(Reg, Reg),                  // Reg = -Reg (arithmetic negation)
     CopyValue(Reg, Reg),                    // Reg = Reg (copy value)
 
+    // String/Scalar Functions
+    LengthValue(Reg, Reg), // Reg = LENGTH(Reg)
+    UpperValue(Reg, Reg),  // Reg = UPPER(Reg)
+    LowerValue(Reg, Reg),  // Reg = LOWER(Reg)
+    AbsValue(Reg, Reg),    // Reg = ABS(Reg)
+
     // Key List (for collect-then-mutate pattern)
     InitKeyList(Reg),             // Initialize empty key list
     AppendKey(Reg, Reg),          // AppendKey(list, key): append key to list
@@ -206,6 +212,12 @@ impl std::fmt::Display for Operation {
             NotValue(d, s) => write!(f, "{:10} {}, {}", "Not".cyan().bold(), d, s),
             NegateValue(d, s) => write!(f, "{:10} {}, {}", "Neg".cyan().bold(), d, s),
             CopyValue(d, s) => write!(f, "{:10} {}, {}", "Copy".cyan().bold(), d, s),
+
+            // String/Scalar Function operations
+            LengthValue(d, s) => write!(f, "{:10} {}, {}", "Length".cyan().bold(), d, s),
+            UpperValue(d, s) => write!(f, "{:10} {}, {}", "Upper".cyan().bold(), d, s),
+            LowerValue(d, s) => write!(f, "{:10} {}, {}", "Lower".cyan().bold(), d, s),
+            AbsValue(d, s) => write!(f, "{:10} {}, {}", "Abs".cyan().bold(), d, s),
 
             // Key list operations
             InitKeyList(r) => write!(f, "{:10} {}", "InitKList".cyan().bold(), r),

@@ -25,6 +25,7 @@ pub fn compile_expr(expr: &PlanExpr, input_regs: &[Reg], ctx: &mut ExprContext) 
             compile_binary_op(op, left, right, input_regs, ctx)
         }
         PlanExpr::UnaryOp { op, operand } => compile_unary_op(op, operand, input_regs, ctx),
+        PlanExpr::FunctionCall { name, args } => compile_function_call(name, args, input_regs, ctx),
     }
 }
 
@@ -116,6 +117,30 @@ fn compile_unary_op(
             // Plus is a no-op, just copy the value
             Operation::CopyValue(dest, operand_reg)
         }
+    };
+
+    ctx.emitter.emit(operation);
+    dest
+}
+
+fn compile_function_call(
+    name: &str,
+    args: &[PlanExpr],
+    input_regs: &[Reg],
+    ctx: &mut ExprContext,
+) -> Reg {
+    // All functions currently take exactly 1 argument (validated in planner)
+    assert_eq!(args.len(), 1, "Functions should have exactly 1 argument");
+
+    let arg_reg = compile_expr(&args[0], input_regs, ctx);
+    let dest = ctx.registers.alloc();
+
+    let operation = match name {
+        "LENGTH" => Operation::LengthValue(dest, arg_reg),
+        "UPPER" => Operation::UpperValue(dest, arg_reg),
+        "LOWER" => Operation::LowerValue(dest, arg_reg),
+        "ABS" => Operation::AbsValue(dest, arg_reg),
+        _ => panic!("Unknown function: {}", name),
     };
 
     ctx.emitter.emit(operation);

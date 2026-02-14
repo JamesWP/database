@@ -128,6 +128,10 @@ pub enum Expression {
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
+    FunctionCall {
+        name: String,
+        args: Vec<Expression>,
+    },
     Value(ScalarValue),
 }
 
@@ -185,6 +189,13 @@ impl Expression {
                 lhs.append(&mut rhs);
 
                 lhs
+            }
+            Expression::FunctionCall { args, .. } => {
+                let mut refs = vec![];
+                for arg in args {
+                    refs.append(&mut arg.get_column_references());
+                }
+                refs
             }
         }
     }
