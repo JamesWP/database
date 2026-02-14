@@ -501,8 +501,7 @@ fn convert_expr_no_context(expr: &ast::Expression) -> Result<PlanExpr, PlanError
             }
 
             // Convert arguments
-            let plan_args: Result<Vec<_>, _> =
-                args.iter().map(convert_expr_no_context).collect();
+            let plan_args: Result<Vec<_>, _> = args.iter().map(convert_expr_no_context).collect();
 
             Ok(PlanExpr::FunctionCall {
                 name: name_upper,
