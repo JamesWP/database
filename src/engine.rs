@@ -217,6 +217,28 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            InitKeyList(reg) => {
+                *self.registers.get_mut(reg) = RegisterValue::KeyList(Vec::new());
+            }
+            AppendKey(list_reg, key_reg) => {
+                let key = match self.registers.get(key_reg).scalar().unwrap() {
+                    ScalarValue::Integer(k) => *k as u64,
+                    other => panic!("AppendKey requires Integer key, got {:?}", other),
+                };
+                let list = self.registers.get_mut(list_reg).key_list_mut().unwrap();
+                list.push(key);
+            }
+            PopKey(dest_reg, list_reg, target) => {
+                let list = self.registers.get_mut(list_reg).key_list_mut().unwrap();
+                if let Some(key) = list.pop() {
+                    let value = ScalarValue::Integer(key as i64);
+                    *self.registers.get_mut(dest_reg) = RegisterValue::ScalarValue(value);
+                } else {
+                    // List is empty, jump to target
+                    self.program
+                        .set_next_operation_index(target.unwrap_resolved());
+                }
+            }
             GoTo(target) => {
                 self.program
                     .set_next_operation_index(target.unwrap_resolved());
@@ -249,19 +271,26 @@ impl Engine {
                 *self.registers.get_mut(reg) = RegisterValue::CursorHandle(cursor);
             }
             MoveCursor(reg, operation) => {
+                // Extract key value if this is a Find operation
+                let find_key = if let program::MoveOperation::Find(key_reg) = operation {
+                    Some(match self.registers.get(key_reg).scalar().unwrap() {
+                        ScalarValue::Integer(k) => *k as u64,
+                        other => panic!("Find requires Integer key, got {:?}", other),
+                    })
+                } else {
+                    None
+                };
+
                 let cursor = self.registers.get_mut(reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readwrite();
                 match operation {
-                    program::MoveOperation::First => {
-                        cursor.first();
+                    program::MoveOperation::First => cursor.first(),
+                    program::MoveOperation::Next => cursor.next(),
+                    program::MoveOperation::Last => cursor.last(),
+                    program::MoveOperation::Find(_) => {
+                        cursor.find(find_key.unwrap());
                     }
-                    program::MoveOperation::Next => {
-                        cursor.next();
-                    }
-                    program::MoveOperation::Last => {
-                        cursor.last();
-                    }
-                };
+                }
             }
             CanReadCursor(dest, reg) => {
                 let cursor = self.registers.get_mut(reg).cursor_mut().unwrap();
@@ -1240,5 +1269,144 @@ mod test {
         assert_eq!(yields[0][0], ScalarValue::Integer(1));
         assert_eq!(yields[1][0], ScalarValue::Integer(2));
         assert_eq!(yields[2][0], ScalarValue::Integer(3));
+    }
+
+    #[test]
+    fn test_key_list_append_and_pop() {
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let r_list = Reg::new(0);
+        let r_key = Reg::new(1);
+        let r_val1 = Reg::new(2);
+        let r_val2 = Reg::new(3);
+        let r_val3 = Reg::new(4);
+
+        let ops = [
+            // Initialize list and append 3 keys
+            Operation::InitKeyList(r_list),
+            Operation::StoreValue(r_key, ScalarValue::Integer(10)),
+            Operation::AppendKey(r_list, r_key),
+            Operation::StoreValue(r_key, ScalarValue::Integer(20)),
+            Operation::AppendKey(r_list, r_key),
+            Operation::StoreValue(r_key, ScalarValue::Integer(30)),
+            Operation::AppendKey(r_list, r_key),
+            // Pop and yield all 3 keys (in reverse order: 30, 20, 10)
+            Operation::PopKey(r_val1, r_list, JumpTarget::addr(10)),
+            Operation::PopKey(r_val2, r_list, JumpTarget::addr(10)),
+            Operation::PopKey(r_val3, r_list, JumpTarget::addr(10)),
+            Operation::Yield(vec![r_val1, r_val2, r_val3]),
+            // Try to pop from empty list - should jump to halt
+            Operation::PopKey(r_key, r_list, JumpTarget::addr(13)), // jump to Halt
+            Operation::Yield(vec![r_key]),                          // Should not reach here
+            Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 5, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(30)); // LIFO: last in, first out
+        assert_eq!(yields[0][1], ScalarValue::Integer(20));
+        assert_eq!(yields[0][2], ScalarValue::Integer(10));
+    }
+
+    #[test]
+    fn test_move_cursor_find() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert some test data
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            c.insert(10, b"[100]".to_vec());
+            c.insert(20, b"[200]".to_vec());
+            c.insert(30, b"[300]".to_vec());
+        }
+
+        let r_cursor = Reg::new(0);
+        let r_key = Reg::new(1);
+        let r_value = Reg::new(2);
+
+        let ops = [
+            Operation::Open(r_cursor, root),
+            // Seek to key 20
+            Operation::StoreValue(r_key, ScalarValue::Integer(20)),
+            Operation::MoveCursor(r_cursor, MoveOperation::Find(r_key)),
+            // Read the value at this position
+            Operation::ReadCursor(vec![r_value], r_cursor),
+            Operation::Yield(vec![r_value]),
+            Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 3, btree);
+        let yields = engine.run();
+
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(200));
+    }
+
+    #[test]
+    fn test_collect_then_delete_pattern() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Insert 3 rows
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            c.insert(1, b"[10]".to_vec());
+            c.insert(2, b"[20]".to_vec());
+            c.insert(3, b"[30]".to_vec());
+        }
+
+        let r_cursor = Reg::new(0);
+        let r_key_list = Reg::new(1);
+        let r_key = Reg::new(2);
+        let r_can_read = Reg::new(3);
+        let r_count = Reg::new(4);
+
+        let ops = [
+            // Init
+            Operation::Open(r_cursor, root),
+            Operation::MoveCursor(r_cursor, MoveOperation::First),
+            Operation::InitKeyList(r_key_list),
+            Operation::StoreValue(r_count, ScalarValue::Integer(0)),
+            // Phase 1: Collect all keys
+            // collect_loop (addr 4):
+            Operation::CanReadCursor(r_can_read, r_cursor), // 4
+            Operation::GoToIfFalse(JumpTarget::addr(11), r_can_read), // jump to phase2
+            Operation::ReadKey(r_key, r_cursor),
+            Operation::AppendKey(r_key_list, r_key),
+            Operation::IncrementValue(r_count),
+            Operation::MoveCursor(r_cursor, MoveOperation::Next),
+            Operation::GoTo(JumpTarget::addr(4)), // loop back
+            // Phase 2: Delete all collected keys
+            // delete_loop (addr 11):
+            Operation::PopKey(r_key, r_key_list, JumpTarget::addr(15)), // 11, jump to done
+            Operation::MoveCursor(r_cursor, MoveOperation::Find(r_key)),
+            Operation::DeleteCursor(r_cursor),
+            Operation::GoTo(JumpTarget::addr(11)), // loop back
+            // done (addr 15):
+            Operation::Yield(vec![r_count]), // 15
+            Operation::Halt,
+        ];
+
+        let mut engine = Engine::with_program(&ops, 5, btree);
+        let yields = engine.run();
+
+        // Should have deleted 3 rows
+        assert_eq!(yields.len(), 1);
+        assert_eq!(yields[0][0], ScalarValue::Integer(3));
+
+        // Verify table is empty
+        let btree = engine.take_btree().unwrap();
+        let mut cursor = btree.open(root);
+        let mut c = cursor.open_readwrite();
+        c.first();
+        assert!(c.get_entry().is_none());
     }
 }
