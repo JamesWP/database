@@ -281,7 +281,7 @@ git commit -m "message"
 At the end of each phase:
 - Run final verification: `cargo test` + `cargo build` (check warnings)
 - Show phase summary: `git log --oneline -N` (all phase commits)
-- Show total diff: `git diff master --stat`
+- Show total diff: `git diff main --stat`
 - Update `doc/plan/README.md` test coverage section with new counts
 - Suggest any relevant CLAUDE.md updates based on patterns learned
 
