@@ -76,6 +76,12 @@ impl BytecodeEmitter {
             .push(Operation::GoToIfEqualValue(target, lhs, rhs));
     }
 
+    /// Emit a PopKey instruction: pop key from list into dest, or jump if empty.
+    pub fn emit_pop_key(&mut self, dest: Reg, list: Reg, label: Label) {
+        let target = self.resolve_label(label);
+        self.operations.push(Operation::PopKey(dest, list, target));
+    }
+
     /// Finalize the bytecode by resolving all jump targets.
     /// Returns the final list of operations.
     /// Panics if any label was never bound.
@@ -92,6 +98,9 @@ impl BytecodeEmitter {
                     *target = resolve_target(target, label_positions);
                 }
                 Operation::GoToIfEqualValue(ref mut target, _, _) => {
+                    *target = resolve_target(target, label_positions);
+                }
+                Operation::PopKey(_, _, ref mut target) => {
                     *target = resolve_target(target, label_positions);
                 }
                 _ => {}

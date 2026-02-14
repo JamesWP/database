@@ -48,6 +48,11 @@ pub enum MoveOperation {
 }
 
 // TODO: switch to using {} and named members
+//
+// IMPORTANT: When adding new operations that contain JumpTarget fields,
+// you must also update:
+// 1. compiler/nodes.rs: adjust_jump_targets() - add case to adjust jump targets by offset
+// 2. compiler/emitter.rs: finalize() - add case to resolve unresolved labels
 #[derive(Clone, Debug)]
 pub enum Operation {
     // Value

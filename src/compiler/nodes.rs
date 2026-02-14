@@ -72,10 +72,14 @@ fn adjust_jump_targets(op: Operation, offset: usize) -> Operation {
         Operation::GoToIfEqualValue(JumpTarget::Resolved(addr), lhs, rhs) => {
             Operation::GoToIfEqualValue(JumpTarget::Resolved(addr + offset), lhs, rhs)
         }
+        Operation::PopKey(dest, list, JumpTarget::Resolved(addr)) => {
+            Operation::PopKey(dest, list, JumpTarget::Resolved(addr + offset))
+        }
         // Unresolved labels should have been resolved by finalize()
         Operation::GoTo(JumpTarget::Unresolved(_))
         | Operation::GoToIfFalse(JumpTarget::Unresolved(_), _)
-        | Operation::GoToIfEqualValue(JumpTarget::Unresolved(_), _, _) => {
+        | Operation::GoToIfEqualValue(JumpTarget::Unresolved(_), _, _)
+        | Operation::PopKey(_, _, JumpTarget::Unresolved(_)) => {
             panic!("Unresolved jump target after finalize")
         }
         // All other operations pass through unchanged
@@ -708,6 +712,14 @@ pub fn codegen_insert(
 /// Uses the same key for reinsert (which overwrites existing value).
 /// Returns row count of updated rows.
 #[allow(clippy::too_many_arguments)]
+/// Generate bytecode for an Update node.
+///
+/// Update uses a two-phase collect-then-mutate pattern:
+/// Phase 1: Scan the table and collect keys of matching rows
+/// Phase 2: Iterate the collected keys, re-read each row, compute new values, and update
+///
+/// This avoids cursor invalidation issues when updating during iteration.
+/// Returns row count of updated rows.
 pub fn codegen_update(
     rootpage: u32,
     table_columns: &[usize],
@@ -717,6 +729,7 @@ pub fn codegen_update(
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
     let cursor_reg = ctx.registers.alloc();
+    let key_list_reg = ctx.registers.alloc();
     let key_reg = ctx.registers.alloc();
     let counter_reg = ctx.registers.alloc();
     let flag_reg = ctx.registers.alloc();
@@ -724,135 +737,22 @@ pub fn codegen_update(
     // Allocate registers for reading all table columns
     let read_regs = ctx.registers.alloc_block(table_columns.len());
 
-    // INIT: open cursor, position to first, init counter
+    // INIT: open cursor, position to first, init key list and counter
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
     ctx.init_emitter
         .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
+    ctx.init_emitter.emit(Operation::InitKeyList(key_list_reg));
     ctx.init_emitter
         .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
 
-    // BODY: scan loop
-    let loop_start = ctx.body_emitter.create_label();
-    let loop_done = ctx.body_emitter.create_label();
+    // PHASE 1: Collect keys
+    let collect_start = ctx.body_emitter.create_label();
+    let phase2_start = ctx.body_emitter.create_label();
 
-    ctx.body_emitter.bind_label(loop_start);
+    ctx.body_emitter.bind_label(collect_start);
     ctx.body_emitter
         .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
-    ctx.body_emitter.emit_goto_if_false(loop_done, flag_reg);
-
-    // Read key and all columns
-    ctx.body_emitter
-        .emit(Operation::ReadKey(key_reg, cursor_reg));
-    ctx.body_emitter
-        .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
-
-    // Evaluate filter if present
-    if let Some(filter_expr) = filter {
-        let filter_reg = {
-            let mut expr_ctx = ExprContext {
-                emitter: &mut ctx.body_emitter,
-                registers: &mut ctx.registers,
-            };
-            compile_expr(filter_expr, &read_regs, &mut expr_ctx)
-        };
-        let skip_label = ctx.body_emitter.create_label();
-        ctx.body_emitter.emit_goto_if_false(skip_label, filter_reg);
-
-        // Filter matched: compute new values and update
-        let new_values = read_regs.clone();
-        for (col_idx, expr) in assignments {
-            let value_reg = {
-                let mut expr_ctx = ExprContext {
-                    emitter: &mut ctx.body_emitter,
-                    registers: &mut ctx.registers,
-                };
-                compile_expr(expr, &read_regs, &mut expr_ctx)
-            };
-            ctx.body_emitter
-                .emit(Operation::CopyValue(new_values[*col_idx], value_reg));
-        }
-
-        // Rewrite with same key
-        ctx.body_emitter
-            .emit(Operation::WriteCursor(cursor_reg, key_reg, new_values));
-        ctx.body_emitter
-            .emit(Operation::IncrementValue(counter_reg));
-
-        ctx.body_emitter.bind_label(skip_label);
-    } else {
-        // No filter: update all rows
-        let new_values = read_regs.clone();
-        for (col_idx, expr) in assignments {
-            let value_reg = {
-                let mut expr_ctx = ExprContext {
-                    emitter: &mut ctx.body_emitter,
-                    registers: &mut ctx.registers,
-                };
-                compile_expr(expr, &read_regs, &mut expr_ctx)
-            };
-            ctx.body_emitter
-                .emit(Operation::CopyValue(new_values[*col_idx], value_reg));
-        }
-
-        ctx.body_emitter
-            .emit(Operation::WriteCursor(cursor_reg, key_reg, new_values));
-        ctx.body_emitter
-            .emit(Operation::IncrementValue(counter_reg));
-    }
-
-    // Advance to next row
-    ctx.body_emitter
-        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
-    ctx.body_emitter.emit_goto(loop_start);
-
-    // Loop done: yield count
-    ctx.body_emitter.bind_label(loop_done);
-    ctx.body_emitter.emit_goto(cont.on_tuple);
-
-    // After yielding, halt
-    let update_done = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(update_done);
-    ctx.body_emitter.emit_goto(cont.on_done);
-
-    NodeOutput {
-        next: update_done,
-        output_regs: vec![counter_reg],
-    }
-}
-
-/// Generate bytecode for a Delete node.
-///
-/// Delete scans a table, collects keys of matching rows, then deletes them.
-/// Returns row count of deleted rows.
-pub fn codegen_delete(
-    rootpage: u32,
-    table_columns: &[usize],
-    filter: &Option<PlanExpr>,
-    cont: &NodeContinuation,
-    ctx: &mut CodegenContext,
-) -> NodeOutput {
-    let cursor_reg = ctx.registers.alloc();
-    let counter_reg = ctx.registers.alloc();
-    let flag_reg = ctx.registers.alloc();
-
-    // Allocate registers for reading all table columns (needed for filter evaluation)
-    let read_regs = ctx.registers.alloc_block(table_columns.len());
-
-    // INIT: open cursor, position to first, init counter
-    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
-    ctx.init_emitter
-        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
-    ctx.init_emitter
-        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
-
-    // BODY: scan loop
-    let loop_start = ctx.body_emitter.create_label();
-    let loop_done = ctx.body_emitter.create_label();
-
-    ctx.body_emitter.bind_label(loop_start);
-    ctx.body_emitter
-        .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
-    ctx.body_emitter.emit_goto_if_false(loop_done, flag_reg);
+    ctx.body_emitter.emit_goto_if_false(phase2_start, flag_reg);
 
     // Read all columns (needed for filter evaluation)
     ctx.body_emitter
@@ -870,15 +770,21 @@ pub fn codegen_delete(
         let skip_label = ctx.body_emitter.create_label();
         ctx.body_emitter.emit_goto_if_false(skip_label, filter_reg);
 
-        // Filter matched: delete row at current cursor position
-        ctx.body_emitter.emit(Operation::DeleteCursor(cursor_reg));
+        // Filter matched: collect this key
+        ctx.body_emitter
+            .emit(Operation::ReadKey(key_reg, cursor_reg));
+        ctx.body_emitter
+            .emit(Operation::AppendKey(key_list_reg, key_reg));
         ctx.body_emitter
             .emit(Operation::IncrementValue(counter_reg));
 
         ctx.body_emitter.bind_label(skip_label);
     } else {
-        // No filter: delete all rows
-        ctx.body_emitter.emit(Operation::DeleteCursor(cursor_reg));
+        // No filter: collect all keys
+        ctx.body_emitter
+            .emit(Operation::ReadKey(key_reg, cursor_reg));
+        ctx.body_emitter
+            .emit(Operation::AppendKey(key_list_reg, key_reg));
         ctx.body_emitter
             .emit(Operation::IncrementValue(counter_reg));
     }
@@ -886,19 +792,172 @@ pub fn codegen_delete(
     // Advance to next row
     ctx.body_emitter
         .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
-    ctx.body_emitter.emit_goto(loop_start);
+    ctx.body_emitter.emit_goto(collect_start);
 
-    // Loop done: yield count
-    ctx.body_emitter.bind_label(loop_done);
+    // PHASE 2: Update collected keys
+    let update_loop = ctx.body_emitter.create_label();
+    let update_done = ctx.body_emitter.create_label();
+
+    ctx.body_emitter.bind_label(phase2_start);
+    ctx.body_emitter.bind_label(update_loop);
+
+    // Pop next key, or jump to done if list is empty
+    ctx.body_emitter
+        .emit_pop_key(key_reg, key_list_reg, update_done);
+
+    // Seek to this key and re-read row values
+    ctx.body_emitter.emit(Operation::MoveCursor(
+        cursor_reg,
+        MoveOperation::Find(key_reg),
+    ));
+    ctx.body_emitter
+        .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
+
+    // Compute new values from assignments
+    let new_values = read_regs.clone();
+    for (col_idx, expr) in assignments {
+        let value_reg = {
+            let mut expr_ctx = ExprContext {
+                emitter: &mut ctx.body_emitter,
+                registers: &mut ctx.registers,
+            };
+            compile_expr(expr, &read_regs, &mut expr_ctx)
+        };
+        ctx.body_emitter
+            .emit(Operation::CopyValue(new_values[*col_idx], value_reg));
+    }
+
+    // Write updated row
+    ctx.body_emitter
+        .emit(Operation::WriteCursor(cursor_reg, key_reg, new_values));
+    ctx.body_emitter.emit_goto(update_loop);
+
+    // Done: yield count
+    ctx.body_emitter.bind_label(update_done);
     ctx.body_emitter.emit_goto(cont.on_tuple);
 
     // After yielding, halt
-    let delete_done = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(delete_done);
+    let after_yield = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(after_yield);
     ctx.body_emitter.emit_goto(cont.on_done);
 
     NodeOutput {
-        next: delete_done,
+        next: after_yield,
+        output_regs: vec![counter_reg],
+    }
+}
+
+/// Generate bytecode for a Delete node.
+///
+/// Delete uses a two-phase collect-then-mutate pattern:
+/// Phase 1: Scan the table and collect keys of matching rows
+/// Phase 2: Iterate the collected keys and delete each one
+///
+/// This avoids cursor invalidation issues when deleting during iteration.
+/// Returns row count of deleted rows.
+pub fn codegen_delete(
+    rootpage: u32,
+    table_columns: &[usize],
+    filter: &Option<PlanExpr>,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    let cursor_reg = ctx.registers.alloc();
+    let key_list_reg = ctx.registers.alloc();
+    let key_reg = ctx.registers.alloc();
+    let counter_reg = ctx.registers.alloc();
+    let flag_reg = ctx.registers.alloc();
+
+    // Allocate registers for reading all table columns (needed for filter evaluation)
+    let read_regs = ctx.registers.alloc_block(table_columns.len());
+
+    // INIT: open cursor, position to first, init key list and counter
+    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
+    ctx.init_emitter
+        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
+    ctx.init_emitter.emit(Operation::InitKeyList(key_list_reg));
+    ctx.init_emitter
+        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
+
+    // PHASE 1: Collect keys
+    let collect_start = ctx.body_emitter.create_label();
+    let phase2_start = ctx.body_emitter.create_label();
+
+    ctx.body_emitter.bind_label(collect_start);
+    ctx.body_emitter
+        .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
+    ctx.body_emitter.emit_goto_if_false(phase2_start, flag_reg);
+
+    // Read all columns (needed for filter evaluation)
+    ctx.body_emitter
+        .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
+
+    // Evaluate filter if present
+    if let Some(filter_expr) = filter {
+        let filter_reg = {
+            let mut expr_ctx = ExprContext {
+                emitter: &mut ctx.body_emitter,
+                registers: &mut ctx.registers,
+            };
+            compile_expr(filter_expr, &read_regs, &mut expr_ctx)
+        };
+        let skip_label = ctx.body_emitter.create_label();
+        ctx.body_emitter.emit_goto_if_false(skip_label, filter_reg);
+
+        // Filter matched: collect this key
+        ctx.body_emitter
+            .emit(Operation::ReadKey(key_reg, cursor_reg));
+        ctx.body_emitter
+            .emit(Operation::AppendKey(key_list_reg, key_reg));
+        ctx.body_emitter
+            .emit(Operation::IncrementValue(counter_reg));
+
+        ctx.body_emitter.bind_label(skip_label);
+    } else {
+        // No filter: collect all keys
+        ctx.body_emitter
+            .emit(Operation::ReadKey(key_reg, cursor_reg));
+        ctx.body_emitter
+            .emit(Operation::AppendKey(key_list_reg, key_reg));
+        ctx.body_emitter
+            .emit(Operation::IncrementValue(counter_reg));
+    }
+
+    // Advance to next row
+    ctx.body_emitter
+        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
+    ctx.body_emitter.emit_goto(collect_start);
+
+    // PHASE 2: Delete collected keys
+    let delete_loop = ctx.body_emitter.create_label();
+    let delete_done = ctx.body_emitter.create_label();
+
+    ctx.body_emitter.bind_label(phase2_start);
+    ctx.body_emitter.bind_label(delete_loop);
+
+    // Pop next key, or jump to done if list is empty
+    ctx.body_emitter
+        .emit_pop_key(key_reg, key_list_reg, delete_done);
+
+    // Seek to this key and delete
+    ctx.body_emitter.emit(Operation::MoveCursor(
+        cursor_reg,
+        MoveOperation::Find(key_reg),
+    ));
+    ctx.body_emitter.emit(Operation::DeleteCursor(cursor_reg));
+    ctx.body_emitter.emit_goto(delete_loop);
+
+    // Done: yield count
+    ctx.body_emitter.bind_label(delete_done);
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // After yielding, halt
+    let after_yield = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(after_yield);
+    ctx.body_emitter.emit_goto(cont.on_done);
+
+    NodeOutput {
+        next: after_yield,
         output_regs: vec![counter_reg],
     }
 }
@@ -1899,5 +1958,31 @@ mod tests {
         assert_eq!(yields.len(), 2);
         assert_eq!(yields[0][0], ScalarValue::Integer(60));
         assert_eq!(yields[1][0], ScalarValue::Integer(70));
+    }
+
+    /// Test DELETE bytecode generation (print only, don't execute)
+    #[test]
+    fn test_codegen_delete_bytecode_structure() {
+        let test = TestDb::default();
+        let btree = test.btree;
+        let root = 42; // Dummy root page
+
+        // Test DELETE with no filter (delete all)
+        let plan = LogicalPlan::Delete {
+            rootpage: root,
+            table_columns: vec![0],
+            filter: None,
+        };
+
+        let (ops, _num_registers) = compile_plan(&plan);
+
+        // Print bytecode for inspection
+        println!("\nDELETE bytecode:");
+        for (i, op) in ops.iter().enumerate() {
+            println!("{:3}: {}", i, op);
+        }
+
+        // Just verify we got some operations
+        assert!(ops.len() > 10, "Expected reasonable bytecode length");
     }
 }
