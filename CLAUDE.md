@@ -29,38 +29,25 @@ cargo fmt -- --check     # Check if code is formatted
 
 **SQL Test Runner Features:**
 
-The SQL test runner (`tests/sql_runner.rs`) executes `.sql` scripts and compares output against `.expected` files:
+The SQL test runner uses `build.rs` to auto-generate individual test functions for each `.sql` file in `tests/sql/`. Each SQL file becomes a separate `#[test]` function, enabling native cargo test features.
 
-1. **Error Testing**: Test expected errors using `ERROR: <pattern>` syntax in `.expected` files
+1. **Auto-Generated Tests**: `build.rs` scans `tests/sql/*.sql` and generates test functions
+   - Each file becomes a test: `where_clauses.sql` → `test_sql_where_clauses()`
+   - Run all SQL tests: `cargo test test_sql_`
+   - Run specific test: `cargo test test_sql_where_clauses`
+   - Native cargo test filtering, parallelism, and output work seamlessly
+
+2. **Error Testing**: Test expected errors using `ERROR: <pattern>` syntax in `.expected` files
    - Pattern matching is case-insensitive substring match
    - Example: `ERROR: already exists` matches "Table 'users' already exists"
    - Enables testing error handling paths and documenting expected error messages
 
-2. **Single Test Execution**: Run a specific test file for faster iteration
-   ```bash
-   SQL_TEST_FILE=where_clauses cargo test test_sql_scripts
-   ```
-
-3. **Test Update Mode**: Auto-update `.expected` files from actual output
-   ```bash
-   UPDATE_EXPECTED=1 cargo test test_sql_scripts
-   ```
-   - When mismatches are detected, writes actual output to `.expected` files
-   - Prints summary of updated files and suggests `git diff` for review
-   - Useful for quickly updating tests after intentional behavior changes
-
-**SQL Test Helper Script** (`test-sql.sh`):
-
-A convenience wrapper for running SQL tests with environment variables. Use this for consistent commands that are easier to auto-approve in Claude Code:
-
-```bash
-./test-sql.sh                    # Run all SQL tests
-./test-sql.sh delete             # Run specific test file (delete.sql)
-./test-sql.sh delete --update    # Run test and update .expected file
-./test-sql.sh --update           # Update all .expected files
-```
-
-**When to use**: Prefer this script over raw `cargo test` commands when working with SQL integration tests during development. It provides a consistent interface and avoids having to remember environment variable syntax.
+3. **Update Mode**: Separate binary for updating `.expected` files
+   - Update all tests: `cargo run --bin update-sql-tests`
+   - Update specific tests: `cargo run --bin update-sql-tests where_clauses delete`
+   - Creates missing .expected files automatically
+   - Prints summary and suggests git diff for review
+   - No marker files or environment variables needed!
 
 **Example error test** (`tests/sql/error_cases.sql`):
 ```sql

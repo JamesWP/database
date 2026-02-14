@@ -1,8 +1,8 @@
 Table 'users' created
-ERROR: already exists
-ERROR: TableNotFound
+ERROR: Table 'users' already exists
+ERROR: Planning error: TableNotFound("nonexistent")
 1
-ERROR: ColumnCountMismatch
-ERROR: ColumnCountMismatch
-ERROR: Parse error
-ERROR: Parse error
+ERROR: Planning error: ColumnCountMismatch { expected: 3, got: 2 }
+ERROR: Planning error: ColumnCountMismatch { expected: 3, got: 4 }
+ERROR: Parse error: UnexpectedToken(Identifier, Eof)
+ERROR: Parse error: UnexpectedToken(Table, Identifier("invalid"))
