@@ -24,15 +24,7 @@ pub struct CursorState {
     leaf_iterator: Option<LeafNodeIterator>,
 }
 
-impl CursorState {
-    /// Invalidate the cursor's navigation state.
-    /// After calling this, the cursor is unpositioned and must call find(), first(), or last()
-    /// to re-establish position before calling next(), prev(), or get_entry().
-    fn invalidate(&mut self) {
-        self.stack.clear();
-        self.leaf_iterator = None;
-    }
-}
+impl CursorState {}
 
 #[derive(Debug, Clone)]
 pub struct CursorHandle {
@@ -135,11 +127,6 @@ where
                 }
             }
         }
-
-        // TODO: Cursor invalidation for insert
-        // Currently disabled because UPDATE uses insert() during scan iteration
-        // Need to refactor UPDATE to collect-then-update pattern like DELETE
-        // self.cursor_state.invalidate();
     }
 
     /// Updates a page with new content
@@ -243,7 +230,10 @@ where
 
     /// Delete the row at the current cursor position.
     /// The cursor must be positioned (via find, first, next, etc.) before calling.
-    /// Cursor state is invalidated after deletion.
+    ///
+    /// Note: With the two-phase collect-then-mutate pattern for DELETE/UPDATE statements,
+    /// cursor invalidation is no longer necessary. The scanning cursor has already moved
+    /// past this position before deletion happens.
     pub fn delete_current(&mut self) {
         // Cursor must be positioned
         let (leaf_page_idx, cell_index) = self
@@ -269,14 +259,10 @@ where
         self.pager
             .encode_and_set(leaf_page_idx, page)
             .expect("Deletion should not cause page overflow");
-
-        // Invalidate cursor state - caller must reposition after delete
-        self.cursor_state.invalidate();
     }
 
     /// Delete a key from the B-tree.
     /// If the key exists, it is removed. If not, this is a no-op.
-    /// Cursor state is invalidated after deletion.
     pub fn delete(&mut self, key: u64) {
         // Use find to position the cursor on the target leaf
         let found = self.find(key);
@@ -1753,34 +1739,8 @@ mod test {
     }
 
     #[test]
-    fn test_cursor_invalidated_after_insert() {
-        // Verify that cursor state is invalidated after insert
-        let test = TestDb::default();
-        let mut btree = test.btree;
-        let root = btree.create_tree();
-
-        {
-            let mut cursor_handle = btree.open(root);
-            let mut cursor = cursor_handle.open_readwrite();
-
-            // Position cursor and insert
-            cursor.insert(1, b"value1".to_vec());
-
-            // Cursor should be invalidated - next() should not panic but should do nothing
-            // since the cursor is unpositioned
-            cursor.next();
-
-            // get_entry() should return None because cursor is unpositioned
-            assert!(
-                cursor.get_entry().is_none(),
-                "Cursor should be unpositioned after insert"
-            );
-        }
-    }
-
-    #[test]
     fn test_cursor_refind_after_insert() {
-        // Verify that after insert, we can re-position and navigate correctly
+        // Verify that after inserts, we can position and navigate correctly
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
@@ -1794,8 +1754,7 @@ mod test {
             cursor.insert(2, b"value2".to_vec());
             cursor.insert(3, b"value3".to_vec());
 
-            // After inserts, cursor is invalidated
-            // Re-position using first()
+            // Position using first()
             cursor.first();
 
             // Should be positioned on first entry
@@ -1811,37 +1770,6 @@ mod test {
             cursor.next();
             let entry = cursor.get_entry().expect("Should find third entry");
             assert_eq!(entry.key(), 3);
-        }
-    }
-
-    #[test]
-    fn test_cursor_invalidated_after_delete() {
-        // Verify that cursor state is invalidated after delete
-        let test = TestDb::default();
-        let mut btree = test.btree;
-        let root = btree.create_tree();
-
-        {
-            let mut cursor_handle = btree.open(root);
-            let mut cursor = cursor_handle.open_readwrite();
-
-            // Insert some data
-            cursor.insert(1, b"value1".to_vec());
-            cursor.insert(2, b"value2".to_vec());
-
-            // Delete a key
-            cursor.delete(1);
-
-            // Cursor should be invalidated - get_entry() should return None
-            assert!(
-                cursor.get_entry().is_none(),
-                "Cursor should be unpositioned after delete"
-            );
-
-            // Re-position and verify remaining data
-            cursor.first();
-            let entry = cursor.get_entry().expect("Should find remaining entry");
-            assert_eq!(entry.key(), 2);
         }
     }
 }
