@@ -140,7 +140,6 @@ pub enum LogicalPlan {
     /// Count rows from input (1 input)
     /// Consumes all rows from child and outputs a single row with the count.
     /// Output: single integer column containing the row count.
-    #[allow(dead_code)]
     Count { input: Box<LogicalPlan> },
 
     /// Emit fixed rows (leaf node, no inputs)
@@ -308,29 +307,45 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
         columns: &mapping.column_map,
     };
 
-    // 6. Convert SELECT expressions
-    let project_exprs: Vec<PlanExpr> = select
-        .columns
-        .iter()
-        .flat_map(|col_expr| {
-            match col_expr {
-                ast::ColumnExpression::Wildcard => {
-                    // Expand wildcard to all columns in table order
-                    table
-                        .columns
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, _col)| {
-                            Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
-                        })
-                        .collect::<Vec<_>>()
-                }
-                _ => vec![convert_column_expr(col_expr, &ctx)],
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    // 6. Check for COUNT(*) before converting expressions
+    let is_count_star = select.columns.len() == 1
+        && matches!(
+            &select.columns[0],
+            ast::ColumnExpression::Anonyomous(expr)
+                if matches!(
+                    expr.as_ref(),
+                    ast::Expression::FunctionCall { name, args }
+                        if name.to_uppercase() == "COUNT" && args.is_empty()
+                )
+        );
 
-    // 7. Build plan bottom-up: Scan → Filter? → Project → Limit?
+    // 7. Convert SELECT expressions (skip if COUNT(*))
+    let project_exprs: Vec<PlanExpr> = if is_count_star {
+        vec![] // Not needed for COUNT(*)
+    } else {
+        select
+            .columns
+            .iter()
+            .flat_map(|col_expr| {
+                match col_expr {
+                    ast::ColumnExpression::Wildcard => {
+                        // Expand wildcard to all columns in table order
+                        table
+                            .columns
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, _col)| {
+                                Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                    _ => vec![convert_column_expr(col_expr, &ctx)],
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    // 8. Build plan bottom-up: Scan → Filter? → Count/Project → Limit?
     let mut plan = LogicalPlan::Scan {
         rootpage: table.rootpage,
         columns: mapping.scan_columns,
@@ -344,11 +359,19 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
         };
     }
 
-    // Add Project
-    plan = LogicalPlan::Project {
-        input: Box::new(plan),
-        columns: project_exprs,
-    };
+    // Add Count or Project based on whether this is COUNT(*)
+    if is_count_star {
+        // SELECT COUNT(*) - wrap with Count node
+        plan = LogicalPlan::Count {
+            input: Box::new(plan),
+        };
+    } else {
+        // Regular SELECT - add Project
+        plan = LogicalPlan::Project {
+            input: Box::new(plan),
+            columns: project_exprs,
+        };
+    }
 
     // Add Sort if ORDER BY clause exists
     // Note: ORDER BY expressions are resolved against the projected output,

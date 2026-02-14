@@ -768,6 +768,19 @@ impl Parser {
                     // Parse argument list
                     let mut args = Vec::new();
 
+                    // Special case: COUNT(*) - the * is not an expression
+                    if id.to_uppercase() == "COUNT"
+                        && matches!(self.input.peek(), lexer::Type::Star)
+                    {
+                        self.input.advance(); // consume '*'
+                        self.input.expect(Expect::RightParen)?;
+                        // COUNT(*) has empty args to distinguish from COUNT(expr)
+                        return Ok(ast::Expression::FunctionCall {
+                            name: "COUNT".to_string(),
+                            args: vec![],
+                        });
+                    }
+
                     // Check for empty argument list
                     if !matches!(self.input.peek(), lexer::Type::RightParen) {
                         loop {
