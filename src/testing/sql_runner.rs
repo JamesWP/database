@@ -18,10 +18,7 @@ fn format_scalar(val: &ScalarValue) -> String {
 }
 
 fn format_row(row: &[ScalarValue]) -> String {
-    row.iter()
-        .map(format_scalar)
-        .collect::<Vec<_>>()
-        .join("\t")
+    row.iter().map(format_scalar).collect::<Vec<_>>().join("\t")
 }
 
 /// Execute SQL script and return output lines
@@ -125,7 +122,10 @@ fn compare_output(
             if actual != expected {
                 return Err(format!(
                     "Output mismatch at line {} in {:?}:\nExpected: {}\nActual:   {}",
-                    i + 1, test_name, expected, actual
+                    i + 1,
+                    test_name,
+                    expected,
+                    actual
                 ));
             }
         }
