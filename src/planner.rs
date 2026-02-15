@@ -388,27 +388,52 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
             vec![] // No GROUP BY = one big group
         };
 
-        let aggregates: Vec<AggregateExpr> = select
-            .columns
-            .iter()
-            .filter_map(|col_expr| {
-                let expr = match col_expr {
-                    ast::ColumnExpression::Named { expression, .. } => expression.as_ref(),
-                    ast::ColumnExpression::Anonyomous(expression) => expression.as_ref(),
-                    ast::ColumnExpression::Wildcard => return None,
-                };
-                if is_aggregate_function(expr) {
-                    Some(convert_aggregate(expr, &ctx))
-                } else {
-                    None
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        // Process SELECT columns: track both aggregates and projection mapping
+        let mut aggregates: Vec<AggregateExpr> = Vec::new();
+        let mut projection_indices: Vec<usize> = Vec::new();
+
+        for col_expr in &select.columns {
+            let expr = match col_expr {
+                ast::ColumnExpression::Named { expression, .. } => expression.as_ref(),
+                ast::ColumnExpression::Anonyomous(expression) => expression.as_ref(),
+                ast::ColumnExpression::Wildcard => continue, // Skip wildcards for now
+            };
+
+            if is_aggregate_function(expr) {
+                // This SELECT column is an aggregate
+                // It will appear in the Aggregate output after all group keys
+                let agg_index_in_output = group_keys.len() + aggregates.len();
+                projection_indices.push(agg_index_in_output);
+                aggregates.push(convert_aggregate(expr, &ctx)?);
+            } else {
+                // This SELECT column is a non-aggregate (must be a group key)
+                let group_expr = convert_expr(expr, &ctx)?;
+                // Find which group key this matches
+                let group_key_index = group_keys
+                    .iter()
+                    .position(|gk| gk == &group_expr)
+                    .ok_or_else(|| PlanError::UnsupportedStatement)?; // Non-aggregate not in GROUP BY
+                projection_indices.push(group_key_index);
+            }
+        }
 
         plan = LogicalPlan::Aggregate {
             input: Box::new(plan),
             group_keys,
             aggregates,
+        };
+
+        // Add projection to select only the SELECT columns in the correct order
+        // Aggregate outputs: [group_key_0, group_key_1, ..., agg_0, agg_1, ...]
+        // We project the indices that correspond to SELECT columns
+        let project_exprs: Vec<PlanExpr> = projection_indices
+            .into_iter()
+            .map(|idx| PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
+            .collect();
+
+        plan = LogicalPlan::Project {
+            input: Box::new(plan),
+            columns: project_exprs,
         };
     } else {
         // Regular SELECT - add Project
@@ -2063,7 +2088,11 @@ mod tests {
             }
             // Input should be Project with 2 columns (name, age)
             if let LogicalPlan::Project { columns, .. } = *input {
-                assert_eq!(columns.len(), 2, "Projection should have 2 columns (name, age)");
+                assert_eq!(
+                    columns.len(),
+                    2,
+                    "Projection should have 2 columns (name, age)"
+                );
             } else {
                 panic!("Expected Project node as input to Sort");
             }
@@ -2082,7 +2111,11 @@ mod tests {
 
         // Check structure: Scan -> Project(name, age) -> Sort -> Project(name)
         if let LogicalPlan::Project { input, columns } = plan {
-            assert_eq!(columns.len(), 1, "Final projection should have 1 column (name)");
+            assert_eq!(
+                columns.len(),
+                1,
+                "Final projection should have 1 column (name)"
+            );
 
             // Input should be Sort
             if let LogicalPlan::Sort {
@@ -2092,8 +2125,7 @@ mod tests {
             {
                 assert_eq!(sort_keys.len(), 1);
                 // Sort key should reference age at projection index 1
-                if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = &sort_keys[0].expr
-                {
+                if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = &sort_keys[0].expr {
                     assert_eq!(
                         *column_idx, 1,
                         "age should be at projection index 1 in extended projection"
