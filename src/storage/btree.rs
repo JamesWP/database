@@ -667,6 +667,9 @@ impl BTree {
         // Bootstrap db_schema table if this is a new (empty) database
         if btree.pager.borrow().get_file_size_pages() == 0 {
             btree.bootstrap_schema();
+        } else {
+            // Validate format version for existing databases
+            btree.pager.borrow().validate_format_version();
         }
 
         btree

@@ -24,6 +24,11 @@ impl Default for Page {
 #[derive(Serialize, Deserialize)]
 pub struct ZeroPage {
     // Contains metadata usefull to the pager
+    /// Magic number to identify database files: 0x53514C69 ("SQLi")
+    magic: u32,
+
+    /// Format version: 0 = JSON (deprecated), 1 = CBOR
+    format_version: u16,
 
     // TODO: make this the head of a linked list to ensure it is a fixed size when encoding ZeroPage
     free_page_list: Vec<u32>,
@@ -37,6 +42,8 @@ pub struct ZeroPage {
 impl Default for ZeroPage {
     fn default() -> Self {
         Self {
+            magic: 0x53514C69, // "SQLi"
+            format_version: 1, // CBOR format
             free_page_list: Default::default(),
             schema_root_page: None,
         }
@@ -93,7 +100,7 @@ impl Pager {
         file.set_len(PAGE_SIZE * num_pages as u64).unwrap();
     }
 
-    fn get_zero_page(&self) -> Option<ZeroPage> {
+    pub fn get_zero_page(&self) -> Option<ZeroPage> {
         if self.get_file_size_pages() < 1 {
             None
         } else {
@@ -223,6 +230,25 @@ impl Pager {
         let mut zero = self.get_zero_page().unwrap();
         zero.schema_root_page = Some(page);
         self.set_zero_page(zero);
+    }
+
+    /// Validate the database format version. Panics if unsupported.
+    pub fn validate_format_version(&self) {
+        if let Some(zero) = self.get_zero_page() {
+            match zero.format_version {
+                0 => panic!(
+                    "Database format version 0 (JSON) is no longer supported. \
+                     Please recreate your database. Pre-1.0 databases are not \
+                     backwards compatible."
+                ),
+                1 => { /* CBOR format - continue normally */ }
+                v => panic!(
+                    "Unknown database format version {}. \
+                     This database may have been created by a newer version.",
+                    v
+                ),
+            }
+        }
     }
 
     #[allow(dead_code)]
