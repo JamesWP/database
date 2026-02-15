@@ -227,7 +227,7 @@ impl Mode for BTreeMode {
                         match c.get_entry() {
                             None => break,
                             Some(mut reader) => {
-                                let row = reader.decode_as_json_array();
+                                let row = reader.decode_as_array();
                                 if row.len() >= 5 && row[0].as_str() == Some("table") {
                                     let name = row[1].as_str().unwrap_or("").to_string();
                                     let rootpage = row[3].as_u64().unwrap() as u32;

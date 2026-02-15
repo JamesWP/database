@@ -560,7 +560,7 @@ impl Engine {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readwrite();
                 let mut value = cursor.get_entry().unwrap();
-                let values = value.decode_as_json_array();
+                let values = value.decode_as_array();
                 // we must drop cursror before we can mutate registers
                 drop(cursor);
 
@@ -609,7 +609,7 @@ impl Engine {
                     other => panic!("WriteCursor key must be Integer, got {:?}", other),
                 };
 
-                // Read values and convert to JSON array
+                // Read values and convert to JSON array (serialized as CBOR)
                 let json_values: Vec<serde_json::Value> = value_regs
                     .iter()
                     .map(|reg| {
@@ -626,7 +626,8 @@ impl Engine {
                     })
                     .collect();
 
-                let bytes = serde_json::to_vec(&serde_json::Value::Array(json_values)).unwrap();
+                let mut bytes = Vec::new();
+                ciborium::ser::into_writer(&json_values, &mut bytes).unwrap();
 
                 // Write to btree
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
@@ -1167,10 +1168,14 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            c.insert(0, b"[12345,6789]".to_vec());
-            c.insert(1, b"[12345]".to_vec());
-            c.insert(2, b"[12345]".to_vec());
-            c.insert(3, b"[12345]".to_vec());
+            let mut v0 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([12345, 6789]), &mut v0).unwrap();
+            c.insert(0, v0);
+            let mut v1 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([12345]), &mut v1).unwrap();
+            c.insert(1, v1.clone());
+            c.insert(2, v1.clone());
+            c.insert(3, v1);
         }
 
         let r0 = Reg::new(0);
@@ -1209,10 +1214,14 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            c.insert(0, b"[12345,6789]".to_vec());
-            c.insert(1, b"[12345,0]".to_vec());
-            c.insert(2, b"[12345,0]".to_vec());
-            c.insert(3, b"[12345,0]".to_vec());
+            let mut v0 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([12345, 6789]), &mut v0).unwrap();
+            c.insert(0, v0);
+            let mut v1 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([12345, 0]), &mut v1).unwrap();
+            c.insert(1, v1.clone());
+            c.insert(2, v1.clone());
+            c.insert(3, v1);
         }
 
         let r0 = Reg::new(0);
@@ -1255,8 +1264,12 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            c.insert(0, br#"[1,"alice",30]"#.to_vec());
-            c.insert(1, br#"[2,"bob",25]"#.to_vec());
+            let mut v0 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([1, "alice", 30]), &mut v0).unwrap();
+            c.insert(0, v0);
+            let mut v1 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([2, "bob", 25]), &mut v1).unwrap();
+            c.insert(1, v1);
         }
 
         let r0 = Reg::new(0);
@@ -1328,8 +1341,12 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            c.insert(0, b"[100, 200]".to_vec());
-            c.insert(1, b"[300, 400]".to_vec());
+            let mut v0 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([100, 200]), &mut v0).unwrap();
+            c.insert(0, v0);
+            let mut v1 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([300, 400]), &mut v1).unwrap();
+            c.insert(1, v1);
         }
 
         let r0 = Reg::new(0);
@@ -1442,9 +1459,15 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            c.insert(1, b"[10]".to_vec());
-            c.insert(2, b"[20]".to_vec());
-            c.insert(5, b"[50]".to_vec());
+            let mut v1 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([10]), &mut v1).unwrap();
+            c.insert(1, v1);
+            let mut v2 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([20]), &mut v2).unwrap();
+            c.insert(2, v2);
+            let mut v5 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([50]), &mut v5).unwrap();
+            c.insert(5, v5);
         }
 
         let r_cursor = Reg::new(0);
@@ -1576,9 +1599,15 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            c.insert(10, b"[100]".to_vec());
-            c.insert(20, b"[200]".to_vec());
-            c.insert(30, b"[300]".to_vec());
+            let mut v10 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([100]), &mut v10).unwrap();
+            c.insert(10, v10);
+            let mut v20 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([200]), &mut v20).unwrap();
+            c.insert(20, v20);
+            let mut v30 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([300]), &mut v30).unwrap();
+            c.insert(30, v30);
         }
 
         let r_cursor = Reg::new(0);
@@ -1613,9 +1642,15 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            c.insert(1, b"[10]".to_vec());
-            c.insert(2, b"[20]".to_vec());
-            c.insert(3, b"[30]".to_vec());
+            let mut v1 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([10]), &mut v1).unwrap();
+            c.insert(1, v1);
+            let mut v2 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([20]), &mut v2).unwrap();
+            c.insert(2, v2);
+            let mut v3 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([30]), &mut v3).unwrap();
+            c.insert(3, v3);
         }
 
         let r_cursor = Reg::new(0);
@@ -1733,9 +1768,15 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            c.insert(10, b"[30]".to_vec());
-            c.insert(20, b"[10]".to_vec());
-            c.insert(30, b"[20]".to_vec());
+            let mut v10 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([30]), &mut v10).unwrap();
+            c.insert(10, v10);
+            let mut v20 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([10]), &mut v20).unwrap();
+            c.insert(20, v20);
+            let mut v30 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([20]), &mut v30).unwrap();
+            c.insert(30, v30);
         }
 
         let r_buffer = Reg::new(0);
@@ -1805,9 +1846,15 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            c.insert(1, b"[1, \"charlie\", 25]".to_vec());
-            c.insert(2, b"[2, \"alice\", 30]".to_vec());
-            c.insert(3, b"[3, \"bob\", 28]".to_vec());
+            let mut v1 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([1, "charlie", 25]), &mut v1).unwrap();
+            c.insert(1, v1);
+            let mut v2 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([2, "alice", 30]), &mut v2).unwrap();
+            c.insert(2, v2);
+            let mut v3 = Vec::new();
+            ciborium::ser::into_writer(&serde_json::json!([3, "bob", 28]), &mut v3).unwrap();
+            c.insert(3, v3);
         }
 
         // Exact bytecode from debug.txt

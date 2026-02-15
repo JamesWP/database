@@ -740,9 +740,11 @@ impl BTree {
         sql: &str,
     ) {
         let schema_root = self.schema_root_page().expect("db_schema not bootstrapped");
-        let row = serde_json::to_vec(&serde_json::json!([
-            obj_type, name, tbl_name, rootpage, sql
-        ]))
+        let mut row = Vec::new();
+        ciborium::ser::into_writer(
+            &serde_json::json!([obj_type, name, tbl_name, rootpage, sql]),
+            &mut row,
+        )
         .unwrap();
         let mut cursor = self.open(schema_root);
         cursor.open_readwrite().insert(key, row);
@@ -760,7 +762,7 @@ impl BTree {
             match entry {
                 None => return None,
                 Some(mut reader) => {
-                    let values = reader.decode_as_json_array();
+                    let values = reader.decode_as_array();
                     // Row format: [type, name, tbl_name, rootpage, sql]
                     if values.len() >= 5 {
                         let obj_type = values[0].as_str().unwrap_or("");
@@ -795,7 +797,7 @@ impl BTree {
                 Some(reader) => reader,
             };
 
-            let values = entry.decode_as_json_array();
+            let values = entry.decode_as_array();
             // Row format: [type, name, tbl_name, rootpage, sql]
             if values.len() >= 5 {
                 let obj_type = values[0].as_str().unwrap_or("");
@@ -1109,7 +1111,7 @@ mod test {
         let entry = c.get_entry();
         assert!(entry.is_some());
 
-        let values = entry.unwrap().decode_as_json_array();
+        let values = entry.unwrap().decode_as_array();
         assert_eq!(values[0], "table");
         assert_eq!(values[1], "db_schema");
         assert_eq!(values[2], "db_schema");
@@ -1240,7 +1242,7 @@ mod test {
             match c.get_entry() {
                 None => break,
                 Some(mut reader) => {
-                    let row = reader.decode_as_json_array();
+                    let row = reader.decode_as_array();
                     if row.len() >= 5 && row[0].as_str() == Some("table") {
                         names.push(row[1].as_str().unwrap().to_string());
                     }
