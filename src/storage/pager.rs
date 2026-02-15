@@ -21,6 +21,15 @@ impl Default for Page {
     }
 }
 
+/// Linked list page for tracking free pages
+#[derive(Serialize, Deserialize)]
+struct FreeListPage {
+    /// Next page in the free list chain (None if this is the last page)
+    next: Option<u32>,
+    /// Page IDs available for allocation (up to ~1000 per page)
+    page_ids: Vec<u32>,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ZeroPage {
     // Contains metadata usefull to the pager
@@ -30,8 +39,11 @@ pub struct ZeroPage {
     /// Format version: 0 = JSON (deprecated), 1 = CBOR
     format_version: u16,
 
-    // TODO: make this the head of a linked list to ensure it is a fixed size when encoding ZeroPage
-    free_page_list: Vec<u32>,
+    /// First page of the free list linked list (None if no free pages)
+    free_list_head: Option<u32>,
+
+    /// Total count of free pages across all free list pages
+    free_page_count: u32,
 
     /// Root page number of the db_schema catalog table.
     /// This is the only root page tracked directly by the pager.
@@ -44,7 +56,8 @@ impl Default for ZeroPage {
         Self {
             magic: 0x53514C69, // "SQLi"
             format_version: 1, // CBOR format
-            free_page_list: Default::default(),
+            free_list_head: None,
+            free_page_count: 0,
             schema_root_page: None,
         }
     }
@@ -185,22 +198,36 @@ impl Pager {
             // New page is the first page
             1
         } else {
-            // We need to find the page allocation table in the first page and get a page from its free list
-
             let mut zero = self.get_zero_page().unwrap();
-            let page_no = zero.free_page_list.pop();
 
-            self.set_zero_page(zero);
+            // Try to get a page from the free list
+            if let Some(head_page_no) = zero.free_list_head {
+                // Read the free list head page
+                let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
 
-            if let Some(page_no) = page_no {
-                page_no
-            } else {
-                // If there are no pages in the free list we need to expand the filesize
-                // TODO: For performance reasons, maybe increment number of pages by more than one?
-                self.set_file_size_pages(num_pages + 1);
+                // Pop a page ID from the list
+                if let Some(page_id) = free_list_page.page_ids.pop() {
+                    // Update the free list page
+                    self.encode_and_set(head_page_no, &free_list_page).unwrap();
 
-                num_pages
+                    // Update zero page
+                    zero.free_page_count -= 1;
+                    self.set_zero_page(zero);
+
+                    return page_id;
+                } else {
+                    // This free list page is empty, reclaim it or move to next
+                    zero.free_list_head = free_list_page.next;
+                    self.set_zero_page(zero);
+
+                    // Return the page that was being used as FreeListPage container
+                    return head_page_no;
+                }
             }
+
+            // No free pages available, expand the file
+            self.set_file_size_pages(num_pages + 1);
+            num_pages
         }
     }
 
@@ -212,12 +239,32 @@ impl Pager {
 
         let mut zero = self.get_zero_page().unwrap();
 
-        if zero.free_page_list.contains(&idx) {
-            panic!("Free list already contains this page!");
+        // If there's a free list head, try to add to it
+        if let Some(head_page_no) = zero.free_list_head {
+            let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
+
+            // Check if this page can fit more entries (~1000 is a safe limit)
+            if free_list_page.page_ids.len() < 1000 {
+                free_list_page.page_ids.push(idx);
+                self.encode_and_set(head_page_no, &free_list_page).unwrap();
+                zero.free_page_count += 1;
+                self.set_zero_page(zero);
+                return;
+            }
         }
 
-        zero.free_page_list.push(idx);
+        // Need to create a new free list page
+        // Use the page being freed as the new FreeListPage container
+        let new_free_list_page = FreeListPage {
+            next: zero.free_list_head,
+            page_ids: vec![], // Empty - this page becomes the container
+        };
 
+        self.encode_and_set(idx, &new_free_list_page).unwrap();
+
+        // Update zero page to point to new head
+        zero.free_list_head = Some(idx);
+        // Don't increment free_page_count since this page is now being used as a FreeListPage
         self.set_zero_page(zero);
     }
 
@@ -424,5 +471,198 @@ mod test {
         for i in 0..4096 {
             assert_eq!((i % 256) as u8, read_back.content[i]);
         }
+    }
+
+    #[test]
+    fn test_multi_page_free_list() {
+        // Test that free list can span multiple FreeListPages (>1000 entries)
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let mut pager = Pager::new(path);
+
+        // Allocate 1500 pages
+        let mut allocated = Vec::new();
+        for _ in 0..1500 {
+            allocated.push(pager.allocate());
+        }
+
+        let size_after_alloc = pager.get_file_size_pages();
+
+        // Deallocate all 1500 pages (should create multiple FreeListPages)
+        for page in allocated.clone() {
+            pager.dealocate(page);
+        }
+
+        // File size should not have grown (freed pages used as FreeListPage containers)
+        assert_eq!(size_after_alloc, pager.get_file_size_pages());
+
+        // Re-allocate all 1500 pages - should reuse freed pages
+        let mut reallocated = Vec::new();
+        for _ in 0..1500 {
+            reallocated.push(pager.allocate());
+        }
+
+        // File size should still be the same (no new pages needed)
+        assert_eq!(size_after_alloc, pager.get_file_size_pages());
+
+        // All pages should be reused (though possibly in different order)
+        let mut allocated_sorted = allocated.clone();
+        allocated_sorted.sort();
+        let mut reallocated_sorted = reallocated.clone();
+        reallocated_sorted.sort();
+        assert_eq!(allocated_sorted, reallocated_sorted);
+    }
+
+    #[test]
+    fn test_large_scale_alloc_dealloc() {
+        // Test allocating and deallocating 2000+ pages
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let mut pager = Pager::new(path);
+
+        // Allocate 2000 pages
+        let mut pages = Vec::new();
+        for _ in 0..2000 {
+            pages.push(pager.allocate());
+        }
+
+        let max_size = pager.get_file_size_pages();
+        assert!(max_size >= 2001); // At least 2000 data pages + zero page
+
+        // Deallocate half of them
+        for i in (0..2000).step_by(2) {
+            pager.dealocate(pages[i]);
+        }
+
+        // File size should not change
+        assert_eq!(max_size, pager.get_file_size_pages());
+
+        // Allocate 1000 new pages - should reuse the freed ones
+        for _ in 0..1000 {
+            pager.allocate();
+        }
+
+        // File size should still be the same
+        assert_eq!(max_size, pager.get_file_size_pages());
+
+        // Allocate one more - should expand the file
+        pager.allocate();
+        assert_eq!(max_size + 1, pager.get_file_size_pages());
+    }
+
+    #[test]
+    fn test_empty_free_list() {
+        // Test behavior when free list is empty
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let mut pager = Pager::new(path);
+
+        // Allocate some pages
+        let a = pager.allocate();
+        let b = pager.allocate();
+        let c = pager.allocate();
+
+        let size1 = pager.get_file_size_pages();
+
+        // Deallocate them
+        pager.dealocate(a);
+        pager.dealocate(b);
+        pager.dealocate(c);
+
+        // Allocate them back (empties the free list)
+        pager.allocate();
+        pager.allocate();
+        pager.allocate();
+
+        // Free list should now be empty
+        // Allocating another page should expand the file
+        pager.allocate();
+        assert_eq!(size1 + 1, pager.get_file_size_pages());
+    }
+
+    #[test]
+    fn test_free_list_persistence_large() {
+        // Test that large free lists persist across database close/reopen
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let max_size;
+        {
+            let mut pager = Pager::new(path);
+
+            // Allocate 500 pages
+            let mut pages = Vec::new();
+            for _ in 0..500 {
+                pages.push(pager.allocate());
+            }
+
+            max_size = pager.get_file_size_pages();
+
+            // Deallocate all of them
+            for page in pages {
+                pager.dealocate(page);
+            }
+        }
+
+        // Reopen and verify free list is intact
+        {
+            let mut pager = Pager::new(path);
+
+            // File size should be unchanged
+            assert_eq!(max_size, pager.get_file_size_pages());
+
+            // Should be able to allocate 500 pages without expanding file
+            for _ in 0..500 {
+                pager.allocate();
+            }
+
+            assert_eq!(max_size, pager.get_file_size_pages());
+
+            // Next allocation should expand
+            pager.allocate();
+            assert_eq!(max_size + 1, pager.get_file_size_pages());
+        }
+    }
+
+    #[test]
+    fn test_free_last_allocated_page() {
+        // Edge case: free the most recently allocated page
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let mut pager = Pager::new(path);
+
+        let a = pager.allocate();
+        let b = pager.allocate();
+        let c = pager.allocate();
+
+        let size = pager.get_file_size_pages();
+
+        // Free the last allocated page
+        pager.dealocate(c);
+
+        // File should not shrink
+        assert_eq!(size, pager.get_file_size_pages());
+
+        // Should be able to reuse it
+        let c2 = pager.allocate();
+        assert_eq!(c, c2);
+
+        // File should not have expanded
+        assert_eq!(size, pager.get_file_size_pages());
+
+        // Free first allocated page
+        pager.dealocate(a);
+
+        // Allocate should reuse it
+        let a2 = pager.allocate();
+        assert_eq!(a, a2);
+
+        // Verify b is still valid
+        let page_b = pager.get(b);
+        assert_eq!(page_b.content[0], 0); // Should be zeros (never written to)
     }
 }
