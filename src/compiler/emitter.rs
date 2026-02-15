@@ -42,87 +42,153 @@ impl BytecodeEmitter {
         self.operations.len()
     }
 
-    /// Resolve a label to a JumpTarget.
-    /// If the label is already bound, returns Resolved; otherwise Unresolved.
-    fn resolve_label(&self, label: Label) -> JumpTarget {
-        let Label(id) = label;
-        match self.label_positions.get(id).and_then(|pos| *pos) {
-            Some(addr) => JumpTarget::Resolved(addr),
-            None => JumpTarget::Unresolved(label),
-        }
-    }
-
     /// Emit an operation at the current position.
     pub fn emit(&mut self, op: Operation) {
         self.operations.push(op);
     }
 
     /// Emit a GoTo instruction to the given label.
+    /// Label resolution is deferred until finalize().
     pub fn emit_goto(&mut self, label: Label) {
-        let target = self.resolve_label(label);
-        self.operations.push(Operation::GoTo(target));
+        self.operations.push(Operation::GoTo(JumpTarget::Unresolved(label)));
     }
 
     /// Emit a GoToIfFalse instruction: jump to label if register is false.
+    /// Label resolution is deferred until finalize().
     pub fn emit_goto_if_false(&mut self, label: Label, reg: Reg) {
-        let target = self.resolve_label(label);
-        self.operations.push(Operation::GoToIfFalse(target, reg));
+        self.operations.push(Operation::GoToIfFalse(JumpTarget::Unresolved(label), reg));
     }
 
     /// Emit a GoToIfEqualValue instruction: jump to label if lhs == rhs.
+    /// Label resolution is deferred until finalize().
     pub fn emit_goto_if_equal(&mut self, label: Label, lhs: Reg, rhs: Reg) {
-        let target = self.resolve_label(label);
         self.operations
-            .push(Operation::GoToIfEqualValue(target, lhs, rhs));
+            .push(Operation::GoToIfEqualValue(JumpTarget::Unresolved(label), lhs, rhs));
     }
 
     /// Emit a PopKey instruction: pop key from list into dest, or jump if empty.
+    /// Label resolution is deferred until finalize().
     pub fn emit_pop_key(&mut self, dest: Reg, list: Reg, label: Label) {
-        let target = self.resolve_label(label);
-        self.operations.push(Operation::PopKey(dest, list, target));
+        self.operations.push(Operation::PopKey(dest, list, JumpTarget::Unresolved(label)));
     }
 
-    /// Finalize the bytecode by resolving all jump targets.
+    /// Finalize the bytecode by resolving all jump targets with an offset added.
     /// Returns the final list of operations.
     /// Panics if any label was never bound.
-    pub fn finalize(mut self) -> Vec<Operation> {
+    ///
+    /// The offset parameter is added to all resolved addresses, allowing code blocks
+    /// to be concatenated without a separate adjustment pass. For standalone code,
+    /// use `finalize()` which calls this with offset=0.
+    ///
+    /// This function is intentionally exhaustive - it explicitly matches every Operation variant.
+    /// When a new operation with a JumpTarget is added, this function will fail to compile,
+    /// ensuring that jump target resolution is not forgotten.
+    pub fn finalize_with_offset(mut self, offset: usize) -> Vec<Operation> {
         let label_positions = &self.label_positions;
 
-        // Resolve all unresolved jump targets
+        // Resolve all unresolved jump targets, adding offset to final addresses
         for op in &mut self.operations {
             match op {
+                // === Operations with JumpTarget - resolve unresolved labels ===
                 Operation::GoTo(ref mut target) => {
-                    *target = resolve_target(target, label_positions);
+                    *target = resolve_target_with_offset(target, label_positions, offset);
                 }
                 Operation::GoToIfFalse(ref mut target, _) => {
-                    *target = resolve_target(target, label_positions);
+                    *target = resolve_target_with_offset(target, label_positions, offset);
                 }
                 Operation::GoToIfEqualValue(ref mut target, _, _) => {
-                    *target = resolve_target(target, label_positions);
+                    *target = resolve_target_with_offset(target, label_positions, offset);
                 }
                 Operation::PopKey(_, _, ref mut target) => {
-                    *target = resolve_target(target, label_positions);
+                    *target = resolve_target_with_offset(target, label_positions, offset);
                 }
                 Operation::YieldFromRowBuffer(_, _, ref mut target) => {
-                    *target = resolve_target(target, label_positions);
+                    *target = resolve_target_with_offset(target, label_positions, offset);
                 }
                 Operation::YieldFromGroupTable(_, _, ref mut target) => {
-                    *target = resolve_target(target, label_positions);
+                    *target = resolve_target_with_offset(target, label_positions, offset);
                 }
-                _ => {}
+
+                // === Operations without JumpTarget - explicit no-op ===
+                // Value operations
+                Operation::StoreValue(_, _)
+                | Operation::IncrementValue(_)
+                | Operation::DecrementValue(_)
+                | Operation::AddValue(_, _, _)
+                | Operation::SubtractValue(_, _, _)
+                | Operation::MultiplyValue(_, _, _)
+                | Operation::DivideValue(_, _, _)
+                | Operation::RemainderValue(_, _, _)
+                | Operation::LessThanValue(_, _, _)
+                | Operation::LessThanOrEqualValue(_, _, _)
+                | Operation::GreaterThanValue(_, _, _)
+                | Operation::GreaterThanOrEqualValue(_, _, _)
+                | Operation::EqualsValue(_, _, _)
+                | Operation::NotEqualsValue(_, _, _)
+                | Operation::AndValue(_, _, _)
+                | Operation::OrValue(_, _, _)
+                | Operation::NotValue(_, _)
+                | Operation::NegateValue(_, _)
+                | Operation::CopyValue(_, _)
+                // String/Scalar function operations
+                | Operation::LengthValue(_, _)
+                | Operation::UpperValue(_, _)
+                | Operation::LowerValue(_, _)
+                | Operation::AbsValue(_, _)
+                | Operation::LikeValue(_, _, _)
+                // Key list operations
+                | Operation::InitKeyList(_)
+                | Operation::AppendKey(_, _)
+                // Row buffer operations
+                | Operation::InitRowBuffer(_)
+                | Operation::AppendToRowBuffer(_, _)
+                | Operation::SortRowBuffer(_, _)
+                // Group table operations
+                | Operation::InitGroupTable(_)
+                | Operation::UpdateGroup(_, _, _)
+                // Database operations
+                | Operation::Open(_, _)
+                | Operation::MoveCursor(_, _)
+                | Operation::ReadCursor(_, _)
+                | Operation::ReadKey(_, _)
+                | Operation::WriteCursor(_, _, _)
+                | Operation::DeleteCursor(_)
+                | Operation::CanReadCursor(_, _)
+                // Control flow operations (without jump targets)
+                | Operation::Yield(_)
+                | Operation::Halt => {
+                    // No jump targets to resolve
+                }
             }
         }
         self.operations
     }
+
+    /// Finalize the bytecode by resolving all jump targets.
+    /// Equivalent to `finalize_with_offset(0)`.
+    pub fn finalize(self) -> Vec<Operation> {
+        self.finalize_with_offset(0)
+    }
 }
 
-/// Resolve a JumpTarget, converting Unresolved to Resolved.
-fn resolve_target(target: &JumpTarget, label_positions: &[Option<usize>]) -> JumpTarget {
+/// Resolve a JumpTarget, converting Unresolved to Resolved with an offset added.
+/// This allows labels to be resolved directly to their final addresses when
+/// code blocks are concatenated.
+///
+/// All jump targets are Unresolved when emitted (even backward jumps), so
+/// resolution only happens here in one place.
+fn resolve_target_with_offset(
+    target: &JumpTarget,
+    label_positions: &[Option<usize>],
+    offset: usize,
+) -> JumpTarget {
     match target {
-        JumpTarget::Resolved(addr) => JumpTarget::Resolved(*addr),
+        JumpTarget::Resolved(_) => {
+            panic!("Bug: JumpTarget should be Unresolved before finalize")
+        }
         JumpTarget::Unresolved(Label(id)) => {
-            let addr = label_positions[*id].expect("Label was never bound");
-            JumpTarget::Resolved(addr)
+            let base_addr = label_positions[*id].expect("Label was never bound");
+            JumpTarget::Resolved(base_addr + offset)
         }
     }
 }
