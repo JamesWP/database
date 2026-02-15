@@ -1,0 +1,14 @@
+Table 'test_floats' created
+1
+1
+1
+1
+1
+2
+1	4.5	regular
+2	0.5	leading_dot
+3	5	trailing_dot
+4	0.001	scientific
+5	250	sci_plus
+6	3.14159	pi
+7	2.71828	e
