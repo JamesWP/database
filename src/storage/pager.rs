@@ -2,7 +2,7 @@ use std::{
     borrow::Borrow,
     cell::RefCell,
     fs::{File, OpenOptions},
-    io::{BufReader, Read, Seek, Write},
+    io::{Read, Seek, Write},
     os::unix::prelude::MetadataExt,
 };
 
@@ -123,9 +123,7 @@ impl Pager {
         idx: PageNo,
     ) -> P {
         let p = self.get(idx);
-        let reader = BufReader::new(p.content.as_slice());
-        let mut deserializer = serde_json::Deserializer::from_reader(reader);
-        P::deserialize(&mut deserializer).unwrap()
+        ciborium::de::from_reader(&p.content[..]).unwrap()
     }
 
     pub fn set<P: Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
@@ -142,32 +140,22 @@ impl Pager {
         v: P,
     ) -> Result<(), EncodingError> {
         let mut page = Page::default();
-        let result = serde_json::to_writer(page.content.as_mut_slice(), v.borrow());
+        let result = ciborium::ser::into_writer(v.borrow(), &mut &mut page.content[..]);
 
         match result {
-            Err(e) => match e.classify() {
-                serde_json::error::Category::Io => {
+            Err(e) => {
+                // CBOR serialization errors typically indicate buffer overflow or data issues
+                let err_str = e.to_string();
+                if err_str.contains("failed to write whole buffer")
+                    || err_str.contains("write zero")
+                {
                     return Err(EncodingError::NotEnoughSpaceInPage);
                 }
-                serde_json::error::Category::Syntax => {
-                    return Err(EncodingError::SerializationError(format!(
-                        "Syntax error: {}",
-                        e
-                    )));
-                }
-                serde_json::error::Category::Data => {
-                    return Err(EncodingError::SerializationError(format!(
-                        "Data error: {}",
-                        e
-                    )));
-                }
-                serde_json::error::Category::Eof => {
-                    return Err(EncodingError::SerializationError(format!(
-                        "EOF error: {}",
-                        e
-                    )));
-                }
-            },
+                return Err(EncodingError::SerializationError(format!(
+                    "CBOR encoding failed: {}",
+                    e
+                )));
+            }
             _ => {}
         };
 
