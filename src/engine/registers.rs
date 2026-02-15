@@ -1,6 +1,20 @@
 use crate::storage::CursorHandle;
 
 use super::{program::Reg, scalarvalue::ScalarValue};
+use std::collections::BTreeMap;
+
+/// Accumulator for aggregate functions
+#[derive(Clone, Debug)]
+pub enum Accumulator {
+    Count { count: i64 },
+    Sum { sum: ScalarValue, count: i64 },
+    Avg { sum: ScalarValue, count: i64 },
+    Min { value: Option<ScalarValue> },
+    Max { value: Option<ScalarValue> },
+}
+
+/// Group table: maps group keys to their accumulators
+pub type GroupTable = BTreeMap<Vec<ScalarValue>, Vec<Accumulator>>;
 
 #[derive(Clone, Debug)]
 pub enum RegisterValue {
@@ -9,6 +23,7 @@ pub enum RegisterValue {
     CursorHandle(CursorHandle),
     KeyList(Vec<u64>),
     RowBuffer(Vec<Vec<ScalarValue>>),
+    GroupTable(GroupTable),
 }
 
 #[derive(Clone, Debug)]
@@ -109,6 +124,14 @@ impl RegisterValue {
     pub(crate) fn row_buffer_mut(&mut self) -> Option<&mut Vec<Vec<ScalarValue>>> {
         if let RegisterValue::RowBuffer(ref mut buffer) = self {
             Some(buffer)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn group_table_mut(&mut self) -> Option<&mut GroupTable> {
+        if let RegisterValue::GroupTable(ref mut table) = self {
+            Some(table)
         } else {
             None
         }

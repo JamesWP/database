@@ -10,6 +10,33 @@ pub enum ScalarValue {
 
 impl Eq for ScalarValue {}
 
+impl std::hash::Hash for ScalarValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            ScalarValue::Integer(i) => {
+                0u8.hash(state);
+                i.hash(state);
+            }
+            ScalarValue::Floating(f) => {
+                1u8.hash(state);
+                // Use to_bits() for consistent hashing of floats
+                f.to_bits().hash(state);
+            }
+            ScalarValue::Boolean(b) => {
+                2u8.hash(state);
+                b.hash(state);
+            }
+            ScalarValue::String(s) => {
+                3u8.hash(state);
+                s.hash(state);
+            }
+            ScalarValue::Null => {
+                4u8.hash(state);
+            }
+        }
+    }
+}
+
 macro_rules! numeric_ops {
     ($treight: path, $function: ident) => {
         impl $treight for ScalarValue {

@@ -329,6 +329,164 @@ impl Engine {
                         .set_next_operation_index(target.unwrap_resolved());
                 }
             }
+            InitGroupTable(reg) => {
+                use std::collections::BTreeMap;
+                *self.registers.get_mut(reg) = RegisterValue::GroupTable(BTreeMap::new());
+            }
+            UpdateGroup(table_reg, key_regs, agg_specs) => {
+                use crate::engine::program::AggregateOp;
+                use crate::engine::registers::Accumulator;
+
+                // Evaluate group keys
+                let keys: Vec<ScalarValue> = key_regs
+                    .iter()
+                    .map(|reg| self.registers.get(*reg).scalar().unwrap().clone())
+                    .collect();
+
+                // Evaluate all input values first (before mutable borrow)
+                let input_values: Vec<Option<ScalarValue>> = agg_specs
+                    .iter()
+                    .map(|spec| {
+                        spec.input_reg
+                            .map(|reg| self.registers.get(reg).scalar().unwrap().clone())
+                    })
+                    .collect();
+
+                // Get or create group entry
+                let table = self.registers.get_mut(table_reg).group_table_mut().unwrap();
+                let accumulators = table.entry(keys.clone()).or_insert_with(|| {
+                    // Initialize accumulators for new group
+                    agg_specs
+                        .iter()
+                        .map(|spec| match spec.op {
+                            AggregateOp::Count => Accumulator::Count { count: 0 },
+                            AggregateOp::Sum => Accumulator::Sum {
+                                sum: ScalarValue::Integer(0),
+                                count: 0,
+                            },
+                            AggregateOp::Avg => Accumulator::Avg {
+                                sum: ScalarValue::Integer(0),
+                                count: 0,
+                            },
+                            AggregateOp::Min => Accumulator::Min { value: None },
+                            AggregateOp::Max => Accumulator::Max { value: None },
+                        })
+                        .collect()
+                });
+
+                // Update each accumulator
+                for ((acc, spec), input_value) in accumulators
+                    .iter_mut()
+                    .zip(agg_specs.iter())
+                    .zip(input_values.iter())
+                {
+                    match acc {
+                        Accumulator::Count { ref mut count } => {
+                            if spec.input_reg.is_none() {
+                                // COUNT(*) - count all rows
+                                *count += 1;
+                            } else if let Some(val) = input_value {
+                                // COUNT(expr) - count non-NULL values
+                                if !matches!(val, ScalarValue::Null) {
+                                    *count += 1;
+                                }
+                            }
+                        }
+                        Accumulator::Sum {
+                            ref mut sum,
+                            ref mut count,
+                        } => {
+                            if let Some(val) = input_value {
+                                if !matches!(val, ScalarValue::Null) {
+                                    *sum = sum.clone() + val.clone();
+                                    *count += 1;
+                                }
+                            }
+                        }
+                        Accumulator::Avg {
+                            ref mut sum,
+                            ref mut count,
+                        } => {
+                            if let Some(val) = input_value {
+                                if !matches!(val, ScalarValue::Null) {
+                                    *sum = sum.clone() + val.clone();
+                                    *count += 1;
+                                }
+                            }
+                        }
+                        Accumulator::Min { ref mut value } => {
+                            if let Some(val) = input_value {
+                                if !matches!(val, ScalarValue::Null) {
+                                    *value = Some(match value.as_ref() {
+                                        Some(current) => {
+                                            if val < current {
+                                                val.clone()
+                                            } else {
+                                                current.clone()
+                                            }
+                                        }
+                                        None => val.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        Accumulator::Max { ref mut value } => {
+                            if let Some(val) = input_value {
+                                if !matches!(val, ScalarValue::Null) {
+                                    *value = Some(match value.as_ref() {
+                                        Some(current) => {
+                                            if val > current {
+                                                val.clone()
+                                            } else {
+                                                current.clone()
+                                            }
+                                        }
+                                        None => val.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            YieldFromGroupTable(dest_regs, table_reg, target) => {
+                use crate::engine::registers::Accumulator;
+
+                let table = self.registers.get_mut(table_reg).group_table_mut().unwrap();
+                if let Some((keys, accumulators)) = table.iter().next() {
+                    let keys = keys.clone();
+                    let accumulators = accumulators.clone();
+                    table.remove(&keys);
+
+                    // Build output: group keys + finalized aggregates
+                    let mut outputs = keys;
+                    for acc in accumulators {
+                        let result = match acc {
+                            Accumulator::Count { count } => ScalarValue::Integer(count),
+                            Accumulator::Sum { sum, count: _ } => sum,
+                            Accumulator::Avg { sum, count } => {
+                                if count == 0 {
+                                    ScalarValue::Null
+                                } else {
+                                    sum / ScalarValue::Integer(count)
+                                }
+                            }
+                            Accumulator::Min { value } => value.unwrap_or(ScalarValue::Null),
+                            Accumulator::Max { value } => value.unwrap_or(ScalarValue::Null),
+                        };
+                        outputs.push(result);
+                    }
+
+                    // Store in destination registers
+                    for (dest_reg, value) in dest_regs.iter().zip(outputs.into_iter()) {
+                        *self.registers.get_mut(*dest_reg) = RegisterValue::ScalarValue(value);
+                    }
+                } else {
+                    // Table is empty, jump to target
+                    self.program
+                        .set_next_operation_index(target.unwrap_resolved());
+                }
+            }
             GoTo(target) => {
                 self.program
                     .set_next_operation_index(target.unwrap_resolved());

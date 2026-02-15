@@ -106,6 +106,9 @@ impl BytecodeEmitter {
                 Operation::YieldFromRowBuffer(_, _, ref mut target) => {
                     *target = resolve_target(target, label_positions);
                 }
+                Operation::YieldFromGroupTable(_, _, ref mut target) => {
+                    *target = resolve_target(target, label_positions);
+                }
                 _ => {}
             }
         }

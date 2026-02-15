@@ -462,6 +462,15 @@ impl Parser {
             _ => None,
         };
 
+        let group_by = match self.input.peek() {
+            lexer::Type::Group => {
+                self.input.advance();
+                self.input.expect(Expect::By)?;
+                Some(self.parse_group_by_expressions()?)
+            }
+            _ => None,
+        };
+
         let order_by = match self.input.peek() {
             lexer::Type::Order => {
                 self.input.advance();
@@ -485,6 +494,7 @@ impl Parser {
             filter,
             limit,
             order_by,
+            group_by,
         })
     }
 
@@ -519,6 +529,23 @@ impl Parser {
         }
 
         Ok(clauses)
+    }
+
+    fn parse_group_by_expressions(&mut self) -> ParseResult<Vec<ast::Expression>> {
+        let mut expressions = Vec::new();
+
+        loop {
+            expressions.push(self.parse_expression()?);
+
+            // Check for comma (more group expressions)
+            if matches!(self.input.peek(), lexer::Type::Comma) {
+                self.input.advance();
+            } else {
+                break;
+            }
+        }
+
+        Ok(expressions)
     }
 }
 
