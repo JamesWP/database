@@ -158,6 +158,7 @@ impl lexer::Type {
             (Equality, lexer::Type::BangEqual) => Some(ast::BinaryOp::NotEquals),
             (Equality, lexer::Type::EqualEqual) => Some(ast::BinaryOp::Equals),
             (Equality, lexer::Type::Equal) => Some(ast::BinaryOp::Equals),
+            (Equality, lexer::Type::Like) => Some(ast::BinaryOp::Like),
             (Relational, lexer::Type::Less) => Some(ast::BinaryOp::LessThan),
             (Relational, lexer::Type::LessEqual) => Some(ast::BinaryOp::LessThanOrEqual),
             (Relational, lexer::Type::Greater) => Some(ast::BinaryOp::GreaterThan),

@@ -82,6 +82,7 @@ fn compile_binary_op(
         }
         BinaryOp::LessThan => Operation::LessThanValue(dest, left_reg, right_reg),
         BinaryOp::LessThanOrEqual => Operation::LessThanOrEqualValue(dest, left_reg, right_reg),
+        BinaryOp::Like => Operation::LikeValue(dest, left_reg, right_reg),
 
         // Logical
         BinaryOp::And => Operation::AndValue(dest, left_reg, right_reg),
