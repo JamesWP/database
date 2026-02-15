@@ -4,3 +4,32 @@ Table 'employees' created
 1
 eng	2
 sales	1
+eng	220
+sales	90
+eng	110
+sales	90
+eng	100	120
+sales	90	90
+3	310
+eng	1
+eng	2
+sales	1
+ERROR: Planning error: ColumnNotFound { table: "employees", column: "cnt" }
+Table 'sales' created
+1
+1
+1
+east	widget	1	120
+west	widget	2	250
+Table 'nulltest' created
+1
+1
+1
+1
+1
+NULL	2	2	70
+a	3	2	30
+100	1
+110	1
+130	1
+OK
