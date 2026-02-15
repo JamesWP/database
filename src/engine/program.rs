@@ -68,12 +68,29 @@ pub struct AggregateSpec {
     pub input_reg: Option<Reg>, // None for COUNT(*)
 }
 
-// TODO: switch to using {} and named members
-//
-// IMPORTANT: When adding new operations that contain JumpTarget fields,
-// you must also update:
-// 1. compiler/nodes.rs: adjust_jump_targets() - add case to adjust jump targets by offset
-// 2. compiler/emitter.rs: finalize() - add case to resolve unresolved labels
+/// VM operations for the bytecode interpreter.
+///
+/// ## Jump Target Safety
+///
+/// Operations that contain JumpTarget fields have compile-time safety enforcement:
+///
+/// **Label Resolution with Offset:**
+/// - Labels stay `Unresolved` until the final finalization step
+/// - `BytecodeEmitter::finalize_with_offset()` resolves labels with offset baked in
+/// - No separate adjustment pass needed - offsets are applied during resolution
+/// - Exhaustive matching (no catch-all) ensures new operations are handled
+///
+/// **How it works:**
+/// 1. Body emitter creates operations with `Unresolved(Label)`
+/// 2. `CodegenContext::finalize()` calls `body_emitter.finalize_with_offset(offset)`
+/// 3. Labels resolve directly to final addresses: `base_addr + offset`
+/// 4. Any operation not handled stays `Unresolved` and panics at runtime
+///
+/// This prevents bugs where:
+/// - Jump targets are resolved but not adjusted (eliminated - no separate step)
+/// - New operations with JumpTarget are added but not handled (compile error)
+///
+/// TODO: switch to using {} and named members
 #[derive(Clone, Debug)]
 pub enum Operation {
     // Value

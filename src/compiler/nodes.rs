@@ -37,11 +37,14 @@ impl CodegenContext {
 
     /// Finalize and combine init + body code.
     /// Layout: init_code + GoTo(body_start) + body_code
+    ///
+    /// Body code labels are resolved with an offset, so they point to the correct
+    /// addresses in the final combined program. This eliminates the need for a
+    /// separate jump target adjustment pass.
     pub fn finalize(self) -> Vec<Operation> {
         let init_ops = self.init_emitter.finalize();
-        let body_ops = self.body_emitter.finalize();
 
-        let mut result = Vec::with_capacity(init_ops.len() + 1 + body_ops.len());
+        let mut result = Vec::with_capacity(init_ops.len() + 1);
 
         // Add init code
         result.extend(init_ops);
@@ -50,48 +53,12 @@ impl CodegenContext {
         let body_start = result.len() + 1;
         result.push(Operation::GoTo(JumpTarget::addr(body_start)));
 
-        // Add body code, adjusting all jump targets by the offset
+        // Add body code, resolving labels with offset baked in
         let offset = result.len();
-        for op in body_ops {
-            result.push(adjust_jump_targets(op, offset));
-        }
+        let body_ops = self.body_emitter.finalize_with_offset(offset);
+        result.extend(body_ops);
 
         result
-    }
-}
-
-/// Adjust jump targets in an operation by adding an offset.
-fn adjust_jump_targets(op: Operation, offset: usize) -> Operation {
-    match op {
-        Operation::GoTo(JumpTarget::Resolved(addr)) => {
-            Operation::GoTo(JumpTarget::Resolved(addr + offset))
-        }
-        Operation::GoToIfFalse(JumpTarget::Resolved(addr), reg) => {
-            Operation::GoToIfFalse(JumpTarget::Resolved(addr + offset), reg)
-        }
-        Operation::GoToIfEqualValue(JumpTarget::Resolved(addr), lhs, rhs) => {
-            Operation::GoToIfEqualValue(JumpTarget::Resolved(addr + offset), lhs, rhs)
-        }
-        Operation::PopKey(dest, list, JumpTarget::Resolved(addr)) => {
-            Operation::PopKey(dest, list, JumpTarget::Resolved(addr + offset))
-        }
-        Operation::YieldFromRowBuffer(regs, buffer, JumpTarget::Resolved(addr)) => {
-            Operation::YieldFromRowBuffer(regs, buffer, JumpTarget::Resolved(addr + offset))
-        }
-        Operation::YieldFromGroupTable(regs, table, JumpTarget::Resolved(addr)) => {
-            Operation::YieldFromGroupTable(regs, table, JumpTarget::Resolved(addr + offset))
-        }
-        // Unresolved labels should have been resolved by finalize()
-        Operation::GoTo(JumpTarget::Unresolved(_))
-        | Operation::GoToIfFalse(JumpTarget::Unresolved(_), _)
-        | Operation::GoToIfEqualValue(JumpTarget::Unresolved(_), _, _)
-        | Operation::PopKey(_, _, JumpTarget::Unresolved(_))
-        | Operation::YieldFromRowBuffer(_, _, JumpTarget::Unresolved(_))
-        | Operation::YieldFromGroupTable(_, _, JumpTarget::Unresolved(_)) => {
-            panic!("Unresolved jump target after finalize")
-        }
-        // All other operations pass through unchanged
-        other => other,
     }
 }
 
