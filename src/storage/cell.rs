@@ -135,4 +135,89 @@ mod tests {
         assert_eq!(decoded.value(), &[] as &[u8]);
         assert_eq!(decoded.continuation(), None);
     }
+
+    #[test]
+    fn test_cell_cbor_roundtrip() {
+        let key = 12345u64;
+        let value = b"test value".to_vec();
+        let cell = Cell::new(key, value.clone(), None);
+
+        // Serialize with CBOR
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&cell, &mut cbor).unwrap();
+
+        // Deserialize from CBOR
+        let decoded: Cell = ciborium::de::from_reader(&cbor[..]).unwrap();
+
+        assert_eq!(decoded.key(), key);
+        assert_eq!(decoded.value(), value.as_slice());
+        assert_eq!(decoded.continuation(), None);
+    }
+
+    #[test]
+    fn test_cell_cbor_roundtrip_with_continuation() {
+        let key = 99u64;
+        let value = b"overflow data".to_vec();
+        let continuation = Some(42u32);
+        let cell = Cell::new(key, value.clone(), continuation);
+
+        // Serialize with CBOR
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&cell, &mut cbor).unwrap();
+
+        // Deserialize from CBOR
+        let decoded: Cell = ciborium::de::from_reader(&cbor[..]).unwrap();
+
+        assert_eq!(decoded.key(), key);
+        assert_eq!(decoded.value(), value.as_slice());
+        assert_eq!(decoded.continuation(), continuation);
+    }
+
+    #[test]
+    fn test_cbor_smaller_than_json() {
+        let cell = Cell {
+            key: 42,
+            value: vec![1, 2, 3],
+            continuation: None,
+        };
+
+        // Serialize with JSON
+        let json_size = serde_json::to_vec(&cell).unwrap().len();
+
+        // Serialize with CBOR
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&cell, &mut cbor).unwrap();
+        let cbor_size = cbor.len();
+
+        assert!(
+            cbor_size < json_size,
+            "CBOR size ({}) should be smaller than JSON size ({})",
+            cbor_size,
+            json_size
+        );
+    }
+
+    #[test]
+    fn test_cbor_smaller_than_json_with_continuation() {
+        let cell = Cell {
+            key: 12345,
+            value: b"some test data".to_vec(),
+            continuation: Some(999),
+        };
+
+        // Serialize with JSON
+        let json_size = serde_json::to_vec(&cell).unwrap().len();
+
+        // Serialize with CBOR
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&cell, &mut cbor).unwrap();
+        let cbor_size = cbor.len();
+
+        assert!(
+            cbor_size < json_size,
+            "CBOR size ({}) should be smaller than JSON size ({})",
+            cbor_size,
+            json_size
+        );
+    }
 }
