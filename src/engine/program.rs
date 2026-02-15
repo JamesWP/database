@@ -98,10 +98,11 @@ pub enum Operation {
     CopyValue(Reg, Reg),                    // Reg = Reg (copy value)
 
     // String/Scalar Functions
-    LengthValue(Reg, Reg), // Reg = LENGTH(Reg)
-    UpperValue(Reg, Reg),  // Reg = UPPER(Reg)
-    LowerValue(Reg, Reg),  // Reg = LOWER(Reg)
-    AbsValue(Reg, Reg),    // Reg = ABS(Reg)
+    LengthValue(Reg, Reg),    // Reg = LENGTH(Reg)
+    UpperValue(Reg, Reg),     // Reg = UPPER(Reg)
+    LowerValue(Reg, Reg),     // Reg = LOWER(Reg)
+    AbsValue(Reg, Reg),       // Reg = ABS(Reg)
+    LikeValue(Reg, Reg, Reg), // Reg = Reg LIKE Reg (dest, value, pattern)
 
     // Key List (for collect-then-mutate pattern)
     InitKeyList(Reg),             // Initialize empty key list
@@ -250,6 +251,9 @@ impl std::fmt::Display for Operation {
             UpperValue(d, s) => write!(f, "{:10} {}, {}", "Upper".cyan().bold(), d, s),
             LowerValue(d, s) => write!(f, "{:10} {}, {}", "Lower".cyan().bold(), d, s),
             AbsValue(d, s) => write!(f, "{:10} {}, {}", "Abs".cyan().bold(), d, s),
+            LikeValue(d, val, pat) => {
+                write!(f, "{:10} {}, {}, {}", "Like".cyan().bold(), d, val, pat)
+            }
 
             // Key list operations
             InitKeyList(r) => write!(f, "{:10} {}", "InitKList".cyan().bold(), r),

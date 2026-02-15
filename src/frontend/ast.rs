@@ -129,6 +129,7 @@ pub enum BinaryOp {
     BinaryOr,
     BinaryExclusiveOr,
     BinaryAnd,
+    Like,
 }
 
 #[derive(Debug)]

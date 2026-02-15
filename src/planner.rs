@@ -35,6 +35,7 @@ pub enum BinaryOp {
     GreaterThanOrEqual,
     LessThan,
     LessThanOrEqual,
+    Like,
 
     // Logical
     And,
@@ -1086,6 +1087,7 @@ fn convert_binary_op(op: &ast::BinaryOp) -> BinaryOp {
         ast::BinaryOp::BinaryOr => BinaryOp::BitOr,
         ast::BinaryOp::BinaryExclusiveOr => BinaryOp::BitXor,
         ast::BinaryOp::BinaryAnd => BinaryOp::BitAnd,
+        ast::BinaryOp::Like => BinaryOp::Like,
     }
 }
 

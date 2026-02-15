@@ -249,6 +249,59 @@ impl ScalarValue {
             }
         }
     }
+
+    /// SQL LIKE pattern matching
+    /// Supports:
+    /// - % matches any sequence of characters (including empty)
+    /// - _ matches exactly one character
+    pub fn like_match(&self, pattern: &ScalarValue) -> bool {
+        match (self, pattern) {
+            (ScalarValue::String(text), ScalarValue::String(pat)) => sql_like_match(text, pat),
+            (ScalarValue::Null, _) | (_, ScalarValue::Null) => false,
+            _ => false, // Non-string comparisons return false
+        }
+    }
+}
+
+/// Implement SQL LIKE pattern matching using dynamic programming
+fn sql_like_match(text: &str, pattern: &str) -> bool {
+    let text_chars: Vec<char> = text.chars().collect();
+    let pattern_chars: Vec<char> = pattern.chars().collect();
+
+    let text_len = text_chars.len();
+    let pat_len = pattern_chars.len();
+
+    // dp[i][j] = true if first i chars of text match first j chars of pattern
+    let mut dp = vec![vec![false; pat_len + 1]; text_len + 1];
+
+    // Empty pattern matches empty text
+    dp[0][0] = true;
+
+    // Handle patterns starting with % (can match empty string)
+    for j in 1..=pat_len {
+        if pattern_chars[j - 1] == '%' {
+            dp[0][j] = dp[0][j - 1];
+        }
+    }
+
+    // Fill the DP table
+    for i in 1..=text_len {
+        for j in 1..=pat_len {
+            let text_char = text_chars[i - 1];
+            let pat_char = pattern_chars[j - 1];
+
+            if pat_char == '%' {
+                // % can match empty or one or more characters
+                dp[i][j] = dp[i][j - 1] // match empty
+                        || dp[i - 1][j]; // match one or more
+            } else if pat_char == '_' || pat_char == text_char {
+                // _ matches any single char, or exact match
+                dp[i][j] = dp[i - 1][j - 1];
+            }
+        }
+    }
+
+    dp[text_len][pat_len]
 }
 
 /// Only implemented for testing purposes, actual code shouldn't compare these types directly

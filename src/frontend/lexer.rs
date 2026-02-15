@@ -76,6 +76,7 @@ pub enum Type {
     Asc,
     Desc,
     Group,
+    Like,
 
     #[allow(dead_code)]
     Error(Error),
@@ -490,7 +491,14 @@ impl<'a> Lexer<'a> {
                 },
                 _ => Type::Identifier(ident.to_owned()),
             },
-            'l' => match_reserved(ident, "limit", Type::Limit),
+            'l' => match ident.chars().nth(1) {
+                Some('i') => match ident.chars().nth(2) {
+                    Some('m') => match_reserved(ident, "limit", Type::Limit),
+                    Some('k') => match_reserved(ident, "like", Type::Like),
+                    _ => Type::Identifier(ident.to_owned()),
+                },
+                _ => Type::Identifier(ident.to_owned()),
+            },
             'n' => match_reserved(ident, "null", Type::Null),
             'o' => match ident.chars().nth(1) {
                 Some('r') => match ident.chars().nth(2) {
