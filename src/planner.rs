@@ -412,7 +412,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
         };
     } else {
         // Regular SELECT - add Project
-        let project_exprs: Vec<PlanExpr> = select
+        let mut project_exprs: Vec<PlanExpr> = select
             .columns
             .iter()
             .flat_map(|col_expr| {
@@ -433,37 +433,99 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        let select_column_count = project_exprs.len();
+
+        // If there's ORDER BY, check if any ORDER BY columns are not in SELECT
+        // If so, add them to the projection so they're available for sorting
+        let mut extra_order_columns = Vec::new();
+        if let Some(ref order_by) = select.order_by {
+            for clause in order_by {
+                // Check if this is a simple column reference
+                if let ast::Expression::Value(ast::ScalarValue::Identifier(col_name)) =
+                    &clause.expression
+                {
+                    // Check if this column is already in the SELECT list
+                    let already_in_select = select.columns.iter().any(|col_expr| match col_expr {
+                        ast::ColumnExpression::Anonyomous(expr) => {
+                            matches!(
+                                expr.as_ref(),
+                                ast::Expression::Value(ast::ScalarValue::Identifier(name))
+                                    if name == col_name
+                            )
+                        }
+                        ast::ColumnExpression::Named { expression, .. } => {
+                            matches!(
+                                expression.as_ref(),
+                                ast::Expression::Value(ast::ScalarValue::Identifier(name))
+                                    if name == col_name
+                            )
+                        }
+                        ast::ColumnExpression::Wildcard => false,
+                    });
+
+                    if !already_in_select {
+                        // Add this column to the projection
+                        let order_col_expr = convert_expr(&clause.expression, &ctx)?;
+                        extra_order_columns.push(order_col_expr);
+                    }
+                }
+            }
+        }
+
+        let has_extra_order_columns = !extra_order_columns.is_empty();
+        project_exprs.extend(extra_order_columns);
+
         plan = LogicalPlan::Project {
             input: Box::new(plan),
-            columns: project_exprs,
-        };
-    }
-
-    // Add Sort if ORDER BY clause exists
-    // Note: ORDER BY expressions are resolved against the projected output,
-    // so we need a new context based on the projection
-    if let Some(ref order_by) = select.order_by {
-        // Build context for ORDER BY expressions - they refer to projected columns
-        let projected_ctx = ExprContext {
-            table_ref: &table_ref,
-            columns: &mapping.column_map,
+            columns: project_exprs.clone(),
         };
 
-        let sort_keys: Result<Vec<SortKey>, _> = order_by
-            .iter()
-            .map(|clause| {
-                let expr = convert_expr(&clause.expression, &projected_ctx)?;
-                Ok(SortKey {
-                    expr,
-                    descending: clause.direction == ast::OrderDirection::Desc,
+        // Add Sort if ORDER BY clause exists
+        if let Some(ref order_by) = select.order_by {
+            // Build a map from scan column index to projection index
+            // This tells us where each scan column ended up in the projection
+            let mut scan_idx_to_proj_idx: HashMap<usize, usize> = HashMap::new();
+            for (proj_idx, expr) in project_exprs.iter().enumerate() {
+                if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = expr {
+                    scan_idx_to_proj_idx.insert(*column_idx, proj_idx);
+                }
+            }
+
+            // Convert ORDER BY expressions using the original scan context,
+            // then remap the column indices to projection indices
+            let sort_keys: Result<Vec<SortKey>, _> = order_by
+                .iter()
+                .map(|clause| {
+                    // First, resolve against scan columns (this handles case-insensitive lookup)
+                    let scan_expr = convert_expr(&clause.expression, &ctx)?;
+
+                    // Remap scan column indices to projection indices
+                    let proj_expr = remap_column_indices(&scan_expr, &scan_idx_to_proj_idx)?;
+
+                    Ok(SortKey {
+                        expr: proj_expr,
+                        descending: clause.direction == ast::OrderDirection::Desc,
+                    })
                 })
-            })
-            .collect();
+                .collect();
 
-        plan = LogicalPlan::Sort {
-            input: Box::new(plan),
-            sort_keys: sort_keys?,
-        };
+            plan = LogicalPlan::Sort {
+                input: Box::new(plan),
+                sort_keys: sort_keys?,
+            };
+
+            // If we added extra columns for ORDER BY, add a final projection to remove them
+            if has_extra_order_columns {
+                let final_project: Vec<PlanExpr> = (0..select_column_count)
+                    .map(|idx| PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
+                    .collect();
+
+                plan = LogicalPlan::Project {
+                    input: Box::new(plan),
+                    columns: final_project,
+                };
+            }
+        }
     }
 
     // Add Limit if LIMIT clause exists
@@ -1013,6 +1075,43 @@ fn collect_columns_from_column_expr(
         }
         ast::ColumnExpression::Wildcard => {
             // Wildcard is handled specially in plan_select
+        }
+    }
+}
+
+/// Remap column indices in a PlanExpr from one space to another
+fn remap_column_indices(
+    expr: &PlanExpr,
+    index_map: &HashMap<usize, usize>,
+) -> Result<PlanExpr, PlanError> {
+    match expr {
+        PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) => {
+            let new_idx = *index_map
+                .get(column_idx)
+                .expect("Column from scan should be in projection");
+            Ok(PlanExpr::ColumnRef(ColumnRef::Single {
+                column_idx: new_idx,
+            }))
+        }
+        PlanExpr::Literal(lit) => Ok(PlanExpr::Literal(lit.clone())),
+        PlanExpr::BinaryOp { op, left, right } => Ok(PlanExpr::BinaryOp {
+            op: op.clone(),
+            left: Box::new(remap_column_indices(left, index_map)?),
+            right: Box::new(remap_column_indices(right, index_map)?),
+        }),
+        PlanExpr::UnaryOp { op, operand } => Ok(PlanExpr::UnaryOp {
+            op: op.clone(),
+            operand: Box::new(remap_column_indices(operand, index_map)?),
+        }),
+        PlanExpr::FunctionCall { name, args } => {
+            let remapped_args = args
+                .iter()
+                .map(|arg| remap_column_indices(arg, index_map))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PlanExpr::FunctionCall {
+                name: name.clone(),
+                args: remapped_args,
+            })
         }
     }
 }
@@ -1943,5 +2042,155 @@ mod tests {
             result,
             Err(PlanError::TableNotFound("nonexistent".to_string()))
         );
+    }
+
+    #[test]
+    fn test_plan_order_by_column_in_select() {
+        // ORDER BY a column that's in SELECT - should work without extra projection
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("SELECT name, age FROM users ORDER BY age");
+
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
+
+        // Check structure: Scan -> Project -> Sort
+        if let LogicalPlan::Sort { input, sort_keys } = plan {
+            assert_eq!(sort_keys.len(), 1);
+            // Sort key should reference projection column 1 (age in the projection)
+            if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = &sort_keys[0].expr {
+                assert_eq!(*column_idx, 1, "age should be at projection index 1");
+            } else {
+                panic!("Expected simple column reference in sort key");
+            }
+            // Input should be Project with 2 columns (name, age)
+            if let LogicalPlan::Project { columns, .. } = *input {
+                assert_eq!(columns.len(), 2, "Projection should have 2 columns (name, age)");
+            } else {
+                panic!("Expected Project node as input to Sort");
+            }
+        } else {
+            panic!("Expected Sort node, got {:?}", plan);
+        }
+    }
+
+    #[test]
+    fn test_plan_order_by_column_not_in_select() {
+        // ORDER BY a column NOT in SELECT - should add extended projection and final projection
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("SELECT name FROM users ORDER BY age");
+
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
+
+        // Check structure: Scan -> Project(name, age) -> Sort -> Project(name)
+        if let LogicalPlan::Project { input, columns } = plan {
+            assert_eq!(columns.len(), 1, "Final projection should have 1 column (name)");
+
+            // Input should be Sort
+            if let LogicalPlan::Sort {
+                input: sort_input,
+                sort_keys,
+            } = *input
+            {
+                assert_eq!(sort_keys.len(), 1);
+                // Sort key should reference age at projection index 1
+                if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = &sort_keys[0].expr
+                {
+                    assert_eq!(
+                        *column_idx, 1,
+                        "age should be at projection index 1 in extended projection"
+                    );
+                } else {
+                    panic!("Expected simple column reference in sort key");
+                }
+
+                // Sort input should be extended Project with 2 columns (name, age)
+                if let LogicalPlan::Project { columns, .. } = *sort_input {
+                    assert_eq!(
+                        columns.len(),
+                        2,
+                        "Extended projection should have 2 columns (name, age)"
+                    );
+                } else {
+                    panic!("Expected Project node as input to Sort");
+                }
+            } else {
+                panic!("Expected Sort node as input to final projection");
+            }
+        } else {
+            panic!("Expected final Project node, got {:?}", plan);
+        }
+    }
+
+    #[test]
+    fn test_plan_order_by_multiple_columns() {
+        // ORDER BY multiple columns - should handle both in and not in SELECT
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("SELECT name FROM users ORDER BY age DESC, name ASC");
+
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
+
+        // Should have final projection to remove age
+        if let LogicalPlan::Project { input, .. } = plan {
+            if let LogicalPlan::Sort { sort_keys, .. } = *input {
+                assert_eq!(sort_keys.len(), 2, "Should have 2 sort keys");
+                assert_eq!(
+                    sort_keys[0].descending, true,
+                    "First sort key (age) should be DESC"
+                );
+                assert_eq!(
+                    sort_keys[1].descending, false,
+                    "Second sort key (name) should be ASC"
+                );
+            } else {
+                panic!("Expected Sort node");
+            }
+        } else {
+            panic!("Expected final Project node");
+        }
+    }
+
+    #[test]
+    fn test_plan_order_by_with_function_in_select() {
+        // ORDER BY column not in SELECT, but SELECT has function expressions
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("SELECT upper(name) FROM users ORDER BY age");
+
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
+
+        // Should have structure: Scan -> Project(upper(name), age) -> Sort -> Project(upper(name))
+        if let LogicalPlan::Project { input, columns } = plan {
+            assert_eq!(
+                columns.len(),
+                1,
+                "Final projection should have 1 column (upper(name))"
+            );
+
+            if let LogicalPlan::Sort { input, sort_keys } = *input {
+                assert_eq!(sort_keys.len(), 1);
+
+                // Extended projection should have 2 columns: upper(name) and age
+                if let LogicalPlan::Project { columns, .. } = *input {
+                    assert_eq!(
+                        columns.len(),
+                        2,
+                        "Extended projection should have upper(name) and age"
+                    );
+                    // First should be function call, second should be column ref
+                    assert!(
+                        matches!(columns[0], PlanExpr::FunctionCall { .. }),
+                        "First column should be function call"
+                    );
+                    assert!(
+                        matches!(columns[1], PlanExpr::ColumnRef(_)),
+                        "Second column should be column ref (age)"
+                    );
+                } else {
+                    panic!("Expected Project node");
+                }
+            } else {
+                panic!("Expected Sort node");
+            }
+        } else {
+            panic!("Expected final Project node");
+        }
     }
 }
