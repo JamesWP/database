@@ -53,6 +53,21 @@ pub struct SortKeySpec {
     pub descending: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum AggregateOp {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AggregateSpec {
+    pub op: AggregateOp,
+    pub input_reg: Option<Reg>, // None for COUNT(*)
+}
+
 // TODO: switch to using {} and named members
 //
 // IMPORTANT: When adding new operations that contain JumpTarget fields,
@@ -98,6 +113,11 @@ pub enum Operation {
     AppendToRowBuffer(Reg, Vec<Reg>),              // Append row to buffer
     SortRowBuffer(Reg, Vec<SortKeySpec>),          // Sort rows in buffer
     YieldFromRowBuffer(Vec<Reg>, Reg, JumpTarget), // Pop row from buffer or jump if empty
+
+    // Group Table (for GROUP BY aggregation)
+    InitGroupTable(Reg), // Initialize empty group table
+    UpdateGroup(Reg, Vec<Reg>, Vec<AggregateSpec>), // Update group: (table, keys, agg_specs)
+    YieldFromGroupTable(Vec<Reg>, Reg, JumpTarget), // Pop group or jump if empty
 
     // Db
     Open(Reg, u32),
@@ -266,6 +286,29 @@ impl std::fmt::Display for Operation {
                     "YieldRow".cyan().bold(),
                     regs,
                     buf,
+                    target
+                )
+            }
+
+            // Group table operations
+            InitGroupTable(r) => write!(f, "{:10} {}", "InitGrpTbl".cyan().bold(), r),
+            UpdateGroup(table, keys, specs) => {
+                write!(
+                    f,
+                    "{:10} {}, {} keys, {} aggs",
+                    "UpdateGrp".cyan().bold(),
+                    table,
+                    keys.len(),
+                    specs.len()
+                )
+            }
+            YieldFromGroupTable(regs, table, target) => {
+                write!(
+                    f,
+                    "{:10} [{:?}], {}, {}",
+                    "YieldGrp".cyan().bold(),
+                    regs,
+                    table,
                     target
                 )
             }

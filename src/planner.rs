@@ -80,6 +80,23 @@ pub struct SortKey {
     pub descending: bool,
 }
 
+/// Aggregate function types
+#[derive(Debug, Clone, PartialEq)]
+pub enum AggregateFunction {
+    Count, // COUNT(*) or COUNT(expr)
+    Sum,   // SUM(expr)
+    Avg,   // AVG(expr)
+    Min,   // MIN(expr)
+    Max,   // MAX(expr)
+}
+
+/// Aggregate expression specification
+#[derive(Debug, Clone, PartialEq)]
+pub struct AggregateExpr {
+    pub function: AggregateFunction,
+    pub argument: Option<PlanExpr>, // None for COUNT(*)
+}
+
 /// Planner's expression type - like ast::Expression but with resolved columns
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanExpr {
@@ -141,6 +158,15 @@ pub enum LogicalPlan {
     /// Consumes all rows from child and outputs a single row with the count.
     /// Output: single integer column containing the row count.
     Count { input: Box<LogicalPlan> },
+
+    /// Aggregate rows with grouping (1 input)
+    /// Groups rows by group_keys, computes aggregates for each group.
+    /// Output: group_keys + aggregate results (one column per aggregate)
+    Aggregate {
+        input: Box<LogicalPlan>,
+        group_keys: Vec<PlanExpr>,
+        aggregates: Vec<AggregateExpr>,
+    },
 
     /// Emit fixed rows (leaf node, no inputs)
     /// Useful for testing and for VALUES clauses.
@@ -272,7 +298,12 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     // 2. Look up table in catalog
     let table = resolve_table(&table_name, btree)?;
 
-    // 3. Collect all column references from SELECT, WHERE, and ORDER BY
+    // 3. Detect if this query uses aggregation
+    let has_group_by = select.group_by.is_some();
+    let has_aggregates = select.columns.iter().any(|col| has_aggregate(col));
+    let use_aggregation = has_group_by || has_aggregates;
+
+    // 4. Collect all column references from SELECT, WHERE, GROUP BY, and ORDER BY
     let mut columns_needed = HashSet::new();
     let has_wildcard = select
         .columns
@@ -292,23 +323,29 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     if let Some(ref filter) = select.filter {
         collect_columns(filter, &mut columns_needed);
     }
+    if let Some(ref group_by) = select.group_by {
+        for expr in group_by {
+            collect_columns(expr, &mut columns_needed);
+        }
+    }
     if let Some(ref order_by) = select.order_by {
         for clause in order_by {
             collect_columns(&clause.expression, &mut columns_needed);
         }
     }
 
-    // 4. Build column mapping
+    // 5. Build column mapping
     let mapping = build_column_mapping(&columns_needed, &table, &table_ref)?;
 
-    // 5. Build expression context
+    // 6. Build expression context
     let ctx = ExprContext {
         table_ref: &table_ref,
         columns: &mapping.column_map,
     };
 
-    // 6. Check for COUNT(*) before converting expressions
-    let is_count_star = select.columns.len() == 1
+    // 7. Check for COUNT(*) special case (only if no GROUP BY)
+    let is_count_star = !has_group_by
+        && select.columns.len() == 1
         && matches!(
             &select.columns[0],
             ast::ColumnExpression::Anonyomous(expr)
@@ -319,11 +356,62 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
                 )
         );
 
-    // 7. Convert SELECT expressions (skip if COUNT(*))
-    let project_exprs: Vec<PlanExpr> = if is_count_star {
-        vec![] // Not needed for COUNT(*)
+    // 8. Build plan bottom-up: Scan → Filter? → Count/Aggregate/Project → Sort? → Limit?
+    let mut plan = LogicalPlan::Scan {
+        rootpage: table.rootpage,
+        columns: mapping.scan_columns,
+    };
+
+    // Add Filter if WHERE clause exists
+    if let Some(ref filter) = select.filter {
+        plan = LogicalPlan::Filter {
+            input: Box::new(plan),
+            predicate: convert_expr(filter, &ctx)?,
+        };
+    }
+
+    // Add aggregation, count, or projection
+    if is_count_star {
+        // SELECT COUNT(*) without GROUP BY - use simple Count node
+        plan = LogicalPlan::Count {
+            input: Box::new(plan),
+        };
+    } else if use_aggregation {
+        // GROUP BY or aggregates in SELECT - use Aggregate node
+        let group_keys: Vec<PlanExpr> = if let Some(ref group_by) = select.group_by {
+            group_by
+                .iter()
+                .map(|expr| convert_expr(expr, &ctx))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            vec![] // No GROUP BY = one big group
+        };
+
+        let aggregates: Vec<AggregateExpr> = select
+            .columns
+            .iter()
+            .filter_map(|col_expr| {
+                let expr = match col_expr {
+                    ast::ColumnExpression::Named { expression, .. } => expression.as_ref(),
+                    ast::ColumnExpression::Anonyomous(expression) => expression.as_ref(),
+                    ast::ColumnExpression::Wildcard => return None,
+                };
+                if is_aggregate_function(expr) {
+                    Some(convert_aggregate(expr, &ctx))
+                } else {
+                    None
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        plan = LogicalPlan::Aggregate {
+            input: Box::new(plan),
+            group_keys,
+            aggregates,
+        };
     } else {
-        select
+        // Regular SELECT - add Project
+        let project_exprs: Vec<PlanExpr> = select
             .columns
             .iter()
             .flat_map(|col_expr| {
@@ -342,31 +430,8 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
                     _ => vec![convert_column_expr(col_expr, &ctx)],
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?
-    };
+            .collect::<Result<Vec<_>, _>>()?;
 
-    // 8. Build plan bottom-up: Scan → Filter? → Count/Project → Limit?
-    let mut plan = LogicalPlan::Scan {
-        rootpage: table.rootpage,
-        columns: mapping.scan_columns,
-    };
-
-    // Add Filter if WHERE clause exists
-    if let Some(ref filter) = select.filter {
-        plan = LogicalPlan::Filter {
-            input: Box::new(plan),
-            predicate: convert_expr(filter, &ctx)?,
-        };
-    }
-
-    // Add Count or Project based on whether this is COUNT(*)
-    if is_count_star {
-        // SELECT COUNT(*) - wrap with Count node
-        plan = LogicalPlan::Count {
-            input: Box::new(plan),
-        };
-    } else {
-        // Regular SELECT - add Project
         plan = LogicalPlan::Project {
             input: Box::new(plan),
             columns: project_exprs,
@@ -687,6 +752,63 @@ fn extract_limit_value(expr: &ast::Expression) -> Result<u64, PlanError> {
             } else {
                 Ok(*n as u64)
             }
+        }
+        _ => Err(PlanError::UnsupportedStatement),
+    }
+}
+
+/// Check if an expression is an aggregate function
+fn is_aggregate_function(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::FunctionCall { name, .. } => {
+            matches!(
+                name.to_uppercase().as_str(),
+                "COUNT" | "SUM" | "AVG" | "MIN" | "MAX"
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Check if a column expression contains aggregates
+fn has_aggregate(col_expr: &ast::ColumnExpression) -> bool {
+    match col_expr {
+        ast::ColumnExpression::Named { expression, .. } => is_aggregate_function(expression),
+        ast::ColumnExpression::Anonyomous(expression) => is_aggregate_function(expression),
+        ast::ColumnExpression::Wildcard => false,
+    }
+}
+
+/// Convert aggregate function to AggregateExpr
+fn convert_aggregate(
+    expr: &ast::Expression,
+    ctx: &ExprContext,
+) -> Result<AggregateExpr, PlanError> {
+    match expr {
+        ast::Expression::FunctionCall { name, args } => {
+            let function = match name.to_uppercase().as_str() {
+                "COUNT" => AggregateFunction::Count,
+                "SUM" => AggregateFunction::Sum,
+                "AVG" => AggregateFunction::Avg,
+                "MIN" => AggregateFunction::Min,
+                "MAX" => AggregateFunction::Max,
+                _ => return Err(PlanError::UnknownFunction(name.clone())),
+            };
+
+            let argument = if args.is_empty() {
+                // COUNT(*) has no argument
+                None
+            } else if args.len() == 1 {
+                Some(convert_expr(&args[0], ctx)?)
+            } else {
+                return Err(PlanError::InvalidFunctionArguments {
+                    function: name.clone(),
+                    expected: 1,
+                    got: args.len(),
+                });
+            };
+
+            Ok(AggregateExpr { function, argument })
         }
         _ => Err(PlanError::UnsupportedStatement),
     }

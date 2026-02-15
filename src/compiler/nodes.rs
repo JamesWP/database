@@ -78,12 +78,16 @@ fn adjust_jump_targets(op: Operation, offset: usize) -> Operation {
         Operation::YieldFromRowBuffer(regs, buffer, JumpTarget::Resolved(addr)) => {
             Operation::YieldFromRowBuffer(regs, buffer, JumpTarget::Resolved(addr + offset))
         }
+        Operation::YieldFromGroupTable(regs, table, JumpTarget::Resolved(addr)) => {
+            Operation::YieldFromGroupTable(regs, table, JumpTarget::Resolved(addr + offset))
+        }
         // Unresolved labels should have been resolved by finalize()
         Operation::GoTo(JumpTarget::Unresolved(_))
         | Operation::GoToIfFalse(JumpTarget::Unresolved(_), _)
         | Operation::GoToIfEqualValue(JumpTarget::Unresolved(_), _, _)
         | Operation::PopKey(_, _, JumpTarget::Unresolved(_))
-        | Operation::YieldFromRowBuffer(_, _, JumpTarget::Unresolved(_)) => {
+        | Operation::YieldFromRowBuffer(_, _, JumpTarget::Unresolved(_))
+        | Operation::YieldFromGroupTable(_, _, JumpTarget::Unresolved(_)) => {
             panic!("Unresolved jump target after finalize")
         }
         // All other operations pass through unchanged
@@ -685,6 +689,131 @@ pub fn codegen_sort(
     }
 }
 
+/// Generate bytecode for an Aggregate node (GROUP BY with aggregates).
+///
+/// Aggregate collects all rows from child, groups them by group_keys,
+/// computes aggregates for each group, then yields the results.
+///
+/// ```text
+/// INIT:
+///   InitGroupTable(table)
+///
+/// BODY:
+///   // Child emits rows → update_group
+///   update_group:
+///     Evaluate group_keys into key_regs
+///     UpdateGroup(table, key_regs, agg_specs)
+///     GoTo(child.next)
+///
+///   // Child done → yield_from_groups
+///   yield_from_groups:
+///     YieldFromGroupTable(output_regs, table, on_done)
+///     GoTo(on_tuple)
+///   agg_next:
+///     GoTo(yield_from_groups)
+/// ```
+pub fn codegen_aggregate(
+    group_keys: &[crate::planner::PlanExpr],
+    aggregates: &[crate::planner::AggregateExpr],
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    use crate::engine::program::AggregateOp;
+    use crate::planner::AggregateFunction;
+
+    // Allocate register for group table
+    let table_reg = ctx.registers.alloc();
+
+    // INIT: initialize empty group table
+    ctx.init_emitter.emit(Operation::InitGroupTable(table_reg));
+
+    // Create labels
+    let update_group = ctx.body_emitter.create_label();
+    let yield_from_groups = ctx.body_emitter.create_label();
+
+    // Child's on_tuple → update_group
+    // Child's on_done → yield_from_groups
+    let child_cont = NodeContinuation {
+        on_tuple: update_group,
+        on_done: yield_from_groups,
+    };
+
+    // Compile child
+    let child_output = codegen(input, &child_cont, ctx);
+
+    // update_group: evaluate group keys, update group, continue
+    ctx.body_emitter.bind_label(update_group);
+
+    // Evaluate group key expressions into registers
+    let key_regs: Vec<Reg> = group_keys
+        .iter()
+        .map(|expr| {
+            let mut expr_ctx = ExprContext {
+                emitter: &mut ctx.body_emitter,
+                registers: &mut ctx.registers,
+            };
+            compile_expr(expr, &child_output.output_regs, &mut expr_ctx)
+        })
+        .collect();
+
+    // Build aggregate specs
+    let agg_specs: Vec<program::AggregateSpec> = aggregates
+        .iter()
+        .map(|agg| {
+            let input_reg = agg.argument.as_ref().map(|expr| {
+                let mut expr_ctx = ExprContext {
+                    emitter: &mut ctx.body_emitter,
+                    registers: &mut ctx.registers,
+                };
+                compile_expr(expr, &child_output.output_regs, &mut expr_ctx)
+            });
+
+            let op = match agg.function {
+                AggregateFunction::Count => AggregateOp::Count,
+                AggregateFunction::Sum => AggregateOp::Sum,
+                AggregateFunction::Avg => AggregateOp::Avg,
+                AggregateFunction::Min => AggregateOp::Min,
+                AggregateFunction::Max => AggregateOp::Max,
+            };
+
+            program::AggregateSpec { op, input_reg }
+        })
+        .collect();
+
+    ctx.body_emitter.emit(Operation::UpdateGroup(
+        table_reg,
+        key_regs.clone(),
+        agg_specs,
+    ));
+    ctx.body_emitter.emit_goto(child_output.next);
+
+    // yield_from_groups: pop groups and yield
+    ctx.body_emitter.bind_label(yield_from_groups);
+
+    // Allocate output registers: group_keys + aggregates
+    let num_outputs = group_keys.len() + aggregates.len();
+    let output_regs: Vec<Reg> = (0..num_outputs).map(|_| ctx.registers.alloc()).collect();
+
+    ctx.body_emitter.emit(Operation::YieldFromGroupTable(
+        output_regs.clone(),
+        table_reg,
+        JumpTarget::Unresolved(cont.on_done),
+    ));
+    // If YieldFromGroupTable succeeds, emit tuple
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // agg_next: after parent processes tuple, yield next group
+    let agg_next = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(agg_next);
+    ctx.body_emitter.emit_goto(yield_from_groups);
+
+    NodeOutput {
+        next: agg_next,
+        output_regs,
+    }
+}
+
 /// Generate bytecode for an Insert node.
 ///
 /// Insert consumes all rows from its child (typically Values), writes each
@@ -1085,6 +1214,11 @@ pub fn codegen(
         LogicalPlan::Sequence { start, end } => codegen_sequence(*start, *end, cont, ctx),
         LogicalPlan::Limit { count, input } => codegen_limit(*count, input, cont, ctx),
         LogicalPlan::Sort { sort_keys, input } => codegen_sort(sort_keys, input, cont, ctx),
+        LogicalPlan::Aggregate {
+            input,
+            group_keys,
+            aggregates,
+        } => codegen_aggregate(group_keys, aggregates, input, cont, ctx),
         LogicalPlan::Insert {
             rootpage,
             table_columns,

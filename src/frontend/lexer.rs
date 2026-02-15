@@ -75,6 +75,7 @@ pub enum Type {
     By,
     Asc,
     Desc,
+    Group,
 
     #[allow(dead_code)]
     Error(Error),
@@ -476,6 +477,7 @@ impl<'a> Lexer<'a> {
                 Some('a') => match_reserved(ident, "false", Type::False),
                 _ => Type::Identifier(ident.to_owned()),
             },
+            'g' => match_reserved(ident, "group", Type::Group),
             'i' => match ident.chars().nth(1) {
                 Some('n') => match ident.chars().nth(2) {
                     Some('s') => match_reserved(ident, "insert", Type::Insert),
