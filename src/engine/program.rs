@@ -289,7 +289,14 @@ impl std::fmt::Display for Operation {
             // Row buffer operations
             InitRowBuffer(r) => write!(f, "{:10} {}", "InitRBuf".cyan().bold(), r),
             AppendToRowBuffer(buf, regs) => {
-                write!(f, "{:10} {}, [{:?}]", "AppendRow".cyan().bold(), buf, regs)
+                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
+                write!(
+                    f,
+                    "{:10} {}, [{}]",
+                    "AppendRow".cyan().bold(),
+                    buf,
+                    regs_str.join(", ")
+                )
             }
             SortRowBuffer(buf, keys) => {
                 write!(
@@ -301,11 +308,12 @@ impl std::fmt::Display for Operation {
                 )
             }
             YieldFromRowBuffer(regs, buf, target) => {
+                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
                 write!(
                     f,
-                    "{:10} [{:?}], {}, {}",
+                    "{:10} [{}], {}, {}",
                     "YieldRow".cyan().bold(),
-                    regs,
+                    regs_str.join(", "),
                     buf,
                     target
                 )
@@ -324,11 +332,12 @@ impl std::fmt::Display for Operation {
                 )
             }
             YieldFromGroupTable(regs, table, target) => {
+                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
                 write!(
                     f,
-                    "{:10} [{:?}], {}, {}",
+                    "{:10} [{}], {}, {}",
                     "YieldGrp".cyan().bold(),
-                    regs,
+                    regs_str.join(", "),
                     table,
                     target
                 )
