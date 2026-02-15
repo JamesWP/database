@@ -50,26 +50,32 @@ impl BytecodeEmitter {
     /// Emit a GoTo instruction to the given label.
     /// Label resolution is deferred until finalize().
     pub fn emit_goto(&mut self, label: Label) {
-        self.operations.push(Operation::GoTo(JumpTarget::Unresolved(label)));
+        self.operations
+            .push(Operation::GoTo(JumpTarget::Unresolved(label)));
     }
 
     /// Emit a GoToIfFalse instruction: jump to label if register is false.
     /// Label resolution is deferred until finalize().
     pub fn emit_goto_if_false(&mut self, label: Label, reg: Reg) {
-        self.operations.push(Operation::GoToIfFalse(JumpTarget::Unresolved(label), reg));
+        self.operations
+            .push(Operation::GoToIfFalse(JumpTarget::Unresolved(label), reg));
     }
 
     /// Emit a GoToIfEqualValue instruction: jump to label if lhs == rhs.
     /// Label resolution is deferred until finalize().
     pub fn emit_goto_if_equal(&mut self, label: Label, lhs: Reg, rhs: Reg) {
-        self.operations
-            .push(Operation::GoToIfEqualValue(JumpTarget::Unresolved(label), lhs, rhs));
+        self.operations.push(Operation::GoToIfEqualValue(
+            JumpTarget::Unresolved(label),
+            lhs,
+            rhs,
+        ));
     }
 
     /// Emit a PopKey instruction: pop key from list into dest, or jump if empty.
     /// Label resolution is deferred until finalize().
     pub fn emit_pop_key(&mut self, dest: Reg, list: Reg, label: Label) {
-        self.operations.push(Operation::PopKey(dest, list, JumpTarget::Unresolved(label)));
+        self.operations
+            .push(Operation::PopKey(dest, list, JumpTarget::Unresolved(label)));
     }
 
     /// Finalize the bytecode by resolving all jump targets with an offset added.
