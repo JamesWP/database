@@ -1,5 +1,3 @@
-use serde::Deserialize;
-
 use super::cell::Key;
 use super::node::NodePage;
 use super::pager::Pager;
@@ -75,10 +73,8 @@ impl<'a> CellReader<'a> {
         self.key
     }
 
-    pub fn decode_as_json_array(&mut self) -> Vec<serde_json::Value> {
-        let mut deserializer = serde_json::Deserializer::from_reader(self);
-        let values = Vec::<serde_json::Value>::deserialize(&mut deserializer).unwrap();
-        values
+    pub fn decode_as_array(&mut self) -> Vec<serde_json::Value> {
+        ciborium::de::from_reader(self).unwrap()
     }
 }
 
@@ -95,7 +91,8 @@ mod tests {
 
         // Insert a small value (no overflow)
         let key = 100u64;
-        let value = serde_json::to_vec(&vec![1, 2, 3]).unwrap();
+        let mut value = Vec::new();
+        ciborium::ser::into_writer(&vec![1, 2, 3], &mut value).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
@@ -126,7 +123,8 @@ mod tests {
         // Insert a value larger than CHUNK_THRESHOLD (55 bytes)
         let key = 200u64;
         let large_value = vec![42u8; 100]; // 100 bytes
-        let value_json = serde_json::to_vec(&large_value).unwrap();
+        let mut value_json = Vec::new();
+        ciborium::ser::into_writer(&large_value, &mut value_json).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
@@ -147,7 +145,7 @@ mod tests {
             assert_eq!(buf, value_json);
 
             // Verify the data deserializes correctly
-            let decoded: Vec<u8> = serde_json::from_slice(&buf).unwrap();
+            let decoded: Vec<u8> = ciborium::de::from_reader(&buf[..]).unwrap();
             assert_eq!(decoded, large_value);
         }
     }
@@ -161,7 +159,8 @@ mod tests {
         // Insert a value that spans multiple overflow pages (> 155 bytes)
         let key = 300u64;
         let very_large_value = vec![99u8; 300]; // 300 bytes
-        let value_json = serde_json::to_vec(&very_large_value).unwrap();
+        let mut value_json = Vec::new();
+        ciborium::ser::into_writer(&very_large_value, &mut value_json).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
@@ -182,13 +181,13 @@ mod tests {
             assert_eq!(buf, value_json);
 
             // Verify the data deserializes correctly
-            let decoded: Vec<u8> = serde_json::from_slice(&buf).unwrap();
+            let decoded: Vec<u8> = ciborium::de::from_reader(&buf[..]).unwrap();
             assert_eq!(decoded, very_large_value);
         }
     }
 
     #[test]
-    fn test_decode_as_json_array() {
+    fn test_decode_as_array() {
         let test = TestDb::default();
         let mut btree = test.btree;
         let root_page = btree.create_tree();
@@ -196,7 +195,8 @@ mod tests {
         // Insert a JSON array like [1, "alice", 30]
         let key = 400u64;
         let json_array = serde_json::json!([1, "alice", 30]);
-        let value_json = serde_json::to_vec(&json_array).unwrap();
+        let mut value_json = Vec::new();
+        ciborium::ser::into_writer(&json_array, &mut value_json).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
@@ -210,7 +210,7 @@ mod tests {
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
-            let decoded = reader.decode_as_json_array();
+            let decoded = reader.decode_as_array();
 
             assert_eq!(decoded.len(), 3);
             assert_eq!(decoded[0], serde_json::json!(1));
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_as_json_array_types() {
+    fn test_decode_as_array_types() {
         let test = TestDb::default();
         let mut btree = test.btree;
         let root_page = btree.create_tree();
@@ -228,7 +228,8 @@ mod tests {
         // Insert a JSON array with various types
         let key = 500u64;
         let json_array = serde_json::json!([42, 3.14, "hello", true, false]);
-        let value_json = serde_json::to_vec(&json_array).unwrap();
+        let mut value_json = Vec::new();
+        ciborium::ser::into_writer(&json_array, &mut value_json).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
@@ -242,7 +243,7 @@ mod tests {
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
-            let decoded = reader.decode_as_json_array();
+            let decoded = reader.decode_as_array();
 
             assert_eq!(decoded.len(), 5);
             assert_eq!(decoded[0], serde_json::json!(42));
@@ -262,7 +263,8 @@ mod tests {
         // Insert an empty array
         let key = 600u64;
         let json_array = serde_json::json!([]);
-        let value_json = serde_json::to_vec(&json_array).unwrap();
+        let mut value_json = Vec::new();
+        ciborium::ser::into_writer(&json_array, &mut value_json).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
@@ -276,7 +278,7 @@ mod tests {
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
-            let decoded = reader.decode_as_json_array();
+            let decoded = reader.decode_as_array();
 
             assert_eq!(decoded.len(), 0);
         }
