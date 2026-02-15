@@ -174,7 +174,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn peek_next(&mut self) -> char {
-        match self.input.peek_nth(2) {
+        match self.input.peek_nth(1) {
             Some(c) => *c,
             None => '\0',
         }
@@ -213,7 +213,14 @@ impl<'a> Lexer<'a> {
             ')' => self.make_token(Type::RightParen),
             ';' => self.make_token(Type::Semicolon),
             ',' => self.make_token(Type::Comma),
-            '.' => self.make_token(Type::Dot),
+            '.' => {
+                // Check if this is a float starting with '.' (like .5)
+                if is_digit(self.peek()) {
+                    self.number()
+                } else {
+                    self.make_token(Type::Dot)
+                }
+            }
             '-' => self.make_token(Type::Minus),
             '+' => self.make_token(Type::Plus),
             '/' => self.make_token(Type::Slash),
@@ -390,6 +397,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn number(&mut self) -> Token {
+        // Consume integer part (if any - might be empty for numbers like .5)
         loop {
             if !is_digit(self.peek()) {
                 break;
@@ -397,10 +405,35 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
 
-        // Look for a fractional part.
-        if self.peek() == '.' && is_digit(self.peek_next()) {
-            // Consume the ".".
+        // Look for a fractional part
+        if self.peek() == '.' {
+            // Consume the "."
             self.advance();
+
+            // Consume fractional digits (if any - might be empty for numbers like 5.)
+            loop {
+                if !is_digit(self.peek()) {
+                    break;
+                }
+                self.advance();
+            }
+        }
+
+        // Look for exponent part (e.g., 1e-3, 2.5E+10)
+        if self.peek() == 'e' || self.peek() == 'E' {
+            self.advance(); // consume 'e' or 'E'
+
+            // Optional sign
+            if self.peek() == '+' || self.peek() == '-' {
+                self.advance();
+            }
+
+            // Exponent digits (required)
+            if !is_digit(self.peek()) {
+                return self.make_token(Type::Error(Error::BadFloatingPointNumber(
+                    self.curent_lexeme.to_owned(),
+                )));
+            }
 
             loop {
                 if !is_digit(self.peek()) {
@@ -410,7 +443,11 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        if self.curent_lexeme.contains('.') {
+        // If contains '.', 'e', or 'E', it's a float
+        if self.curent_lexeme.contains('.')
+            || self.curent_lexeme.contains('e')
+            || self.curent_lexeme.contains('E')
+        {
             let n = self.curent_lexeme.parse();
             match n {
                 Err(_e) => self.make_token(Type::Error(Error::BadFloatingPointNumber(
@@ -596,5 +633,124 @@ mod test {
         assert!(tokens
             .iter()
             .all(|t| !matches!(t.tipe(), super::Type::Identifier(s) if s.trim().is_empty())));
+    }
+
+    #[test]
+    fn test_float_literal_regular() {
+        // Test regular float: 4.5
+        let tokens = lex("4.5");
+        assert_eq!(tokens.len(), 2); // FloatingPointNumber + Eof
+        match tokens[0].tipe() {
+            super::Type::FloatingPointNumber(4.5) => {}
+            other => panic!("Expected FloatingPointNumber(4.5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_float_literal_leading_dot() {
+        // Test float starting with dot: .5
+        let tokens = lex(".5");
+        assert_eq!(tokens.len(), 2); // FloatingPointNumber + Eof
+        match tokens[0].tipe() {
+            super::Type::FloatingPointNumber(0.5) => {}
+            other => panic!("Expected FloatingPointNumber(0.5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_float_literal_trailing_dot() {
+        // Test float ending with dot: 5.
+        let tokens = lex("5.");
+        assert_eq!(tokens.len(), 2); // FloatingPointNumber + Eof
+        match tokens[0].tipe() {
+            super::Type::FloatingPointNumber(5.0) => {}
+            other => panic!("Expected FloatingPointNumber(5.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_float_literal_point_one() {
+        // Test 0.1 which has floating point representation issues
+        let tokens = lex("0.1");
+        assert_eq!(tokens.len(), 2); // FloatingPointNumber + Eof
+        match tokens[0].tipe() {
+            super::Type::FloatingPointNumber(n) if (n - 0.1).abs() < 1e-10 => {}
+            other => panic!("Expected FloatingPointNumber(~0.1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_float_literal_scientific_notation() {
+        // Test scientific notation: 1e-3
+        let tokens = lex("1e-3");
+        assert_eq!(tokens.len(), 2); // FloatingPointNumber + Eof
+        match tokens[0].tipe() {
+            super::Type::FloatingPointNumber(0.001) => {}
+            other => panic!("Expected FloatingPointNumber(0.001), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_float_literal_scientific_with_plus() {
+        // Test scientific notation with plus: 2.5E+10
+        let tokens = lex("2.5E+10");
+        assert_eq!(tokens.len(), 2); // FloatingPointNumber + Eof
+        match tokens[0].tipe() {
+            super::Type::FloatingPointNumber(n) if n == 2.5e10 => {}
+            other => panic!("Expected FloatingPointNumber(2.5e10), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_float_in_insert_statement() {
+        // Regression test for bug where "4.5" was tokenized as three tokens
+        let tokens = lex("INSERT INTO sprocket VALUES (4.5)");
+
+        // Find the float token - should have exactly one
+        let floats: Vec<_> = tokens
+            .iter()
+            .filter(|t| matches!(t.tipe(), super::Type::FloatingPointNumber(_)))
+            .collect();
+
+        assert_eq!(floats.len(), 1, "Should have exactly one float token");
+        match floats[0].tipe() {
+            super::Type::FloatingPointNumber(4.5) => {}
+            other => panic!("Expected FloatingPointNumber(4.5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_dot_operator_vs_float() {
+        // Test that a dot followed by non-digit is still a Dot token
+        let tokens = lex("foo.bar");
+
+        // Should have: Identifier("foo"), Dot, Identifier("bar"), Eof
+        assert_eq!(tokens.len(), 4);
+        match (&tokens[0].tipe(), &tokens[1].tipe(), &tokens[2].tipe()) {
+            (super::Type::Identifier(t), super::Type::Dot, super::Type::Identifier(c))
+                if t == "foo" && c == "bar" => {}
+            other => panic!(
+                "Expected (Identifier(foo), Dot, Identifier(bar)), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_mixed_numbers_in_expression() {
+        // Test integers and floats mixed together: 1 + 4.5
+        let tokens = lex("1 + 4.5");
+
+        // Find integer 1
+        let has_int_1 = tokens
+            .iter()
+            .any(|t| matches!(t.tipe(), super::Type::IntegerNumber(1)));
+        assert!(has_int_1, "Should have IntegerNumber(1)");
+
+        // Find float 4.5
+        let has_float_4_5 = tokens
+            .iter()
+            .any(|t| matches!(t.tipe(), super::Type::FloatingPointNumber(4.5)));
+        assert!(has_float_4_5, "Should have FloatingPointNumber(4.5)");
     }
 }

@@ -1008,6 +1008,61 @@ mod test {
     }
 
     #[test]
+    fn test_parse_insert_float_literal() {
+        // Test INSERT with float value into REAL column
+        let stmt = parse("INSERT INTO sprocket VALUES (4.5)").unwrap();
+        match stmt {
+            ast::Statement::Insert(ins) => {
+                assert_eq!(ins.table_name, "sprocket");
+                assert!(ins.columns.is_none());
+                assert_eq!(ins.values.len(), 1);
+                assert_eq!(ins.values[0].len(), 1);
+                // Verify it parsed as a float
+                match &ins.values[0][0] {
+                    ast::Expression::Value(ast::ScalarValue::FloatingNumber(n)) => {
+                        assert_eq!(*n, 4.5);
+                    }
+                    other => panic!("Expected FloatingNumber(4.5), got {:?}", other),
+                }
+            }
+            _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_insert_mixed_types() {
+        // Test INSERT with mix of integers, floats, strings
+        let stmt = parse("INSERT INTO sprocket VALUES (1, 4.5, 'test', .5, 5., 1e-3)").unwrap();
+        match stmt {
+            ast::Statement::Insert(ins) => {
+                assert_eq!(ins.values[0].len(), 6);
+                // Verify integer
+                match &ins.values[0][0] {
+                    ast::Expression::Value(ast::ScalarValue::IntegerNumber(n)) => {
+                        assert_eq!(*n, 1);
+                    }
+                    other => panic!("Expected IntegerNumber(1), got {:?}", other),
+                }
+                // Verify regular float
+                match &ins.values[0][1] {
+                    ast::Expression::Value(ast::ScalarValue::FloatingNumber(n)) => {
+                        assert_eq!(*n, 4.5);
+                    }
+                    other => panic!("Expected FloatingNumber(4.5), got {:?}", other),
+                }
+                // Verify string
+                match &ins.values[0][2] {
+                    ast::Expression::Value(ast::ScalarValue::StringLiteral(s)) => {
+                        assert_eq!(s, "test");
+                    }
+                    other => panic!("Expected StringLiteral('test'), got {:?}", other),
+                }
+            }
+            _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
     fn test_parse_select_star() {
         let stmt = parse("SELECT * FROM users").unwrap();
         match stmt {
