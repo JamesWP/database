@@ -55,9 +55,16 @@ pub enum DataType {
 }
 
 #[derive(Debug)]
+pub struct JoinClause {
+    pub table: NamedTupleSource,
+    pub on_condition: Expression,
+}
+
+#[derive(Debug)]
 pub struct SelectStatement {
     pub columns: Vec<ColumnExpression>,
     pub from: NamedTupleSource,
+    pub joins: Vec<JoinClause>,
     pub filter: Option<Expression>,
     pub limit: Option<Expression>,
     pub order_by: Option<Vec<OrderByClause>>,
