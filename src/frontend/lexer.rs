@@ -79,6 +79,9 @@ pub enum Type {
     Like,
     Is,
     Not,
+    Join,
+    On,
+    Inner,
 
     #[allow(dead_code)]
     Error(Error),
@@ -518,6 +521,7 @@ impl<'a> Lexer<'a> {
                 _ => Type::Identifier(ident.to_owned()),
             },
             'g' => match_reserved(ident, "group", Type::Group),
+            'j' => match_reserved(ident, "join", Type::Join),
             'i' => match ident.chars().nth(1) {
                 Some('n') => match ident.chars().nth(2) {
                     Some('s') => match_reserved(ident, "insert", Type::Insert),
@@ -526,6 +530,7 @@ impl<'a> Lexer<'a> {
                         Some('o') => match_reserved(ident, "into", Type::Into),
                         _ => Type::Identifier(ident.to_owned()),
                     },
+                    Some('n') => match_reserved(ident, "inner", Type::Inner),
                     _ => Type::Identifier(ident.to_owned()),
                 },
                 Some('s') => match_reserved(ident, "is", Type::Is),
@@ -549,6 +554,7 @@ impl<'a> Lexer<'a> {
                     Some('d') => match_reserved(ident, "order", Type::Order),
                     _ => match_reserved(ident, "or", Type::Or),
                 },
+                Some('n') => match_reserved(ident, "on", Type::On),
                 _ => Type::Identifier(ident.to_owned()),
             },
             'r' => match_reserved(ident, "real", Type::Real),
@@ -759,5 +765,32 @@ mod test {
             .iter()
             .any(|t| matches!(t.tipe(), super::Type::FloatingPointNumber(4.5)));
         assert!(has_float_4_5, "Should have FloatingPointNumber(4.5)");
+    }
+
+    #[test]
+    fn test_join_keywords() {
+        // Test JOIN keyword
+        let input1 = "SELECT a FROM x JOIN y ON a.id = b.id";
+        let tokens1 = lex(input1);
+        let has_join = tokens1
+            .iter()
+            .any(|t| matches!(t.tipe(), super::Type::Join));
+        let has_on = tokens1.iter().any(|t| matches!(t.tipe(), super::Type::On));
+        assert!(has_join, "Should contain a Join token");
+        assert!(has_on, "Should contain an On token");
+
+        // Test INNER JOIN keyword
+        let input2 = "SELECT a FROM x INNER JOIN y ON a.id = b.id";
+        let tokens2 = lex(input2);
+        let has_inner = tokens2
+            .iter()
+            .any(|t| matches!(t.tipe(), super::Type::Inner));
+        let has_join2 = tokens2
+            .iter()
+            .any(|t| matches!(t.tipe(), super::Type::Join));
+        let has_on2 = tokens2.iter().any(|t| matches!(t.tipe(), super::Type::On));
+        assert!(has_inner, "Should contain an Inner token");
+        assert!(has_join2, "Should contain a Join token");
+        assert!(has_on2, "Should contain an On token");
     }
 }
