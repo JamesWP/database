@@ -33,6 +33,56 @@ impl Repl {
         }
     }
 
+    /// Execute a single command and exit (non-interactive mode)
+    /// If the first token is a mode name, enters that mode first
+    pub fn run_command(&mut self, command_line: &str) {
+        let tokens: Vec<&str> = command_line.split_whitespace().collect();
+
+        if tokens.is_empty() {
+            return;
+        }
+
+        // Check if first token is a mode name
+        if let Ok(mode_id) = ModeId::try_from(tokens[0]) {
+            self.enter_mode(mode_id);
+
+            // Execute the rest of the command in that mode
+            if tokens.len() > 1 {
+                let result = self.handle_command(&tokens[1..]);
+                self.handle_result(result);
+            }
+        } else {
+            // Execute as global/root command
+            let result = self.handle_command(&tokens);
+            self.handle_result(result);
+        }
+    }
+
+    fn handle_result(&self, result: CommandResult) {
+        match result {
+            CommandResult::Ok => {}
+            CommandResult::Message(msg) => println!("{}", msg),
+            CommandResult::SwitchMode(_) => {
+                eprintln!("Error: Cannot switch modes in non-interactive mode");
+                std::process::exit(1);
+            }
+            CommandResult::ExitMode => {
+                eprintln!("Error: Cannot exit mode in non-interactive mode");
+                std::process::exit(1);
+            }
+            CommandResult::Exit => {}
+            CommandResult::NotHandled => {
+                eprintln!("Unknown command");
+                eprintln!("Type 'help' for available commands");
+                std::process::exit(1);
+            }
+            CommandResult::Error(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     pub fn run(&mut self) {
         loop {
             // Print prompt

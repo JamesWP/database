@@ -91,6 +91,47 @@ engine> program
    ...
 ```
 
+### Non-Interactive Mode
+
+You can execute commands directly from the command line for scripting and debugging:
+
+```bash
+# List all tables in database
+cargo run -- test.db btree tables
+
+# Inspect raw page structure (useful for debugging CBOR serialization)
+cargo run -- test.db btree inspect page 0
+cargo run -- test.db btree inspect all
+
+# Quick SQL queries
+cargo run -- test.db sql "SELECT * FROM users"
+
+# Parse SQL to see AST
+cargo run -- test.db parser parse "SELECT id FROM users WHERE age > 18"
+
+# Generate query plan
+cargo run -- test.db planner plan "SELECT name FROM users WHERE id = 1"
+```
+
+**Debugging Commands** (useful during development):
+```bash
+# Check database format version and metadata
+cargo run -- test.db btree inspect page 0
+
+# View catalog structure
+cargo run -- test.db btree open db_schema
+cargo run -- test.db btree print data
+
+# Inspect specific table's B-tree pages
+cargo run -- test.db btree open users
+cargo run -- test.db btree print data
+
+# Verify B-tree integrity
+cargo run -- test.db btree open users
+cargo run -- test.db btree verify
+cargo run -- test.db btree verify all
+```
+
 ## Manual Tests
 
 Manual test scripts complement automated tests by exercising the database through realistic end-to-end scenarios.

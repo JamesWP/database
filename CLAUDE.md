@@ -166,6 +166,70 @@ engine> compile <sql>          # Compile SQL to bytecode
 engine> program                # Show bytecode listing
 ```
 
+### Non-Interactive Mode
+
+Commands can be executed directly from the command line (useful for debugging and CI):
+
+```bash
+# General format
+cargo run -- <db_file> <mode> <command...>
+
+# List all tables
+cargo run -- test.db btree tables
+
+# Inspect page structure (debugging CBOR serialization)
+cargo run -- test.db btree inspect page 0
+cargo run -- test.db btree inspect all
+
+# SQL queries
+cargo run -- test.db sql "SELECT * FROM users"
+
+# Parse and plan
+cargo run -- test.db parser parse "SELECT * FROM users"
+cargo run -- test.db planner plan "SELECT * FROM users"
+```
+
+## Debugging Commands
+
+When working on storage, serialization, or fixing bugs, these commands are essential:
+
+**Inspect Database Format:**
+```bash
+# Check ZeroPage (magic number, version, free list, schema root)
+cargo run -- test.db btree inspect page 0
+
+# View entire database structure
+cargo run -- test.db btree inspect all
+```
+
+**Examine Catalog:**
+```bash
+# List all tables with root pages
+cargo run -- test.db btree tables
+
+# Inspect catalog entries (schema stored as CBOR Vec<ScalarValue>)
+cargo run -- test.db btree open db_schema
+cargo run -- test.db btree print data
+```
+
+**Debug Specific Tables:**
+```bash
+# View table data with CBOR decoding
+cargo run -- test.db btree open users
+cargo run -- test.db btree print data
+
+# Verify B-tree integrity
+cargo run -- test.db btree open users
+cargo run -- test.db btree verify
+cargo run -- test.db btree verify all
+```
+
+**After CBOR Migration (Phase F):**
+- Use `inspect page` to see continuation pointers and overflow chains
+- Cell values are CBOR-encoded Vec<ScalarValue> - shown as `decoded=[...]`
+- Look for `continuation=<page_num> (overflow)` in magenta for large values
+- Verify catalog keys are sequential (0, 1, 2...) not hashes
+
 ## Makefile Targets
 
 ```bash
