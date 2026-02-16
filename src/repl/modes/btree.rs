@@ -56,12 +56,9 @@ impl Mode for BTreeMode {
                     return CommandResult::Error(format!("Table '{}' already exists", name));
                 }
                 let root_page = shared.btree.create_tree();
-                let key = name.bytes().fold(0u64, |acc, b: u8| {
-                    acc.wrapping_mul(31).wrapping_add(b as u64)
-                });
                 shared
                     .btree
-                    .insert_schema_entry(key, "table", name, name, root_page, &sql);
+                    .insert_schema_entry("table", name, name, root_page, &sql);
                 CommandResult::Message(format!("Created table '{}' at page {}", name, root_page))
             }
 

@@ -34,7 +34,6 @@ impl Mode for PlannerMode {
             ["mock", "schema"] => {
                 let users_root = shared.btree.create_tree();
                 shared.btree.insert_schema_entry(
-                    1,
                     "table",
                     "users",
                     "users",

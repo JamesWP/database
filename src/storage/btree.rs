@@ -690,7 +690,6 @@ impl BTree {
         };
 
         self.insert_schema_entry(
-            0,
             "table",
             "db_schema",
             "db_schema",
@@ -728,14 +727,32 @@ impl BTree {
     }
 
     /// Insert a row into the db_schema catalog table.
-    /// `key` is the B-tree key for the catalog row (caller manages key allocation).
-    /// The row is stored as a JSON array: [type, name, tbl_name, rootpage, sql].
+    /// Allocates a new sequential key by scanning the catalog for the maximum key.
+    /// Returns the next available key (max + 1, or 0 if catalog is empty).
+    fn allocate_schema_key(&self) -> u64 {
+        let Some(schema_root) = self.schema_root_page() else {
+            return 0;
+        };
+
+        let mut cursor = self.open(schema_root);
+        let mut c = cursor.open_readonly();
+
+        // Find the maximum key by scanning backwards from the last entry
+        c.last();
+        if let Some(entry) = c.get_entry() {
+            entry.key() + 1
+        } else {
+            0
+        }
+    }
+
+    /// Insert a new entry into the db_schema catalog table with an auto-allocated key.
+    /// The row is stored as a CBOR array: [type, name, tbl_name, rootpage, sql].
     ///
     /// If the insert causes the catalog's root page to split, the new root
     /// is automatically persisted to ZeroPage.
     pub fn insert_schema_entry(
         &self,
-        key: u64,
         obj_type: &str,
         name: &str,
         tbl_name: &str,
@@ -743,6 +760,7 @@ impl BTree {
         sql: &str,
     ) {
         let schema_root = self.schema_root_page().expect("db_schema not bootstrapped");
+        let key = self.allocate_schema_key();
 
         let row_values = vec![
             ScalarValue::String(obj_type.to_string()),
@@ -1162,7 +1180,6 @@ mod test {
         // Create a new table
         let root = btree.create_tree();
         btree.insert_schema_entry(
-            1,
             "table",
             "users",
             "users",
@@ -1186,7 +1203,6 @@ mod test {
 
         let users_root = btree.create_tree();
         btree.insert_schema_entry(
-            1,
             "table",
             "users",
             "users",
@@ -1196,7 +1212,6 @@ mod test {
 
         let orders_root = btree.create_tree();
         btree.insert_schema_entry(
-            2,
             "table",
             "orders",
             "orders",
@@ -1224,7 +1239,6 @@ mod test {
 
         let users_root = btree.create_tree();
         btree.insert_schema_entry(
-            1,
             "table",
             "users",
             "users",
@@ -1233,7 +1247,6 @@ mod test {
         );
         let orders_root = btree.create_tree();
         btree.insert_schema_entry(
-            2,
             "table",
             "orders",
             "orders",
@@ -1281,7 +1294,7 @@ mod test {
             let ddl = format!("CREATE TABLE {} (id INTEGER, data TEXT)", name);
             let root = btree.create_tree();
             roots.push((name.clone(), root));
-            btree.insert_schema_entry(i + 100, "table", &name, &name, root, &ddl);
+            btree.insert_schema_entry("table", &name, &name, root, &ddl);
         }
 
         // The root page should remain stable
@@ -1313,7 +1326,6 @@ mod test {
 
         let initial_root = btree.create_tree();
         btree.insert_schema_entry(
-            1,
             "table",
             "big_table",
             "big_table",
