@@ -1202,6 +1202,15 @@ pub fn codegen(
             table_columns,
             filter,
         } => codegen_delete(*rootpage, table_columns, filter, cont, ctx),
+        LogicalPlan::Join {
+            left: _,
+            right: _,
+            on_condition: _,
+            left_column_count: _,
+        } => {
+            // TODO: Implement in Step 33.7
+            todo!("JOIN compilation not yet implemented")
+        }
     }
 }
 

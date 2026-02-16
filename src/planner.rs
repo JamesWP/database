@@ -209,7 +209,17 @@ pub enum LogicalPlan {
         table_columns: Vec<usize>,
         filter: Option<PlanExpr>,
     },
-    // Future: Join { left: Box<LogicalPlan>, right: Box<LogicalPlan>, ... }
+
+    /// Join two tables (2 inputs)
+    /// Performs nested loop join: for each left row, iterate all right rows,
+    /// emit combined rows where on_condition is true.
+    /// Output: left columns followed by right columns (left_column_count + right_column_count columns)
+    Join {
+        left: Box<LogicalPlan>,
+        right: Box<LogicalPlan>,
+        on_condition: PlanExpr,
+        left_column_count: usize, // for register offset calculation
+    },
 }
 
 // ============================================================================
@@ -258,7 +268,13 @@ pub mod schema {
 /// Convert an AST Statement to a LogicalPlan by querying the db_schema catalog.
 pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
     match statement {
-        Statement::Select(select) => plan_select(select, btree),
+        Statement::Select(select) => {
+            if select.joins.is_empty() {
+                plan_select(select, btree)
+            } else {
+                plan_select_with_joins(select, btree)
+            }
+        }
         Statement::CreateTable(_) => Err(PlanError::UnsupportedStatement),
         Statement::Insert(insert) => plan_insert(insert, btree),
         Statement::Update(update) => plan_update(update, btree),
@@ -556,6 +572,170 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     }
 
     // Add Limit if LIMIT clause exists
+    if let Some(ref limit_expr) = select.limit {
+        let count = extract_limit_value(limit_expr)?;
+        plan = LogicalPlan::Limit {
+            input: Box::new(plan),
+            count,
+        };
+    }
+
+    Ok(plan)
+}
+
+fn plan_select_with_joins(
+    select: ast::SelectStatement,
+    btree: &BTree,
+) -> Result<LogicalPlan, PlanError> {
+    // Support single join for now
+    if select.joins.len() != 1 {
+        return Err(PlanError::UnsupportedStatement);
+    }
+
+    // 1. Resolve left table (FROM clause)
+    let (left_name, left_ref) = extract_table_info(&select.from)?;
+    let left_table = resolve_table(&left_name, btree)?;
+    let left_col_count = left_table.columns.len();
+
+    // 2. Resolve right table (first join clause)
+    let join_clause = &select.joins[0];
+    let (right_name, right_ref) = extract_table_info(&join_clause.table)?;
+    let right_table = resolve_table(&right_name, btree)?;
+    let right_col_count = right_table.columns.len();
+
+    // 3. Build JoinExprContext
+    let join_ctx = build_join_expr_context(&left_table, &left_ref, &right_table, &right_ref);
+
+    // 4. Build scan plans (read ALL columns from each table)
+    let left_scan = LogicalPlan::Scan {
+        rootpage: left_table.rootpage,
+        columns: (0..left_col_count).collect(),
+    };
+    let right_scan = LogicalPlan::Scan {
+        rootpage: right_table.rootpage,
+        columns: (0..right_col_count).collect(),
+    };
+
+    // 5. Convert ON condition using join context
+    let on_condition = convert_expr_join(&join_clause.on_condition, &join_ctx)?;
+
+    // 6. Build Join plan
+    let mut plan = LogicalPlan::Join {
+        left: Box::new(left_scan),
+        right: Box::new(right_scan),
+        on_condition,
+        left_column_count: left_col_count,
+    };
+
+    // 7. Add WHERE filter if present (also uses join context)
+    if let Some(ref filter) = select.filter {
+        let predicate = convert_expr_join(filter, &join_ctx)?;
+        plan = LogicalPlan::Filter {
+            input: Box::new(plan),
+            predicate,
+        };
+    }
+
+    // 8. Project SELECT columns
+    let mut project_columns: Vec<PlanExpr> = Vec::new();
+    for col_expr in &select.columns {
+        match col_expr {
+            ast::ColumnExpression::Wildcard => {
+                // Expand to all columns from both tables
+                for idx in 0..(left_col_count + right_col_count) {
+                    project_columns
+                        .push(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }));
+                }
+            }
+            ast::ColumnExpression::Named { expression, .. } => {
+                project_columns.push(convert_expr_join(expression, &join_ctx)?);
+            }
+            ast::ColumnExpression::Anonyomous(expression) => {
+                project_columns.push(convert_expr_join(expression, &join_ctx)?);
+            }
+        }
+    }
+
+    let select_column_count = project_columns.len();
+
+    plan = LogicalPlan::Project {
+        input: Box::new(plan),
+        columns: project_columns.clone(),
+    };
+
+    // 9. ORDER BY (if present) - similar to plan_select
+    if let Some(ref order_by) = select.order_by {
+        // Build a map from join output index to projection index
+        let mut join_idx_to_proj_idx: HashMap<usize, usize> = HashMap::new();
+        for (proj_idx, expr) in project_columns.iter().enumerate() {
+            if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = expr {
+                join_idx_to_proj_idx.insert(*column_idx, proj_idx);
+            }
+        }
+
+        // Check if any ORDER BY columns are not in the SELECT list
+        let mut extra_order_columns = Vec::new();
+        for clause in order_by.iter() {
+            let order_expr = convert_expr_join(&clause.expression, &join_ctx)?;
+
+            // Check if this column is already in the projection
+            let already_in_select = project_columns.iter().any(|e| e == &order_expr);
+
+            if !already_in_select {
+                extra_order_columns.push(order_expr);
+            }
+        }
+
+        let has_extra_order_columns = !extra_order_columns.is_empty();
+        if has_extra_order_columns {
+            project_columns.extend(extra_order_columns);
+            plan = LogicalPlan::Project {
+                input: Box::new(plan),
+                columns: project_columns.clone(),
+            };
+
+            // Rebuild the index map with the extended projection
+            join_idx_to_proj_idx.clear();
+            for (proj_idx, expr) in project_columns.iter().enumerate() {
+                if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = expr {
+                    join_idx_to_proj_idx.insert(*column_idx, proj_idx);
+                }
+            }
+        }
+
+        // Convert ORDER BY expressions and remap column indices
+        let sort_keys: Result<Vec<SortKey>, _> = order_by
+            .iter()
+            .map(|clause| {
+                let join_expr = convert_expr_join(&clause.expression, &join_ctx)?;
+                let proj_expr = remap_column_indices(&join_expr, &join_idx_to_proj_idx)?;
+
+                Ok(SortKey {
+                    expr: proj_expr,
+                    descending: clause.direction == ast::OrderDirection::Desc,
+                })
+            })
+            .collect();
+
+        plan = LogicalPlan::Sort {
+            input: Box::new(plan),
+            sort_keys: sort_keys?,
+        };
+
+        // If we added extra columns for ORDER BY, add a final projection to remove them
+        if has_extra_order_columns {
+            let final_project: Vec<PlanExpr> = (0..select_column_count)
+                .map(|idx| PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
+                .collect();
+
+            plan = LogicalPlan::Project {
+                input: Box::new(plan),
+                columns: final_project,
+            };
+        }
+    }
+
+    // 10. LIMIT (if present)
     if let Some(ref limit_expr) = select.limit {
         let count = extract_limit_value(limit_expr)?;
         plan = LogicalPlan::Limit {
@@ -2508,6 +2688,95 @@ mod tests {
             );
         } else {
             panic!("Expected BinaryOp");
+        }
+    }
+
+    #[test]
+    fn test_plan_join() {
+        use super::{plan, schema, ColumnRef, LogicalPlan, PlanExpr};
+        use crate::test::TestDb;
+
+        // Create TestDb and two tables
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        // Get the catalog root
+        let catalog_root = btree.schema_root_page().expect("No catalog");
+
+        // Create departments table (id, name)
+        let dept_root = btree.create_tree();
+        {
+            use crate::engine::scalarvalue::ScalarValue;
+            let ddl = "CREATE TABLE departments (id INTEGER, name TEXT)";
+            let values = vec![
+                ScalarValue::String("table".to_string()),
+                ScalarValue::String("departments".to_string()),
+                ScalarValue::String("departments".to_string()),
+                ScalarValue::Integer(dept_root as i64),
+                ScalarValue::String(ddl.to_string()),
+            ];
+            let mut cursor = btree.open(catalog_root);
+            let mut c = cursor.open_readwrite();
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(&values, &mut buf).unwrap();
+            c.insert(1, buf); // key 1 (catalog row 0 is self-referencing db_schema)
+        }
+
+        // Create employees table (id, name, dept_id)
+        let emp_root = btree.create_tree();
+        {
+            use crate::engine::scalarvalue::ScalarValue;
+            let ddl = "CREATE TABLE employees (id INTEGER, name TEXT, dept_id INTEGER)";
+            let values = vec![
+                ScalarValue::String("table".to_string()),
+                ScalarValue::String("employees".to_string()),
+                ScalarValue::String("employees".to_string()),
+                ScalarValue::Integer(emp_root as i64),
+                ScalarValue::String(ddl.to_string()),
+            ];
+            let mut cursor = btree.open(catalog_root);
+            let mut c = cursor.open_readwrite();
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(&values, &mut buf).unwrap();
+            c.insert(2, buf); // key 2
+        }
+
+        // Plan: "SELECT e.name, d.name FROM employees AS e JOIN departments AS d ON e.dept_id = d.id"
+        let stmt = parse_sql(
+            "SELECT e.name, d.name FROM employees AS e JOIN departments AS d ON e.dept_id = d.id",
+        );
+        let plan = plan(stmt, &btree).expect("Planning should succeed");
+
+        // Verify plan structure: Project { Join { Scan(employees), Scan(departments), ... }, ... }
+        if let LogicalPlan::Project { input, columns } = plan {
+            assert_eq!(columns.len(), 2, "Should project 2 columns");
+
+            // Both should be column references
+            assert!(matches!(columns[0], PlanExpr::ColumnRef(_)));
+            assert!(matches!(columns[1], PlanExpr::ColumnRef(_)));
+
+            if let LogicalPlan::Join {
+                left,
+                right,
+                on_condition,
+                left_column_count,
+            } = *input
+            {
+                assert_eq!(left_column_count, 3, "Employees has 3 columns");
+
+                // Left should be Scan of employees
+                assert!(matches!(*left, LogicalPlan::Scan { .. }));
+
+                // Right should be Scan of departments
+                assert!(matches!(*right, LogicalPlan::Scan { .. }));
+
+                // ON condition should be a binary operation
+                assert!(matches!(on_condition, PlanExpr::BinaryOp { .. }));
+            } else {
+                panic!("Expected Join node");
+            }
+        } else {
+            panic!("Expected Project node");
         }
     }
 }
