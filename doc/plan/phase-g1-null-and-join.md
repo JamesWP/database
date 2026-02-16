@@ -44,22 +44,29 @@ pub enum UnaryOp {
 
 #### 32c. Parser (`src/frontend/parser.rs`)
 
-After parsing a comparison expression, check for `IS [NOT] NULL` as a postfix operation:
-```
-if peek == Type::Is {
-    advance(); // consume IS
-    if peek == Type::Not {
-        advance(); // consume NOT
-        expect(Null);
-        wrap expression in UnaryOp::IsNotNull
+In the `parse_equality` method (line 649), after the `while` loop that handles `=` / `!=`, add a check for `IS [NOT] NULL` as a postfix operation on the parsed expression:
+```rust
+// After the while loop in parse_equality, before Ok(expr):
+if matches!(self.input.peek(), lexer::Type::Is) {
+    self.input.advance(); // consume IS
+    if matches!(self.input.peek(), lexer::Type::Not) {
+        self.input.advance(); // consume NOT
+        self.input.expect(Expect::Null)?;
+        expr = ast::Expression::UnaryOp {
+            op: ast::UnaryOp::IsNotNull,
+            expression: Box::new(expr),
+        };
     } else {
-        expect(Null);
-        wrap expression in UnaryOp::IsNull
+        self.input.expect(Expect::Null)?;
+        expr = ast::Expression::UnaryOp {
+            op: ast::UnaryOp::IsNull,
+            expression: Box::new(expr),
+        };
     }
 }
 ```
 
-Add `Expect::Is` variant to the Expect enum.
+Add `Expect::Null` to the `Expect` enum (line 130) and add the matching arm in the `expect()` method (line 48): `(Expect::Null, lexer::Type::Null) => { self.advance(); Ok(()) }`. Follow the exact pattern of existing arms like `Expect::From`.
 
 #### 32d. Planner (`src/planner.rs`)
 
@@ -79,17 +86,20 @@ Update `Display` impl and `finalize_with_offset` (no-jump-target arm).
 
 In `compile_unary_op`, add cases for `IsNull` and `IsNotNull` that emit the new VM operations.
 
-#### 32g. Engine (`src/engine/mod.rs`)
+#### 32g. Engine (`src/engine.rs`)
 
-Execute the operations:
+Execute the operations. Note: the engine file is `src/engine.rs` (not `mod.rs`). Find the main `match` on operations and add:
 ```rust
 IsNullValue(dest, src) => {
-    registers[dest] = ScalarValue::Boolean(registers[src] == ScalarValue::Null);
+    let is_null = matches!(self.registers.get(*src), RegisterValue::ScalarValue(ScalarValue::Null));
+    *self.registers.get_mut(*dest) = RegisterValue::ScalarValue(ScalarValue::Boolean(is_null));
 }
 IsNotNullValue(dest, src) => {
-    registers[dest] = ScalarValue::Boolean(registers[src] != ScalarValue::Null);
+    let is_null = matches!(self.registers.get(*src), RegisterValue::ScalarValue(ScalarValue::Null));
+    *self.registers.get_mut(*dest) = RegisterValue::ScalarValue(ScalarValue::Boolean(!is_null));
 }
 ```
+Follow the same register access patterns used by existing operations in this file (e.g., `EqualsValue`).
 
 ### Tests
 
@@ -122,9 +132,11 @@ The compiler's node system uses a label-based push pipeline:
 - Each node returns `NodeOutput { next, output_regs }`
 - Nodes compose by wiring these labels together
 
-**The problem:** For a nested loop join, the inner scan must restart from the beginning for each outer row. But `codegen_scan` (in `src/compiler/nodes.rs`) emits `Open()` + `MoveCursor(First)` in the **init emitter** (runs once at startup). There is no facility to reset a scan node from the body loop.
+**The problem:** For a nested loop join, the inner (right) side must be re-scanned from the beginning for each outer row. But nodes generate their bytecode once — there is no built-in mechanism to "reset" a compiled node. `codegen_scan` emits `MoveCursor(First)` in the **init emitter** (runs once at startup), and its `next` label just advances the cursor.
 
-**The solution:** Write a self-contained `codegen_join` function that directly emits cursor operations for both tables. This bypasses normal node composition for the join itself, avoiding any changes to `NodeOutput`, `NodeContinuation`, or existing node codegen functions.
+**The solution — Materialize the right side:** Compile the right child using normal `codegen()` (so it can be *any* plan node — Scan, Filter, subquery, etc.), run it to completion during a materialization phase, and store all its rows in a row buffer. Then for each left row, iterate the buffer. This requires two new VM instructions for non-destructive buffer iteration (`RewindRowBuffer` and `NextFromRowBuffer`), since the existing `YieldFromRowBuffer` is destructive (`pop()`-based).
+
+The left child is also compiled via normal `codegen()`, so both inputs can be arbitrary plan nodes.
 
 ### Implementation
 
@@ -209,7 +221,7 @@ pub enum LogicalPlan {
 
 **New JoinExprContext for multi-table column resolution:**
 
-The existing `ExprContext` only supports a single table. For joins, create a `JoinExprContext`:
+The existing `ExprContext` only supports a single table (line 951). For joins, create a `JoinExprContext`:
 
 ```rust
 struct JoinExprContext {
@@ -225,16 +237,71 @@ Build it from both tables' column definitions:
 2. Right table columns → positions `left_col_count..left_col_count + right_col_count`
 3. For each column name: if it appears in both tables, mark as `None` (ambiguous) in the unqualified map
 
-**New `convert_expr_join` function** (parallel to existing `convert_expr`):
+**New `convert_expr_join` function** (parallel to existing `convert_expr` at line 959):
 
-Handles `Identifier` and `MultiPartIdentifier` using `JoinExprContext`:
-- `Identifier(name)` → look up in `unqualified` map; error if `None` (ambiguous) or missing
-- `MultiPartIdentifier(table_expr, column)` → extract table name, look up `(table, column)` in `qualified` map
-- All other expression types recurse normally
+This function mirrors `convert_expr` exactly but uses `JoinExprContext` instead of `ExprContext` for column resolution. The structure:
+```rust
+fn convert_expr_join(expr: &ast::Expression, ctx: &JoinExprContext) -> Result<PlanExpr, PlanError> {
+    match expr {
+        ast::Expression::Value(scalar) => convert_scalar_join(scalar, ctx),
+        ast::Expression::BinaryOp { op, lhs, rhs } => Ok(PlanExpr::BinaryOp {
+            op: convert_binary_op(op),
+            left: Box::new(convert_expr_join(lhs, ctx)?),
+            right: Box::new(convert_expr_join(rhs, ctx)?),
+        }),
+        ast::Expression::UnaryOp { op, expression } => Ok(PlanExpr::UnaryOp {
+            op: convert_unary_op(op),
+            operand: Box::new(convert_expr_join(expression, ctx)?),
+        }),
+        ast::Expression::FunctionCall { name, args } => {
+            // Same validation as convert_expr (line 972-996)
+            let plan_args: Result<Vec<_>, _> =
+                args.iter().map(|arg| convert_expr_join(arg, ctx)).collect();
+            Ok(PlanExpr::FunctionCall { name: name.to_uppercase(), args: plan_args? })
+        }
+    }
+}
+
+fn convert_scalar_join(scalar: &ast::ScalarValue, ctx: &JoinExprContext) -> Result<PlanExpr, PlanError> {
+    match scalar {
+        ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
+        ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
+        ast::ScalarValue::StringLiteral(s) => Ok(PlanExpr::Literal(Literal::String(s.clone()))),
+        ast::ScalarValue::Null => Ok(PlanExpr::Literal(Literal::Null)),
+        ast::ScalarValue::Identifier(name) => {
+            // Unqualified column reference
+            match ctx.unqualified.get(name) {
+                Some(Some(pos)) => Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos })),
+                Some(None) => Err(PlanError::AmbiguousColumn(name.clone())),
+                None => Err(PlanError::ColumnNotFound { table: "join".to_string(), column: name.clone() }),
+            }
+        }
+        ast::ScalarValue::MultiPartIdentifier(table_expr, column_name) => {
+            // Qualified column reference (e.g., e.name)
+            let ref_table = extract_identifier(table_expr)?;
+            match ctx.qualified.get(&(ref_table.clone(), column_name.clone())) {
+                Some(pos) => Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos })),
+                None => Err(PlanError::ColumnNotFound { table: ref_table, column: column_name.clone() }),
+            }
+        }
+    }
+}
+```
 
 **New `plan_select_with_joins` function:**
 
-Called from `plan()` when `select.joins` is non-empty. Structure:
+Called from the `plan()` dispatch function (line 257). Modify the `Statement::Select` arm:
+```rust
+Statement::Select(select) => {
+    if select.joins.is_empty() {
+        plan_select(select, btree)
+    } else {
+        plan_select_with_joins(select, btree)
+    }
+}
+```
+
+Structure of `plan_select_with_joins`:
 
 ```rust
 fn plan_select_with_joins(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
@@ -283,15 +350,48 @@ fn plan_select_with_joins(select: ast::SelectStatement, btree: &BTree) -> Result
     }
 
     // 8. Project SELECT columns
-    // Handle SELECT * (wildcard) by expanding to all columns from both tables
-    let project_columns = convert_select_columns_join(&select.columns, &join_ctx)?;
+    // For each ColumnExpression:
+    //   - Wildcard → expand to ColumnRef(0), ColumnRef(1), ..., ColumnRef(left_col_count + right_col_count - 1)
+    //   - Named/Anonymous → convert using convert_expr_join
+    let mut project_columns: Vec<PlanExpr> = Vec::new();
+    for col_expr in &select.columns {
+        match col_expr {
+            ast::ColumnExpression::Wildcard => {
+                for idx in 0..(left_col_count + right_col_count) {
+                    project_columns.push(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }));
+                }
+            }
+            ast::ColumnExpression::Named { expression, .. } => {
+                project_columns.push(convert_expr_join(expression, &join_ctx)?);
+            }
+            ast::ColumnExpression::Anonyomous(expression) => {
+                project_columns.push(convert_expr_join(expression, &join_ctx)?);
+            }
+        }
+    }
     plan = LogicalPlan::Project {
         input: Box::new(plan),
         columns: project_columns,
     };
 
-    // 9. ORDER BY / LIMIT (same as plan_select, using join context for expressions)
-    // ...
+    // 9. ORDER BY (if present) — follow the same pattern as plan_select (lines 508-553)
+    // Convert ORDER BY expressions using convert_expr_join (not convert_expr).
+    // The column remapping logic (scan_idx_to_proj_idx, extra_order_columns) works the
+    // same way — the only difference is using the join context for expression conversion.
+    if let Some(ref order_by) = select.order_by {
+        // Same logic as plan_select: build sort keys, handle extra order columns
+        // Use convert_expr_join(&clause.expression, &join_ctx) instead of convert_expr
+        // ... (copy the pattern from plan_select lines 508-553)
+    }
+
+    // 10. LIMIT (if present) — same as plan_select (lines 556-563)
+    if let Some(ref limit_expr) = select.limit {
+        let count = extract_limit_value(limit_expr)?;
+        plan = LogicalPlan::Limit {
+            input: Box::new(plan),
+            count,
+        };
+    }
 
     Ok(plan)
 }
@@ -313,9 +413,93 @@ For `SELECT e.name, d.name FROM employees AS e JOIN departments AS d ON e.dept_i
 
 **New error variant:** `PlanError::AmbiguousColumn(String)` for unqualified references to columns in both tables.
 
-#### 33e. Compiler (`src/compiler/nodes.rs`) — The Nested Loop
+#### 33e. New VM Instructions (`src/engine/program.rs`)
 
-**New `codegen_join` function** — self-contained, does NOT compose child nodes via `codegen()`:
+The existing `YieldFromRowBuffer` uses `buffer.pop()` (destructive, line 329 of `src/engine.rs`). For joins we need non-destructive iteration with rewind capability. Add two new instructions:
+
+```rust
+/// Reset the row buffer's read cursor to the beginning (for re-iteration).
+RewindRowBuffer(Reg),
+
+/// Read the next row from the buffer without removing it.
+/// If the read cursor is past the end, jump to target.
+/// Otherwise, copy row values into dest_regs and advance the read cursor.
+NextFromRowBuffer(Vec<Reg>, Reg, JumpTarget),
+```
+
+**Engine implementation:**
+
+The `RowBuffer` register value needs a read cursor. Change from `RowBuffer(Vec<Vec<ScalarValue>>)` to a struct:
+```rust
+pub struct RowBuffer {
+    pub rows: Vec<Vec<ScalarValue>>,
+    pub cursor: usize,  // read position for NextFromRowBuffer
+}
+```
+
+Use the struct approach. In `src/engine/registers.rs`:
+
+1. Add the struct definition:
+```rust
+#[derive(Clone, Debug)]
+pub struct RowBuffer {
+    pub rows: Vec<Vec<ScalarValue>>,
+    pub cursor: usize,
+}
+```
+
+2. Change `RegisterValue::RowBuffer(Vec<Vec<ScalarValue>>)` to `RegisterValue::RowBuffer(RowBuffer)`.
+
+3. Update `row_buffer_mut()` to return `Option<&mut RowBuffer>` (currently returns `Option<&mut Vec<Vec<ScalarValue>>>`).
+
+4. In `src/engine.rs`, update existing operations:
+   - `InitRowBuffer(reg)`: change `Vec::new()` to `RowBuffer { rows: Vec::new(), cursor: 0 }`
+   - `AppendToRowBuffer`: change `buffer.push(row)` to `buffer.rows.push(row)`
+   - `SortRowBuffer`: change `buffer.sort_by(...)` to `buffer.rows.sort_by(...)`
+   - `YieldFromRowBuffer`: change `buffer.pop()` to `buffer.rows.pop()`
+
+Engine execution for the new instructions:
+```rust
+RewindRowBuffer(buf_reg) => {
+    let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
+    buffer.cursor = 0;
+}
+NextFromRowBuffer(dest_regs, buf_reg, target) => {
+    // Borrow checker note: must extract data and drop the buffer borrow
+    // BEFORE writing to dest registers. Follow the pattern used by
+    // YieldFromRowBuffer (which pops a row, then writes to dest regs).
+    let maybe_row = {
+        let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
+        if buffer.cursor >= buffer.rows.len() {
+            None
+        } else {
+            let row = buffer.rows[buffer.cursor].clone();
+            buffer.cursor += 1;
+            Some(row)
+        }
+    }; // buffer borrow dropped here
+    match maybe_row {
+        None => {
+            self.program.set_next_operation_index(target.unwrap_resolved());
+        }
+        Some(row) => {
+            for (dest, value) in dest_regs.iter().zip(row.into_iter()) {
+                *self.registers.get_mut(*dest) = RegisterValue::ScalarValue(value);
+            }
+        }
+    }
+}
+```
+
+#### 33f. Compiler (`src/compiler/nodes.rs`) — The Nested Loop (Materialize Right Side)
+
+**Overview:** The join compiles in two phases within the generated bytecode:
+1. **Materialize phase:** Run the right child to completion, storing all rows in a buffer
+2. **Join phase:** For each left row, iterate the buffer checking the ON condition
+
+Both children are compiled via normal `codegen()`, so they can be any plan node.
+
+**New `codegen_join` function:**
 
 ```rust
 pub fn codegen_join(
@@ -326,70 +510,83 @@ pub fn codegen_join(
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
-    // Extract Scan info — for v1, both children must be Scan nodes
-    let (left_rootpage, left_columns) = match left {
-        LogicalPlan::Scan { rootpage, columns } => (*rootpage, columns),
-        _ => panic!("Join currently requires Scan children"),
+    // --- Phase 1: Materialize right side into buffer ---
+
+    let buffer_reg = ctx.registers.alloc();
+    ctx.init_emitter.emit(Operation::InitRowBuffer(buffer_reg));
+
+    // Compile right child via normal codegen
+    // Its init code → init_emitter, body code → body_emitter
+    let mat_on_tuple = ctx.body_emitter.create_label();
+    let mat_on_done = ctx.body_emitter.create_label();
+    let right_cont = NodeContinuation {
+        on_tuple: mat_on_tuple,
+        on_done: mat_on_done,
     };
-    let (right_rootpage, right_columns) = match right {
-        LogicalPlan::Scan { rootpage, columns } => (*rootpage, columns),
-        _ => panic!("Join currently requires Scan children"),
+    let right_output = codegen(right, &right_cont, ctx);
+
+    // mat_on_tuple: append row to buffer, request next
+    ctx.body_emitter.bind_label(mat_on_tuple);
+    ctx.body_emitter.emit(Operation::AppendToRowBuffer(
+        buffer_reg,
+        right_output.output_regs.clone(),
+    ));
+    ctx.body_emitter.emit_goto(right_output.next);
+
+    // mat_on_done: materialization complete, jump to join loop
+    ctx.body_emitter.bind_label(mat_on_done);
+    let join_loop_start = ctx.body_emitter.create_label(); // forward ref
+    ctx.body_emitter.emit_goto(join_loop_start);
+
+    // --- Phase 2: Nested loop join ---
+
+    // Compile left child via normal codegen
+    let left_on_tuple = ctx.body_emitter.create_label();
+    let left_cont = NodeContinuation {
+        on_tuple: left_on_tuple,
+        on_done: cont.on_done,  // left exhausted = join done
     };
+    let left_output = codegen(left, &left_cont, ctx);
 
-    // Allocate registers
-    let left_cursor = ctx.registers.alloc();
-    let right_cursor = ctx.registers.alloc();
-    let flag_reg = ctx.registers.alloc();
+    // Bind join_loop_start: after materialization, start left iteration
+    ctx.body_emitter.bind_label(join_loop_start);
+    ctx.body_emitter.emit_goto(left_output.next);
 
-    // Allocate read registers for left table
-    let left_num_read = left_columns.iter().max().map(|&m| m + 1).unwrap_or(0);
-    let left_all_regs = ctx.registers.alloc_block(left_num_read);
-    let left_output: Vec<Reg> = left_columns.iter().map(|&i| left_all_regs[i]).collect();
-
-    // Allocate read registers for right table
-    let right_num_read = right_columns.iter().max().map(|&m| m + 1).unwrap_or(0);
-    let right_all_regs = ctx.registers.alloc_block(right_num_read);
-    let right_output: Vec<Reg> = right_columns.iter().map(|&i| right_all_regs[i]).collect();
+    // Allocate registers for right-side rows read from buffer
+    let right_read_regs = ctx.registers.alloc_block(right_output.output_regs.len());
 
     // Combined output: left columns then right columns
-    let mut combined_output = left_output.clone();
-    combined_output.extend(right_output.clone());
+    let mut combined_output = left_output.output_regs.clone();
+    combined_output.extend(right_read_regs.clone());
 
-    // --- INIT ---
-    ctx.init_emitter.emit(Operation::Open(left_cursor, left_rootpage));
-    ctx.init_emitter.emit(Operation::MoveCursor(left_cursor, MoveOperation::First));
-    ctx.init_emitter.emit(Operation::Open(right_cursor, right_rootpage));
-    // NOTE: Do NOT MoveCursor(right, First) here — done per outer row in body
+    // left_on_tuple: got a left row, iterate buffer
+    ctx.body_emitter.bind_label(left_on_tuple);
+    ctx.body_emitter.emit(Operation::RewindRowBuffer(buffer_reg));
 
-    // --- BODY ---
-    let outer_check = ctx.body_emitter.create_label();
+    // INNER_CHECK: read next row from buffer
     let inner_check = ctx.body_emitter.create_label();
-
-    // OUTER_CHECK: read next outer row
-    ctx.body_emitter.bind_label(outer_check);
-    ctx.body_emitter.emit(Operation::CanReadCursor(flag_reg, left_cursor));
-    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);  // outer exhausted → done
-    ctx.body_emitter.emit(Operation::ReadCursor(left_all_regs.clone(), left_cursor));
-    ctx.body_emitter.emit(Operation::MoveCursor(left_cursor, MoveOperation::Next));
-    // Reset inner cursor for this outer row
-    ctx.body_emitter.emit(Operation::MoveCursor(right_cursor, MoveOperation::First));
-
-    // INNER_CHECK: read next inner row
     ctx.body_emitter.bind_label(inner_check);
-    ctx.body_emitter.emit(Operation::CanReadCursor(flag_reg, right_cursor));
-    ctx.body_emitter.emit_goto_if_false(outer_check, flag_reg);   // inner exhausted → next outer
-    ctx.body_emitter.emit(Operation::ReadCursor(right_all_regs.clone(), right_cursor));
-    ctx.body_emitter.emit(Operation::MoveCursor(right_cursor, MoveOperation::Next));
+    // NextFromRowBuffer jumps to target when buffer is exhausted.
+    // Use JumpTarget::Unresolved(label) — same pattern as YieldFromRowBuffer
+    // in codegen_sort (see line ~640 of nodes.rs).
+    ctx.body_emitter.emit(Operation::NextFromRowBuffer(
+        right_read_regs.clone(),
+        buffer_reg,
+        JumpTarget::Unresolved(left_output.next),  // buffer done → next left row
+    ));
 
     // Evaluate ON condition against combined registers
-    let pred_reg = compile_expr(on_condition, &combined_output, ...);
-    ctx.body_emitter.emit_goto_if_false(inner_check, pred_reg);   // no match → next inner
-    ctx.body_emitter.emit_goto(cont.on_tuple);                    // match → emit row
+    let pred_reg = compile_expr(on_condition, &combined_output, &mut ExprContext {
+        emitter: &mut ctx.body_emitter,
+        registers: &mut ctx.registers,
+    });
+    ctx.body_emitter.emit_goto_if_false(inner_check, pred_reg); // no match → next buffer row
+    ctx.body_emitter.emit_goto(cont.on_tuple);                  // match → emit row
 
     // JOIN_NEXT: parent calls this to get next matching row
     let join_next = ctx.body_emitter.create_label();
     ctx.body_emitter.bind_label(join_next);
-    ctx.body_emitter.emit_goto(inner_check);                      // resume inner iteration
+    ctx.body_emitter.emit_goto(inner_check);
 
     NodeOutput {
         next: join_next,
@@ -398,40 +595,66 @@ pub fn codegen_join(
 }
 ```
 
+**Important — wiring new instructions into existing infrastructure:**
+
+Three places must be updated for each new `Operation` variant:
+
+1. **`src/compiler/emitter.rs` — `finalize_with_offset` (line ~92):** This method has an exhaustive `match` on all `Operation` variants. Add:
+   - `Operation::NextFromRowBuffer(_, _, ref mut target)` → resolve jump target (same as `YieldFromRowBuffer` arm at line ~111)
+   - `Operation::RewindRowBuffer(_)` → add to the no-jump-target arm (the `| Operation::SortRowBuffer(_, _)` list at line ~148)
+
+2. **`src/engine/program.rs` — `Display` impl:** Add formatting for both new operations (follow existing row buffer display patterns around line ~290).
+
+3. **`src/engine.rs` — execution `match`:** Add the execution logic (already specified in section 33e above).
+
 **Bytecode execution flow:**
 
 ```
 INIT:
-  Open(left_cursor, left_rootpage)
-  MoveCursor(left_cursor, First)
-  Open(right_cursor, right_rootpage)
+  InitRowBuffer(buffer)
+  <right child init (e.g., Open right cursor, MoveCursor First)>
+  <left child init (e.g., Open left cursor, MoveCursor First)>
 
 BODY:
-  OUTER_CHECK:
-    CanReadCursor(flag, left_cursor)
-    GoToIfFalse(cont.on_done, flag)          → all done when outer exhausted
-    ReadCursor(left_regs, left_cursor)
-    MoveCursor(left_cursor, Next)            → advance outer (for next time)
-    MoveCursor(right_cursor, First)          → RESET inner scan
+  Phase 1 — Materialize right side:
+    RIGHT_CHECK:                              ← body starts here (right child's entry)
+      <right child body>
+      → on_tuple: MAT_ON_TUPLE
+      → on_done:  MAT_ON_DONE
 
-  INNER_CHECK:
-    CanReadCursor(flag, right_cursor)
-    GoToIfFalse(OUTER_CHECK, flag)           → inner exhausted, get next outer row
-    ReadCursor(right_regs, right_cursor)
-    MoveCursor(right_cursor, Next)           → advance inner
-    <evaluate ON condition>
-    GoToIfFalse(INNER_CHECK, pred_reg)       → no match, try next inner
-    GoTo(cont.on_tuple)                      → match! emit combined row
+    MAT_ON_TUPLE:
+      AppendToRowBuffer(buffer, right_regs)
+      GoTo(RIGHT_CHECK)                       → get next right row
 
-  JOIN_NEXT:                                 → parent calls here for next row
-    GoTo(INNER_CHECK)                        → continue inner iteration
+    MAT_ON_DONE:
+      GoTo(JOIN_LOOP_START)                   → materialization complete
+
+  Phase 2 — Nested loop:
+    <left child body>
+      → on_tuple: LEFT_ON_TUPLE
+      → on_done:  cont.on_done               → join is done
+
+    JOIN_LOOP_START:
+      GoTo(LEFT_CHECK)                        → start getting left rows
+
+    LEFT_ON_TUPLE:
+      RewindRowBuffer(buffer)                 → reset buffer to start
+
+    INNER_CHECK:
+      NextFromRowBuffer(right_regs, buffer, LEFT_CHECK)  → read or jump if done
+      <evaluate ON condition>
+      GoToIfFalse(INNER_CHECK, pred_reg)      → no match, next buffer row
+      GoTo(cont.on_tuple)                     → match! emit combined row
+
+    JOIN_NEXT:                                → parent calls here for next row
+      GoTo(INNER_CHECK)                       → continue buffer iteration
 ```
 
-**Why this works correctly:**
-1. Outer cursor is advanced BEFORE the inner loop. So when inner exhausts and jumps to OUTER_CHECK, we read the next outer row.
-2. `JOIN_NEXT` resumes inner iteration — there may be more inner matches for the current outer row.
-3. When the parent calls `next` after receiving a matched row, it goes to `JOIN_NEXT` → `INNER_CHECK`, which continues scanning inner rows for the current outer row.
-4. When inner rows are exhausted for one outer row, control goes to `OUTER_CHECK` for the next outer row.
+**Why this is modular:**
+- Both `left` and `right` children are compiled via `codegen()` — they can be Scan, Filter(Scan), or any other plan node
+- The right side's rows are materialized into a buffer that can be iterated multiple times
+- No changes to `NodeOutput`, `NodeContinuation`, or any existing node codegen function
+- Future: could optimize when right child is a simple Scan by using cursor reset instead of materialization (but the buffer approach works universally)
 
 **Wire into `codegen()` dispatch** (around line 1170):
 ```rust
@@ -440,9 +663,9 @@ LogicalPlan::Join { left, right, on_condition, left_column_count } => {
 }
 ```
 
-#### 33f. compile_expr for JOIN
+#### 33g. compile_expr for JOIN
 
-The existing `compile_expr` in `src/compiler/expr.rs` takes `input_regs: &[Reg]` and maps `ColumnRef::Single { column_idx }` to `input_regs[column_idx]`. Since the join's `combined_output` is `left_regs ++ right_regs` and the planner produces column indices into this combined layout, `compile_expr` works without modification.
+The existing `compile_expr` in `src/compiler/expr.rs` takes `input_regs: &[Reg]` and maps `ColumnRef::Single { column_idx }` to `input_regs[column_idx]`. Since the join's `combined_output` is `left_regs ++ right_read_regs` and the planner produces column indices into this combined layout, `compile_expr` works without modification.
 
 ### Tests
 
