@@ -107,6 +107,14 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::Join, lexer::Type::Join) => {
+                self.advance();
+                Ok(())
+            }
+            (Expect::On, lexer::Type::On) => {
+                self.advance();
+                Ok(())
+            }
             // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
@@ -149,6 +157,8 @@ pub enum Expect {
     Drop,
     By,
     Null,
+    Join,
+    On,
 }
 
 impl lexer::Type {
@@ -460,6 +470,34 @@ impl Parser {
 
         let from = self.parse_named_tuple_source()?;
 
+        let mut joins = Vec::new();
+        loop {
+            match self.input.peek() {
+                lexer::Type::Inner => {
+                    self.input.advance(); // consume INNER
+                    self.input.expect(Expect::Join)?;
+                    let table = self.parse_named_tuple_source()?;
+                    self.input.expect(Expect::On)?;
+                    let on_condition = self.parse_expression()?;
+                    joins.push(ast::JoinClause {
+                        table,
+                        on_condition,
+                    });
+                }
+                lexer::Type::Join => {
+                    self.input.advance(); // consume JOIN
+                    let table = self.parse_named_tuple_source()?;
+                    self.input.expect(Expect::On)?;
+                    let on_condition = self.parse_expression()?;
+                    joins.push(ast::JoinClause {
+                        table,
+                        on_condition,
+                    });
+                }
+                _ => break,
+            }
+        }
+
         let filter = match self.input.peek() {
             lexer::Type::Where => {
                 self.input.advance();
@@ -497,6 +535,7 @@ impl Parser {
         Ok(ast::SelectStatement {
             columns,
             from,
+            joins,
             filter,
             limit,
             order_by,
@@ -1140,6 +1179,56 @@ mod test {
                 }
                 // Second should be wildcard
                 assert!(matches!(select.columns[1], ast::ColumnExpression::Wildcard));
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_join() {
+        // Parse "SELECT a.x, b.y FROM alpha AS a JOIN beta AS b ON a.id = b.a_id"
+        let stmt =
+            parse("SELECT a.x, b.y FROM alpha AS a JOIN beta AS b ON a.id = b.a_id").unwrap();
+        match stmt {
+            ast::Statement::Select(select) => {
+                // Should have 1 join
+                assert_eq!(select.joins.len(), 1);
+
+                // Check the join table
+                match &select.joins[0].table {
+                    ast::NamedTupleSource::Named { alias, source } => {
+                        assert_eq!(alias, "b");
+                        match source {
+                            ast::TupleSource::Table(name) => assert_eq!(name, "beta"),
+                            _ => panic!("Expected Table source"),
+                        }
+                    }
+                    _ => panic!("Expected Named tuple source"),
+                }
+
+                // Check ON condition is a binary operation
+                assert!(matches!(
+                    select.joins[0].on_condition,
+                    ast::Expression::BinaryOp { .. }
+                ));
+            }
+            _ => panic!("Expected Select statement"),
+        }
+
+        // Test INNER JOIN keyword variant
+        let stmt2 = parse("SELECT a.x FROM t1 AS a INNER JOIN t2 AS b ON a.id = b.id").unwrap();
+        match stmt2 {
+            ast::Statement::Select(select) => {
+                assert_eq!(select.joins.len(), 1);
+            }
+            _ => panic!("Expected Select statement"),
+        }
+
+        // Test query without joins (existing queries should be unaffected)
+        let stmt3 = parse("SELECT x FROM t1 WHERE x > 1").unwrap();
+        match stmt3 {
+            ast::Statement::Select(select) => {
+                assert_eq!(select.joins.len(), 0);
             }
             _ => panic!("Expected Select statement"),
         }
