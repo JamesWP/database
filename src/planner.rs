@@ -348,8 +348,8 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     // 5. Build column mapping
     let mapping = build_column_mapping(&columns_needed, &table, &table_ref)?;
 
-    // 6. Build expression context
-    let ctx = ExprContext {
+    // 6. Build column resolver
+    let resolver = SingleTableResolver {
         table_ref: &table_ref,
         columns: &mapping.column_map,
     };
@@ -377,7 +377,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     if let Some(ref filter) = select.filter {
         plan = LogicalPlan::Filter {
             input: Box::new(plan),
-            predicate: convert_expr(filter, &ctx)?,
+            predicate: convert_expr(filter, &resolver)?,
         };
     }
 
@@ -392,7 +392,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
         let group_keys: Vec<PlanExpr> = if let Some(ref group_by) = select.group_by {
             group_by
                 .iter()
-                .map(|expr| convert_expr(expr, &ctx))
+                .map(|expr| convert_expr(expr, &resolver))
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             vec![] // No GROUP BY = one big group
@@ -414,10 +414,10 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
                 // It will appear in the Aggregate output after all group keys
                 let agg_index_in_output = group_keys.len() + aggregates.len();
                 projection_indices.push(agg_index_in_output);
-                aggregates.push(convert_aggregate(expr, &ctx)?);
+                aggregates.push(convert_aggregate(expr, &resolver)?);
             } else {
                 // This SELECT column is a non-aggregate (must be a group key)
-                let group_expr = convert_expr(expr, &ctx)?;
+                let group_expr = convert_expr(expr, &resolver)?;
                 // Find which group key this matches
                 let group_key_index = group_keys
                     .iter()
@@ -461,7 +461,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
                             .map(|(idx, _col)| Ok(PlanExpr::ColumnRef(idx)))
                             .collect::<Vec<_>>()
                     }
-                    _ => vec![convert_column_expr(col_expr, &ctx)],
+                    _ => vec![convert_column_expr(col_expr, &resolver)],
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -498,7 +498,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
 
                     if !already_in_select {
                         // Add this column to the projection
-                        let order_col_expr = convert_expr(&clause.expression, &ctx)?;
+                        let order_col_expr = convert_expr(&clause.expression, &resolver)?;
                         extra_order_columns.push(order_col_expr);
                     }
                 }
@@ -530,7 +530,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
                 .iter()
                 .map(|clause| {
                     // First, resolve against scan columns (this handles case-insensitive lookup)
-                    let scan_expr = convert_expr(&clause.expression, &ctx)?;
+                    let scan_expr = convert_expr(&clause.expression, &resolver)?;
 
                     // Remap scan column indices to projection indices
                     let proj_expr = remap_column_indices(&scan_expr, &scan_idx_to_proj_idx)?;
@@ -593,8 +593,33 @@ fn plan_select_with_joins(
     let right_table = resolve_table(&right_name, btree)?;
     let right_col_count = right_table.columns.len();
 
-    // 3. Build JoinExprContext
-    let join_ctx = build_join_expr_context(&left_table, &left_ref, &right_table, &right_ref);
+    // 3. Build join column resolution maps
+    let mut qualified = HashMap::new();
+    let mut unqualified = HashMap::new();
+
+    // Add left table columns (positions 0..left_col_count)
+    for (idx, col) in left_table.columns.iter().enumerate() {
+        qualified.insert((left_ref.clone(), col.name.clone()), idx);
+        unqualified
+            .entry(col.name.clone())
+            .and_modify(|e| *e = None) // Mark as ambiguous if already exists
+            .or_insert(Some(idx));
+    }
+
+    // Add right table columns (positions left_col_count..)
+    for (idx, col) in right_table.columns.iter().enumerate() {
+        let combined_idx = left_col_count + idx;
+        qualified.insert((right_ref.clone(), col.name.clone()), combined_idx);
+        unqualified
+            .entry(col.name.clone())
+            .and_modify(|e| *e = None) // Mark as ambiguous if already exists
+            .or_insert(Some(combined_idx));
+    }
+
+    let join_resolver = JoinResolver {
+        qualified: &qualified,
+        unqualified: &unqualified,
+    };
 
     // 4. Build scan plans (read ALL columns from each table)
     let left_scan = LogicalPlan::Scan {
@@ -606,8 +631,8 @@ fn plan_select_with_joins(
         columns: (0..right_col_count).collect(),
     };
 
-    // 5. Convert ON condition using join context
-    let on_condition = convert_expr_join(&join_clause.on_condition, &join_ctx)?;
+    // 5. Convert ON condition using join resolver
+    let on_condition = convert_expr(&join_clause.on_condition, &join_resolver)?;
 
     // 6. Build Join plan
     let mut plan = LogicalPlan::Join {
@@ -617,9 +642,9 @@ fn plan_select_with_joins(
         left_column_count: left_col_count,
     };
 
-    // 7. Add WHERE filter if present (also uses join context)
+    // 7. Add WHERE filter if present (also uses join resolver)
     if let Some(ref filter) = select.filter {
-        let predicate = convert_expr_join(filter, &join_ctx)?;
+        let predicate = convert_expr(filter, &join_resolver)?;
         plan = LogicalPlan::Filter {
             input: Box::new(plan),
             predicate,
@@ -637,10 +662,10 @@ fn plan_select_with_joins(
                 }
             }
             ast::ColumnExpression::Named { expression, .. } => {
-                project_columns.push(convert_expr_join(expression, &join_ctx)?);
+                project_columns.push(convert_expr(expression, &join_resolver)?);
             }
             ast::ColumnExpression::Anonyomous(expression) => {
-                project_columns.push(convert_expr_join(expression, &join_ctx)?);
+                project_columns.push(convert_expr(expression, &join_resolver)?);
             }
         }
     }
@@ -665,7 +690,7 @@ fn plan_select_with_joins(
         // Check if any ORDER BY columns are not in the SELECT list
         let mut extra_order_columns = Vec::new();
         for clause in order_by.iter() {
-            let order_expr = convert_expr_join(&clause.expression, &join_ctx)?;
+            let order_expr = convert_expr(&clause.expression, &join_resolver)?;
 
             // Check if this column is already in the projection
             let already_in_select = project_columns.iter().any(|e| e == &order_expr);
@@ -696,7 +721,7 @@ fn plan_select_with_joins(
         let sort_keys: Result<Vec<SortKey>, _> = order_by
             .iter()
             .map(|clause| {
-                let join_expr = convert_expr_join(&clause.expression, &join_ctx)?;
+                let join_expr = convert_expr(&clause.expression, &join_resolver)?;
                 let proj_expr = remap_column_indices(&join_expr, &join_idx_to_proj_idx)?;
 
                 Ok(SortKey {
@@ -757,6 +782,7 @@ fn plan_insert(insert: ast::InsertStatement, btree: &BTree) -> Result<LogicalPla
     };
 
     // Convert each value row to Literals, validating column count
+    let no_resolver = NoColumnResolver;
     let mut rows = Vec::new();
     for value_row in &insert.values {
         if value_row.len() != table_columns.len() {
@@ -768,7 +794,7 @@ fn plan_insert(insert: ast::InsertStatement, btree: &BTree) -> Result<LogicalPla
         let literals: Vec<Literal> = value_row
             .iter()
             .map(|expr| {
-                let plan_expr = convert_expr_no_context(expr)?;
+                let plan_expr = convert_expr(expr, &no_resolver)?;
                 eval_constant(&plan_expr)
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -791,8 +817,8 @@ fn plan_update(update: ast::UpdateStatement, btree: &BTree) -> Result<LogicalPla
         column_map.insert(col.name.clone(), i);
     }
 
-    // Create expression context
-    let ctx = ExprContext {
+    // Create column resolver
+    let resolver = SingleTableResolver {
         table_ref: &update.table_name,
         columns: &column_map,
     };
@@ -810,13 +836,13 @@ fn plan_update(update: ast::UpdateStatement, btree: &BTree) -> Result<LogicalPla
             })?;
 
         // Plan the expression (column refs refer to table schema)
-        let expr_plan = convert_expr(&expr, &ctx)?;
+        let expr_plan = convert_expr(&expr, &resolver)?;
         assignments.push((col_idx, expr_plan));
     }
 
     // Plan the filter expression if present
     let filter = match update.filter {
-        Some(expr) => Some(convert_expr(&expr, &ctx)?),
+        Some(expr) => Some(convert_expr(&expr, &resolver)?),
         None => None,
     };
 
@@ -840,15 +866,15 @@ fn plan_delete(delete: ast::DeleteStatement, btree: &BTree) -> Result<LogicalPla
         column_map.insert(col.name.clone(), i);
     }
 
-    // Create expression context
-    let ctx = ExprContext {
+    // Create column resolver
+    let resolver = SingleTableResolver {
         table_ref: &delete.table_name,
         columns: &column_map,
     };
 
     // Plan the filter expression if present
     let filter = match delete.filter {
-        Some(expr) => Some(convert_expr(&expr, &ctx)?),
+        Some(expr) => Some(convert_expr(&expr, &resolver)?),
         None => None,
     };
 
@@ -862,58 +888,86 @@ fn plan_delete(delete: ast::DeleteStatement, btree: &BTree) -> Result<LogicalPla
     })
 }
 
-/// Convert an AST expression to a PlanExpr without column resolution context.
-/// Used for INSERT VALUES where expressions are constants (no column references).
-fn convert_expr_no_context(expr: &ast::Expression) -> Result<PlanExpr, PlanError> {
-    match expr {
-        ast::Expression::Value(scalar) => convert_scalar_no_context(scalar),
-        ast::Expression::BinaryOp { op, lhs, rhs } => Ok(PlanExpr::BinaryOp {
-            op: convert_binary_op(op),
-            left: Box::new(convert_expr_no_context(lhs)?),
-            right: Box::new(convert_expr_no_context(rhs)?),
-        }),
-        ast::Expression::UnaryOp { op, expression } => Ok(PlanExpr::UnaryOp {
-            op: convert_unary_op(op),
-            operand: Box::new(convert_expr_no_context(expression)?),
-        }),
-        ast::Expression::FunctionCall { name, args } => {
-            // Validate function name
-            let name_upper = name.to_uppercase();
-            let supported_functions = ["LENGTH", "UPPER", "LOWER", "ABS"];
+// ============================================================================
+// Column Resolution Strategy (Trait-Based)
+// ============================================================================
 
-            if !supported_functions.contains(&name_upper.as_str()) {
-                return Err(PlanError::UnknownFunction(name.clone()));
-            }
+/// Strategy for resolving column references during expression conversion
+trait ColumnResolver {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError>;
+    fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError>;
+}
 
-            // For v1, all functions take exactly 1 argument
-            if args.len() != 1 {
-                return Err(PlanError::InvalidFunctionArguments {
-                    function: name.clone(),
-                    expected: 1,
-                    got: args.len(),
-                });
-            }
+/// Single-table resolver (for SELECT, WHERE, etc.)
+struct SingleTableResolver<'a> {
+    table_ref: &'a str,
+    columns: &'a HashMap<String, usize>,
+}
 
-            // Convert arguments
-            let plan_args: Result<Vec<_>, _> = args.iter().map(convert_expr_no_context).collect();
-
-            Ok(PlanExpr::FunctionCall {
-                name: name_upper,
-                args: plan_args?,
+impl ColumnResolver for SingleTableResolver<'_> {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError> {
+        self.columns
+            .get(name)
+            .copied()
+            .ok_or_else(|| PlanError::ColumnNotFound {
+                table: self.table_ref.to_string(),
+                column: name.to_string(),
             })
+    }
+
+    fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError> {
+        if table != self.table_ref {
+            return Err(PlanError::TableNotFound(table.to_string()));
         }
+        self.resolve_identifier(column)
     }
 }
 
-fn convert_scalar_no_context(scalar: &ast::ScalarValue) -> Result<PlanExpr, PlanError> {
-    match scalar {
-        ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
-        ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
-        ast::ScalarValue::StringLiteral(s) => Ok(PlanExpr::Literal(Literal::String(s.clone()))),
-        ast::ScalarValue::Null => Ok(PlanExpr::Literal(Literal::Null)),
-        ast::ScalarValue::Identifier(_) | ast::ScalarValue::MultiPartIdentifier(_, _) => {
-            Err(PlanError::UnsupportedStatement)
+/// JOIN resolver (handles qualified and ambiguous columns)
+struct JoinResolver<'a> {
+    qualified: &'a HashMap<(String, String), usize>,
+    unqualified: &'a HashMap<String, Option<usize>>,
+}
+
+impl ColumnResolver for JoinResolver<'_> {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError> {
+        match self.unqualified.get(name) {
+            Some(Some(pos)) => Ok(*pos),
+            Some(None) => Err(PlanError::AmbiguousColumn(name.to_string())),
+            None => Err(PlanError::ColumnNotFound {
+                table: "join".to_string(),
+                column: name.to_string(),
+            }),
         }
+    }
+
+    fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError> {
+        self.qualified
+            .get(&(table.to_string(), column.to_string()))
+            .copied()
+            .ok_or_else(|| PlanError::ColumnNotFound {
+                table: table.to_string(),
+                column: column.to_string(),
+            })
+    }
+}
+
+/// No-context resolver (for INSERT VALUES - disallows column refs)
+struct NoColumnResolver;
+
+impl ColumnResolver for NoColumnResolver {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError> {
+        Err(PlanError::ColumnNotFound {
+            table: "VALUES".to_string(),
+            column: name.to_string(),
+        })
+    }
+
+    fn resolve_qualified(&self, _table: &str, _column: &str) -> Result<usize, PlanError> {
+        Err(PlanError::ColumnNotFound {
+            table: "VALUES".to_string(),
+            column: "qualified reference".to_string(),
+        })
     }
 }
 
@@ -990,11 +1044,11 @@ fn extract_table_name(source: &ast::TupleSource) -> Result<String, PlanError> {
 /// Convert a ColumnExpression to a PlanExpr
 fn convert_column_expr(
     col_expr: &ast::ColumnExpression,
-    ctx: &ExprContext,
+    resolver: &impl ColumnResolver,
 ) -> Result<PlanExpr, PlanError> {
     match col_expr {
-        ast::ColumnExpression::Named { expression, .. } => convert_expr(expression, ctx),
-        ast::ColumnExpression::Anonyomous(expression) => convert_expr(expression, ctx),
+        ast::ColumnExpression::Named { expression, .. } => convert_expr(expression, resolver),
+        ast::ColumnExpression::Anonyomous(expression) => convert_expr(expression, resolver),
         ast::ColumnExpression::Wildcard => {
             // Wildcard should be expanded before calling this function
             panic!("Wildcard should be expanded earlier in planning")
@@ -1041,7 +1095,7 @@ fn has_aggregate(col_expr: &ast::ColumnExpression) -> bool {
 /// Convert aggregate function to AggregateExpr
 fn convert_aggregate(
     expr: &ast::Expression,
-    ctx: &ExprContext,
+    resolver: &impl ColumnResolver,
 ) -> Result<AggregateExpr, PlanError> {
     match expr {
         ast::Expression::FunctionCall { name, args } => {
@@ -1058,7 +1112,7 @@ fn convert_aggregate(
                 // COUNT(*) has no argument
                 None
             } else if args.len() == 1 {
-                Some(convert_expr(&args[0], ctx)?)
+                Some(convert_expr(&args[0], resolver)?)
             } else {
                 return Err(PlanError::InvalidFunctionArguments {
                     function: name.clone(),
@@ -1119,26 +1173,21 @@ use std::collections::HashMap;
 //
 // Build by iterating all tables: add to qualified map, track ambiguity in unqualified map.
 
-/// Context for expression conversion (single-table queries)
-struct ExprContext<'a> {
-    /// Valid table name or alias for qualified refs (e.g., "u" for "FROM users AS u")
-    table_ref: &'a str,
-    /// Maps column name → position in scan output
-    columns: &'a HashMap<String, usize>,
-}
-
-/// Convert an AST Expression to a PlanExpr
-fn convert_expr(expr: &ast::Expression, ctx: &ExprContext) -> Result<PlanExpr, PlanError> {
+/// Convert an AST Expression to a PlanExpr using a column resolution strategy
+fn convert_expr(
+    expr: &ast::Expression,
+    resolver: &impl ColumnResolver,
+) -> Result<PlanExpr, PlanError> {
     match expr {
-        ast::Expression::Value(scalar) => convert_scalar(scalar, ctx),
+        ast::Expression::Value(scalar) => convert_scalar(scalar, resolver),
         ast::Expression::BinaryOp { op, lhs, rhs } => Ok(PlanExpr::BinaryOp {
             op: convert_binary_op(op),
-            left: Box::new(convert_expr(lhs, ctx)?),
-            right: Box::new(convert_expr(rhs, ctx)?),
+            left: Box::new(convert_expr(lhs, resolver)?),
+            right: Box::new(convert_expr(rhs, resolver)?),
         }),
         ast::Expression::UnaryOp { op, expression } => Ok(PlanExpr::UnaryOp {
             op: convert_unary_op(op),
-            operand: Box::new(convert_expr(expression, ctx)?),
+            operand: Box::new(convert_expr(expression, resolver)?),
         }),
         ast::Expression::FunctionCall { name, args } => {
             // Validate function name (case-insensitive)
@@ -1160,7 +1209,7 @@ fn convert_expr(expr: &ast::Expression, ctx: &ExprContext) -> Result<PlanExpr, P
 
             // Convert arguments
             let plan_args: Result<Vec<_>, _> =
-                args.iter().map(|arg| convert_expr(arg, ctx)).collect();
+                args.iter().map(|arg| convert_expr(arg, resolver)).collect();
 
             Ok(PlanExpr::FunctionCall {
                 name: name_upper,
@@ -1170,39 +1219,23 @@ fn convert_expr(expr: &ast::Expression, ctx: &ExprContext) -> Result<PlanExpr, P
     }
 }
 
-fn convert_scalar(scalar: &ast::ScalarValue, ctx: &ExprContext) -> Result<PlanExpr, PlanError> {
+fn convert_scalar(
+    scalar: &ast::ScalarValue,
+    resolver: &impl ColumnResolver,
+) -> Result<PlanExpr, PlanError> {
     match scalar {
         ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
         ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
         ast::ScalarValue::StringLiteral(s) => Ok(PlanExpr::Literal(Literal::String(s.clone()))),
         ast::ScalarValue::Null => Ok(PlanExpr::Literal(Literal::Null)),
         ast::ScalarValue::Identifier(name) => {
-            let pos = ctx
-                .columns
-                .get(name)
-                .ok_or_else(|| PlanError::ColumnNotFound {
-                    table: ctx.table_ref.to_string(),
-                    column: name.clone(),
-                })?;
-            Ok(PlanExpr::ColumnRef(*pos))
+            let idx = resolver.resolve_identifier(name)?;
+            Ok(PlanExpr::ColumnRef(idx))
         }
         ast::ScalarValue::MultiPartIdentifier(table_expr, column_name) => {
-            // Extract table name from expression (e.g., "u" from "u.name")
             let ref_table = extract_identifier(table_expr)?;
-
-            // Validate table reference matches our context
-            if ref_table != ctx.table_ref {
-                return Err(PlanError::TableNotFound(ref_table));
-            }
-
-            let pos = ctx
-                .columns
-                .get(column_name)
-                .ok_or_else(|| PlanError::ColumnNotFound {
-                    table: ctx.table_ref.to_string(),
-                    column: column_name.clone(),
-                })?;
-            Ok(PlanExpr::ColumnRef(*pos))
+            let idx = resolver.resolve_qualified(&ref_table, column_name)?;
+            Ok(PlanExpr::ColumnRef(idx))
         }
     }
 }
@@ -1212,120 +1245,6 @@ fn extract_identifier(expr: &ast::Expression) -> Result<String, PlanError> {
     match expr {
         ast::Expression::Value(ast::ScalarValue::Identifier(name)) => Ok(name.clone()),
         _ => Err(PlanError::UnsupportedStatement),
-    }
-}
-
-// ============================================================================
-// JOIN Expression Context
-// ============================================================================
-
-use std::collections::HashMap as JoinHashMap;
-
-/// Context for resolving column references in JOIN expressions
-struct JoinExprContext {
-    /// Maps (table_name_or_alias, column_name) → position in combined output
-    qualified: JoinHashMap<(String, String), usize>,
-    /// Maps column_name → Some(position) if unambiguous, None if ambiguous
-    unqualified: JoinHashMap<String, Option<usize>>,
-}
-
-/// Build JoinExprContext from two tables and their aliases
-fn build_join_expr_context(
-    left_table: &schema::Table,
-    left_alias: &str,
-    right_table: &schema::Table,
-    right_alias: &str,
-) -> JoinExprContext {
-    let mut qualified = JoinHashMap::new();
-    let mut unqualified = JoinHashMap::new();
-
-    let left_col_count = left_table.columns.len();
-
-    // Add left table columns (positions 0..left_col_count)
-    for (idx, col) in left_table.columns.iter().enumerate() {
-        qualified.insert((left_alias.to_string(), col.name.clone()), idx);
-
-        // Track for unqualified resolution
-        unqualified
-            .entry(col.name.clone())
-            .and_modify(|e| *e = None) // Mark as ambiguous if already exists
-            .or_insert(Some(idx));
-    }
-
-    // Add right table columns (positions left_col_count..)
-    for (idx, col) in right_table.columns.iter().enumerate() {
-        let combined_idx = left_col_count + idx;
-        qualified.insert((right_alias.to_string(), col.name.clone()), combined_idx);
-
-        // Track for unqualified resolution
-        unqualified
-            .entry(col.name.clone())
-            .and_modify(|e| *e = None) // Mark as ambiguous if already exists
-            .or_insert(Some(combined_idx));
-    }
-
-    JoinExprContext {
-        qualified,
-        unqualified,
-    }
-}
-
-/// Convert an AST expression to a plan expression using JOIN context
-fn convert_expr_join(expr: &ast::Expression, ctx: &JoinExprContext) -> Result<PlanExpr, PlanError> {
-    match expr {
-        ast::Expression::Value(scalar) => convert_scalar_join(scalar, ctx),
-        ast::Expression::BinaryOp { op, lhs, rhs } => Ok(PlanExpr::BinaryOp {
-            op: convert_binary_op(op),
-            left: Box::new(convert_expr_join(lhs, ctx)?),
-            right: Box::new(convert_expr_join(rhs, ctx)?),
-        }),
-        ast::Expression::UnaryOp { op, expression } => Ok(PlanExpr::UnaryOp {
-            op: convert_unary_op(op),
-            operand: Box::new(convert_expr_join(expression, ctx)?),
-        }),
-        ast::Expression::FunctionCall { name, args } => {
-            let plan_args: Result<Vec<_>, _> =
-                args.iter().map(|arg| convert_expr_join(arg, ctx)).collect();
-            Ok(PlanExpr::FunctionCall {
-                name: name.to_uppercase(),
-                args: plan_args?,
-            })
-        }
-    }
-}
-
-/// Convert an AST scalar value to a plan expression using JOIN context
-fn convert_scalar_join(
-    scalar: &ast::ScalarValue,
-    ctx: &JoinExprContext,
-) -> Result<PlanExpr, PlanError> {
-    match scalar {
-        ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
-        ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
-        ast::ScalarValue::StringLiteral(s) => Ok(PlanExpr::Literal(Literal::String(s.clone()))),
-        ast::ScalarValue::Null => Ok(PlanExpr::Literal(Literal::Null)),
-        ast::ScalarValue::Identifier(name) => {
-            // Unqualified column reference
-            match ctx.unqualified.get(name) {
-                Some(Some(pos)) => Ok(PlanExpr::ColumnRef(*pos)),
-                Some(None) => Err(PlanError::AmbiguousColumn(name.clone())),
-                None => Err(PlanError::ColumnNotFound {
-                    table: "join".to_string(),
-                    column: name.clone(),
-                }),
-            }
-        }
-        ast::ScalarValue::MultiPartIdentifier(table_expr, column_name) => {
-            // Qualified column reference (e.g., e.name)
-            let ref_table = extract_identifier(table_expr)?;
-            match ctx.qualified.get(&(ref_table.clone(), column_name.clone())) {
-                Some(pos) => Ok(PlanExpr::ColumnRef(*pos)),
-                None => Err(PlanError::ColumnNotFound {
-                    table: ref_table,
-                    column: column_name.clone(),
-                }),
-            }
-        }
     }
 }
 
@@ -1535,13 +1454,13 @@ mod tests {
     #[test]
     fn test_convert_integer_literal() {
         let columns = make_column_map();
-        let ctx = ExprContext {
+        let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
         };
 
         let expr = ast::Expression::Value(ast::ScalarValue::IntegerNumber(42));
-        let result = convert_expr(&expr, &ctx).unwrap();
+        let result = convert_expr(&expr, &resolver).unwrap();
 
         assert_eq!(result, PlanExpr::Literal(Literal::Integer(42)));
     }
@@ -1549,13 +1468,13 @@ mod tests {
     #[test]
     fn test_convert_float_literal() {
         let columns = make_column_map();
-        let ctx = ExprContext {
+        let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
         };
 
         let expr = ast::Expression::Value(ast::ScalarValue::FloatingNumber(3.14));
-        let result = convert_expr(&expr, &ctx).unwrap();
+        let result = convert_expr(&expr, &resolver).unwrap();
 
         assert_eq!(result, PlanExpr::Literal(Literal::Float(3.14)));
     }
@@ -1563,13 +1482,13 @@ mod tests {
     #[test]
     fn test_convert_column_ref() {
         let columns = make_column_map();
-        let ctx = ExprContext {
+        let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
         };
 
         let expr = ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()));
-        let result = convert_expr(&expr, &ctx).unwrap();
+        let result = convert_expr(&expr, &resolver).unwrap();
 
         assert_eq!(result, PlanExpr::ColumnRef(2));
     }
@@ -1577,7 +1496,7 @@ mod tests {
     #[test]
     fn test_convert_qualified_column_ref() {
         let columns = make_column_map();
-        let ctx = ExprContext {
+        let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
         };
@@ -1590,7 +1509,7 @@ mod tests {
             table_expr,
             "name".to_string(),
         ));
-        let result = convert_expr(&expr, &ctx).unwrap();
+        let result = convert_expr(&expr, &resolver).unwrap();
 
         assert_eq!(result, PlanExpr::ColumnRef(1));
     }
@@ -1598,7 +1517,7 @@ mod tests {
     #[test]
     fn test_convert_qualified_column_wrong_table() {
         let columns = make_column_map();
-        let ctx = ExprContext {
+        let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
         };
@@ -1611,7 +1530,7 @@ mod tests {
             table_expr,
             "name".to_string(),
         ));
-        let result = convert_expr(&expr, &ctx);
+        let result = convert_expr(&expr, &resolver);
 
         assert_eq!(result, Err(PlanError::TableNotFound("other".to_string())));
     }
@@ -1619,13 +1538,13 @@ mod tests {
     #[test]
     fn test_convert_column_not_found() {
         let columns = make_column_map();
-        let ctx = ExprContext {
+        let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
         };
 
         let expr = ast::Expression::Value(ast::ScalarValue::Identifier("nonexistent".to_string()));
-        let result = convert_expr(&expr, &ctx);
+        let result = convert_expr(&expr, &resolver);
 
         assert_eq!(
             result,
@@ -1639,7 +1558,7 @@ mod tests {
     #[test]
     fn test_convert_binary_comparison() {
         let columns = make_column_map();
-        let ctx = ExprContext {
+        let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
         };
@@ -1652,7 +1571,7 @@ mod tests {
             ))),
             rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(21))),
         };
-        let result = convert_expr(&expr, &ctx).unwrap();
+        let result = convert_expr(&expr, &resolver).unwrap();
 
         assert_eq!(
             result,
@@ -1667,7 +1586,7 @@ mod tests {
     #[test]
     fn test_convert_unary_negate() {
         let columns = make_column_map();
-        let ctx = ExprContext {
+        let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
         };
@@ -1679,7 +1598,7 @@ mod tests {
                 "age".to_string(),
             ))),
         };
-        let result = convert_expr(&expr, &ctx).unwrap();
+        let result = convert_expr(&expr, &resolver).unwrap();
 
         assert_eq!(
             result,
@@ -1693,7 +1612,7 @@ mod tests {
     #[test]
     fn test_convert_nested_expression() {
         let columns = make_column_map();
-        let ctx = ExprContext {
+        let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
         };
@@ -1711,7 +1630,7 @@ mod tests {
             lhs: Box::new(age_plus_one),
             rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(21))),
         };
-        let result = convert_expr(&expr, &ctx).unwrap();
+        let result = convert_expr(&expr, &resolver).unwrap();
 
         let expected = PlanExpr::BinaryOp {
             op: BinaryOp::GreaterThan,
@@ -2502,11 +2421,12 @@ mod tests {
     }
 
     #[test]
-    fn test_join_expr_context() {
-        // Build a JoinExprContext with:
+    fn test_join_resolver() {
+        // Build a JoinResolver with:
         //   left: columns [id, name, dept_id], alias "e"
         //   right: columns [id, name], alias "d"
-        use super::{build_join_expr_context, schema};
+        use super::schema;
+        use std::collections::HashMap;
 
         let left_table = schema::Table {
             name: "employees".to_string(),
@@ -2537,40 +2457,60 @@ mod tests {
             ],
         };
 
-        let ctx = build_join_expr_context(&left_table, "e", &right_table, "d");
+        // Build join column resolution maps
+        let mut qualified = HashMap::new();
+        let mut unqualified = HashMap::new();
+        let left_col_count = left_table.columns.len();
+
+        for (idx, col) in left_table.columns.iter().enumerate() {
+            qualified.insert(("e".to_string(), col.name.clone()), idx);
+            unqualified
+                .entry(col.name.clone())
+                .and_modify(|e| *e = None)
+                .or_insert(Some(idx));
+        }
+
+        for (idx, col) in right_table.columns.iter().enumerate() {
+            let combined_idx = left_col_count + idx;
+            qualified.insert(("d".to_string(), col.name.clone()), combined_idx);
+            unqualified
+                .entry(col.name.clone())
+                .and_modify(|e| *e = None)
+                .or_insert(Some(combined_idx));
+        }
 
         // Test qualified resolution
         assert_eq!(
-            ctx.qualified.get(&("e".to_string(), "name".to_string())),
+            qualified.get(&("e".to_string(), "name".to_string())),
             Some(&1)
         );
         assert_eq!(
-            ctx.qualified.get(&("d".to_string(), "name".to_string())),
+            qualified.get(&("d".to_string(), "name".to_string())),
             Some(&4)
         );
         assert_eq!(
-            ctx.qualified.get(&("e".to_string(), "dept_id".to_string())),
+            qualified.get(&("e".to_string(), "dept_id".to_string())),
             Some(&2)
         );
 
         // Test unqualified unique column
-        assert_eq!(ctx.unqualified.get("dept_id"), Some(&Some(2)));
+        assert_eq!(unqualified.get("dept_id"), Some(&Some(2)));
 
         // Test unqualified ambiguous columns (appear in both tables)
-        assert_eq!(ctx.unqualified.get("id"), Some(&None));
-        assert_eq!(ctx.unqualified.get("name"), Some(&None));
+        assert_eq!(unqualified.get("id"), Some(&None));
+        assert_eq!(unqualified.get("name"), Some(&None));
 
         // Test missing column
         assert_eq!(
-            ctx.qualified
-                .get(&("e".to_string(), "nonexistent".to_string())),
+            qualified.get(&("e".to_string(), "nonexistent".to_string())),
             None
         );
     }
 
     #[test]
-    fn test_convert_expr_join() {
-        use super::{build_join_expr_context, convert_expr_join, schema, PlanExpr};
+    fn test_convert_expr_with_join_resolver() {
+        use super::{convert_expr, schema, JoinResolver, PlanExpr};
+        use std::collections::HashMap;
 
         let left_table = schema::Table {
             name: "employees".to_string(),
@@ -2593,7 +2533,32 @@ mod tests {
             }],
         };
 
-        let ctx = build_join_expr_context(&left_table, "e", &right_table, "d");
+        // Build join column resolution maps
+        let mut qualified = HashMap::new();
+        let mut unqualified = HashMap::new();
+        let left_col_count = left_table.columns.len();
+
+        for (idx, col) in left_table.columns.iter().enumerate() {
+            qualified.insert(("e".to_string(), col.name.clone()), idx);
+            unqualified
+                .entry(col.name.clone())
+                .and_modify(|e| *e = None)
+                .or_insert(Some(idx));
+        }
+
+        for (idx, col) in right_table.columns.iter().enumerate() {
+            let combined_idx = left_col_count + idx;
+            qualified.insert(("d".to_string(), col.name.clone()), combined_idx);
+            unqualified
+                .entry(col.name.clone())
+                .and_modify(|e| *e = None)
+                .or_insert(Some(combined_idx));
+        }
+
+        let resolver = JoinResolver {
+            qualified: &qualified,
+            unqualified: &unqualified,
+        };
 
         // Test qualified column: e.dept_id → ColumnRef(1)
         let ast_expr = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
@@ -2602,7 +2567,7 @@ mod tests {
             ))),
             "dept_id".to_string(),
         ));
-        let plan_expr = convert_expr_join(&ast_expr, &ctx).unwrap();
+        let plan_expr = convert_expr(&ast_expr, &resolver).unwrap();
         assert_eq!(plan_expr, PlanExpr::ColumnRef(1));
 
         // Test qualified column: d.id → ColumnRef(2)
@@ -2612,17 +2577,17 @@ mod tests {
             ))),
             "id".to_string(),
         ));
-        let plan_expr2 = convert_expr_join(&ast_expr2, &ctx).unwrap();
+        let plan_expr2 = convert_expr(&ast_expr2, &resolver).unwrap();
         assert_eq!(plan_expr2, PlanExpr::ColumnRef(2));
 
         // Test unqualified unique column: dept_id → ColumnRef(1)
         let ast_expr3 = ast::Expression::Value(ast::ScalarValue::Identifier("dept_id".to_string()));
-        let plan_expr3 = convert_expr_join(&ast_expr3, &ctx).unwrap();
+        let plan_expr3 = convert_expr(&ast_expr3, &resolver).unwrap();
         assert_eq!(plan_expr3, PlanExpr::ColumnRef(1));
 
         // Test ambiguous column: id → Error
         let ast_expr4 = ast::Expression::Value(ast::ScalarValue::Identifier("id".to_string()));
-        let result = convert_expr_join(&ast_expr4, &ctx);
+        let result = convert_expr(&ast_expr4, &resolver);
         assert!(matches!(result, Err(PlanError::AmbiguousColumn(_))));
 
         // Test binary operation: e.dept_id = d.id
@@ -2645,7 +2610,7 @@ mod tests {
                 ),
             )),
         };
-        let plan_expr5 = convert_expr_join(&ast_expr5, &ctx).unwrap();
+        let plan_expr5 = convert_expr(&ast_expr5, &resolver).unwrap();
         if let PlanExpr::BinaryOp { left, right, .. } = plan_expr5 {
             assert_eq!(*left, PlanExpr::ColumnRef(1));
             assert_eq!(*right, PlanExpr::ColumnRef(2));
@@ -2656,7 +2621,7 @@ mod tests {
 
     #[test]
     fn test_plan_join() {
-        use super::{plan, schema, LogicalPlan, PlanExpr};
+        use super::{plan, LogicalPlan, PlanExpr};
         use crate::test::TestDb;
 
         // Create TestDb and two tables
