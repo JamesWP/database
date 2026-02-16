@@ -1,0 +1,34 @@
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+Alice	Engineering
+Bob	Sales
+Charlie	Engineering
+Diana	Sales
+Alice	Engineering
+Bob	Sales
+Charlie	Engineering
+Diana	Sales
+Alice	Engineering
+Bob	Sales
+Charlie	Engineering
+Diana	Sales
+Alice	Engineering
+Charlie	Engineering
+OK
+Table 'people' created
+1
+1
+1
+Alice	Bob
+100	Alice	1	1	Engineering
+Alice	Engineering
+Bob	Sales
+Charlie	Engineering
+Diana	Sales
