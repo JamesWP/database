@@ -911,6 +911,7 @@ pub enum PlanError {
         table: String,
         column: String,
     },
+    AmbiguousColumn(String),
     ColumnCountMismatch {
         expected: usize,
         got: usize,
@@ -1042,6 +1043,120 @@ fn extract_identifier(expr: &ast::Expression) -> Result<String, PlanError> {
     match expr {
         ast::Expression::Value(ast::ScalarValue::Identifier(name)) => Ok(name.clone()),
         _ => Err(PlanError::UnsupportedStatement),
+    }
+}
+
+// ============================================================================
+// JOIN Expression Context
+// ============================================================================
+
+use std::collections::HashMap as JoinHashMap;
+
+/// Context for resolving column references in JOIN expressions
+struct JoinExprContext {
+    /// Maps (table_name_or_alias, column_name) → position in combined output
+    qualified: JoinHashMap<(String, String), usize>,
+    /// Maps column_name → Some(position) if unambiguous, None if ambiguous
+    unqualified: JoinHashMap<String, Option<usize>>,
+}
+
+/// Build JoinExprContext from two tables and their aliases
+fn build_join_expr_context(
+    left_table: &schema::Table,
+    left_alias: &str,
+    right_table: &schema::Table,
+    right_alias: &str,
+) -> JoinExprContext {
+    let mut qualified = JoinHashMap::new();
+    let mut unqualified = JoinHashMap::new();
+
+    let left_col_count = left_table.columns.len();
+
+    // Add left table columns (positions 0..left_col_count)
+    for (idx, col) in left_table.columns.iter().enumerate() {
+        qualified.insert((left_alias.to_string(), col.name.clone()), idx);
+
+        // Track for unqualified resolution
+        unqualified
+            .entry(col.name.clone())
+            .and_modify(|e| *e = None) // Mark as ambiguous if already exists
+            .or_insert(Some(idx));
+    }
+
+    // Add right table columns (positions left_col_count..)
+    for (idx, col) in right_table.columns.iter().enumerate() {
+        let combined_idx = left_col_count + idx;
+        qualified.insert((right_alias.to_string(), col.name.clone()), combined_idx);
+
+        // Track for unqualified resolution
+        unqualified
+            .entry(col.name.clone())
+            .and_modify(|e| *e = None) // Mark as ambiguous if already exists
+            .or_insert(Some(combined_idx));
+    }
+
+    JoinExprContext {
+        qualified,
+        unqualified,
+    }
+}
+
+/// Convert an AST expression to a plan expression using JOIN context
+fn convert_expr_join(expr: &ast::Expression, ctx: &JoinExprContext) -> Result<PlanExpr, PlanError> {
+    match expr {
+        ast::Expression::Value(scalar) => convert_scalar_join(scalar, ctx),
+        ast::Expression::BinaryOp { op, lhs, rhs } => Ok(PlanExpr::BinaryOp {
+            op: convert_binary_op(op),
+            left: Box::new(convert_expr_join(lhs, ctx)?),
+            right: Box::new(convert_expr_join(rhs, ctx)?),
+        }),
+        ast::Expression::UnaryOp { op, expression } => Ok(PlanExpr::UnaryOp {
+            op: convert_unary_op(op),
+            operand: Box::new(convert_expr_join(expression, ctx)?),
+        }),
+        ast::Expression::FunctionCall { name, args } => {
+            let plan_args: Result<Vec<_>, _> =
+                args.iter().map(|arg| convert_expr_join(arg, ctx)).collect();
+            Ok(PlanExpr::FunctionCall {
+                name: name.to_uppercase(),
+                args: plan_args?,
+            })
+        }
+    }
+}
+
+/// Convert an AST scalar value to a plan expression using JOIN context
+fn convert_scalar_join(
+    scalar: &ast::ScalarValue,
+    ctx: &JoinExprContext,
+) -> Result<PlanExpr, PlanError> {
+    match scalar {
+        ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
+        ast::ScalarValue::FloatingNumber(n) => Ok(PlanExpr::Literal(Literal::Float(*n))),
+        ast::ScalarValue::StringLiteral(s) => Ok(PlanExpr::Literal(Literal::String(s.clone()))),
+        ast::ScalarValue::Null => Ok(PlanExpr::Literal(Literal::Null)),
+        ast::ScalarValue::Identifier(name) => {
+            // Unqualified column reference
+            match ctx.unqualified.get(name) {
+                Some(Some(pos)) => Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos })),
+                Some(None) => Err(PlanError::AmbiguousColumn(name.clone())),
+                None => Err(PlanError::ColumnNotFound {
+                    table: "join".to_string(),
+                    column: name.clone(),
+                }),
+            }
+        }
+        ast::ScalarValue::MultiPartIdentifier(table_expr, column_name) => {
+            // Qualified column reference (e.g., e.name)
+            let ref_table = extract_identifier(table_expr)?;
+            match ctx.qualified.get(&(ref_table.clone(), column_name.clone())) {
+                Some(pos) => Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos })),
+                None => Err(PlanError::ColumnNotFound {
+                    table: ref_table,
+                    column: column_name.clone(),
+                }),
+            }
+        }
     }
 }
 
@@ -2225,6 +2340,174 @@ mod tests {
             }
         } else {
             panic!("Expected final Project node");
+        }
+    }
+
+    #[test]
+    fn test_join_expr_context() {
+        // Build a JoinExprContext with:
+        //   left: columns [id, name, dept_id], alias "e"
+        //   right: columns [id, name], alias "d"
+        use super::{build_join_expr_context, schema};
+
+        let left_table = schema::Table {
+            name: "employees".to_string(),
+            rootpage: 1,
+            columns: vec![
+                schema::Column {
+                    name: "id".to_string(),
+                },
+                schema::Column {
+                    name: "name".to_string(),
+                },
+                schema::Column {
+                    name: "dept_id".to_string(),
+                },
+            ],
+        };
+
+        let right_table = schema::Table {
+            name: "departments".to_string(),
+            rootpage: 2,
+            columns: vec![
+                schema::Column {
+                    name: "id".to_string(),
+                },
+                schema::Column {
+                    name: "name".to_string(),
+                },
+            ],
+        };
+
+        let ctx = build_join_expr_context(&left_table, "e", &right_table, "d");
+
+        // Test qualified resolution
+        assert_eq!(
+            ctx.qualified.get(&("e".to_string(), "name".to_string())),
+            Some(&1)
+        );
+        assert_eq!(
+            ctx.qualified.get(&("d".to_string(), "name".to_string())),
+            Some(&4)
+        );
+        assert_eq!(
+            ctx.qualified.get(&("e".to_string(), "dept_id".to_string())),
+            Some(&2)
+        );
+
+        // Test unqualified unique column
+        assert_eq!(ctx.unqualified.get("dept_id"), Some(&Some(2)));
+
+        // Test unqualified ambiguous columns (appear in both tables)
+        assert_eq!(ctx.unqualified.get("id"), Some(&None));
+        assert_eq!(ctx.unqualified.get("name"), Some(&None));
+
+        // Test missing column
+        assert_eq!(
+            ctx.qualified
+                .get(&("e".to_string(), "nonexistent".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn test_convert_expr_join() {
+        use super::{build_join_expr_context, convert_expr_join, schema, ColumnRef, PlanExpr};
+
+        let left_table = schema::Table {
+            name: "employees".to_string(),
+            rootpage: 1,
+            columns: vec![
+                schema::Column {
+                    name: "id".to_string(),
+                },
+                schema::Column {
+                    name: "dept_id".to_string(),
+                },
+            ],
+        };
+
+        let right_table = schema::Table {
+            name: "departments".to_string(),
+            rootpage: 2,
+            columns: vec![schema::Column {
+                name: "id".to_string(),
+            }],
+        };
+
+        let ctx = build_join_expr_context(&left_table, "e", &right_table, "d");
+
+        // Test qualified column: e.dept_id → ColumnRef(1)
+        let ast_expr = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
+            Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "e".to_string(),
+            ))),
+            "dept_id".to_string(),
+        ));
+        let plan_expr = convert_expr_join(&ast_expr, &ctx).unwrap();
+        assert_eq!(
+            plan_expr,
+            PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })
+        );
+
+        // Test qualified column: d.id → ColumnRef(2)
+        let ast_expr2 = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
+            Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "d".to_string(),
+            ))),
+            "id".to_string(),
+        ));
+        let plan_expr2 = convert_expr_join(&ast_expr2, &ctx).unwrap();
+        assert_eq!(
+            plan_expr2,
+            PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })
+        );
+
+        // Test unqualified unique column: dept_id → ColumnRef(1)
+        let ast_expr3 = ast::Expression::Value(ast::ScalarValue::Identifier("dept_id".to_string()));
+        let plan_expr3 = convert_expr_join(&ast_expr3, &ctx).unwrap();
+        assert_eq!(
+            plan_expr3,
+            PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })
+        );
+
+        // Test ambiguous column: id → Error
+        let ast_expr4 = ast::Expression::Value(ast::ScalarValue::Identifier("id".to_string()));
+        let result = convert_expr_join(&ast_expr4, &ctx);
+        assert!(matches!(result, Err(PlanError::AmbiguousColumn(_))));
+
+        // Test binary operation: e.dept_id = d.id
+        let ast_expr5 = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Equals,
+            lhs: Box::new(ast::Expression::Value(
+                ast::ScalarValue::MultiPartIdentifier(
+                    Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                        "e".to_string(),
+                    ))),
+                    "dept_id".to_string(),
+                ),
+            )),
+            rhs: Box::new(ast::Expression::Value(
+                ast::ScalarValue::MultiPartIdentifier(
+                    Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                        "d".to_string(),
+                    ))),
+                    "id".to_string(),
+                ),
+            )),
+        };
+        let plan_expr5 = convert_expr_join(&ast_expr5, &ctx).unwrap();
+        if let PlanExpr::BinaryOp { left, right, .. } = plan_expr5 {
+            assert_eq!(
+                *left,
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })
+            );
+            assert_eq!(
+                *right,
+                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })
+            );
+        } else {
+            panic!("Expected BinaryOp");
         }
     }
 }
