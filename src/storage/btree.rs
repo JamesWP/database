@@ -6,6 +6,8 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use colored::Colorize;
+
 use crate::engine::scalarvalue::ScalarValue;
 use crate::storage::cell::Cell;
 use crate::storage::node::{NodePage, OverflowPage, SearchResult};
@@ -716,6 +718,11 @@ impl BTree {
         }
     }
 
+    /// Get the total number of pages in the database file.
+    pub fn file_size_pages(&self) -> u32 {
+        self.pager.borrow().get_file_size_pages()
+    }
+
     /// Create a new tree, returning its root page number.
     pub fn create_tree(&mut self) -> u32 {
         let mut pager = self.pager.borrow_mut();
@@ -842,6 +849,128 @@ impl BTree {
     #[allow(dead_code)]
     pub fn debug(&self, message: &str) {
         self.pager.borrow().debug(message)
+    }
+
+    /// Inspect a page and print its raw CBOR structure.
+    /// Returns an error if the page number is out of range.
+    pub fn inspect_page(&self, page_num: u32) -> Result<(), String> {
+        let pager = self.pager.borrow();
+        let file_size = pager.get_file_size_pages();
+
+        if page_num >= file_size {
+            return Err(format!(
+                "Page {} out of range (file has {} pages)",
+                page_num, file_size
+            ));
+        }
+
+        println!(
+            "{}",
+            format!("Page {} raw CBOR structure:", page_num)
+                .bright_cyan()
+                .bold()
+        );
+        println!("{}", "=====================================".bright_black());
+
+        if page_num == 0 {
+            // ZeroPage
+            let zero: pager::ZeroPage = pager.get_and_decode(0);
+            println!("{}: {}", "Type".yellow(), "ZeroPage".green());
+            println!("{:#?}", zero);
+        } else {
+            // NodePage (Leaf, Interior, or OverflowPage)
+            let node: NodePage = pager.get_and_decode(page_num);
+            match &node {
+                node::NodePage::Leaf(leaf) => {
+                    println!("{}: {}", "Type".yellow(), "LeafNodePage".green());
+                    println!("{}: {}", "Number of items".yellow(), leaf.num_items());
+                    println!("\n{}:", "Cells".bright_yellow());
+                    for i in 0..leaf.num_items() {
+                        if let Some(cell) = leaf.get_item_at_index(i) {
+                            let key = cell.key();
+                            let value = cell.value();
+                            let continuation = cell.continuation();
+
+                            println!("  {}:", format!("Cell {}", i).bright_blue());
+                            println!("    {}={}", "key".cyan(), key);
+                            println!("    {}={}", "value_len".cyan(), value.len());
+
+                            if let Some(cont_page) = continuation {
+                                println!(
+                                    "    {}={} {}",
+                                    "continuation".cyan(),
+                                    cont_page,
+                                    "(overflow)".bright_magenta()
+                                );
+                            } else {
+                                println!("    {}={}", "continuation".cyan(), "None".bright_black());
+                            }
+
+                            // Try to decode as CBOR Vec<ScalarValue>
+                            if let Ok(values) =
+                                ciborium::de::from_reader::<Vec<ScalarValue>, _>(&value[..])
+                            {
+                                println!("    {}={:?}", "decoded".cyan(), values);
+                            } else {
+                                // Fall back to hex
+                                let hex: String = value
+                                    .iter()
+                                    .take(8)
+                                    .map(|b| format!("{:02x}", b))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                let suffix = if value.len() > 8 { "..." } else { "" };
+                                println!("    {}={}{}", "hex".cyan(), hex.bright_black(), suffix);
+                            }
+                        }
+                    }
+                }
+                node::NodePage::Interior(interior) => {
+                    println!("{}: {}", "Type".yellow(), "InteriorNodePage".green());
+                    println!("{}: {}", "Number of edges".yellow(), interior.num_edges());
+                    println!("\n{}:", "Keys and child pages".bright_yellow());
+                    for i in 0..interior.num_edges() {
+                        let child = interior.get_child_page_by_index(i);
+                        if i > 0 {
+                            let key = interior.get_key_by_index(i - 1);
+                            println!(
+                                "  {}: {}={}, {}={}",
+                                format!("Edge {}", i).bright_blue(),
+                                "key".cyan(),
+                                key,
+                                "child_page".cyan(),
+                                child
+                            );
+                        } else {
+                            println!(
+                                "  {}: {}, {}={}",
+                                format!("Edge {}", i).bright_blue(),
+                                "(left-most)".bright_black(),
+                                "child_page".cyan(),
+                                child
+                            );
+                        }
+                    }
+                }
+                node::NodePage::OverflowPage(overflow) => {
+                    println!("{}: {}", "Type".yellow(), "OverflowPage".green());
+                    let data = overflow.value();
+                    let continuation = overflow.continuation();
+                    println!("{}: {}", "Data length".yellow(), data.len());
+                    println!("{}: {:?}", "Continuation".yellow(), continuation);
+                    let hex: String = data
+                        .iter()
+                        .take(16)
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let suffix = if data.len() > 16 { "..." } else { "" };
+                    println!("{}: {}{}", "Data hex".yellow(), hex.bright_black(), suffix);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn dump_to_file(&self, output_path: &std::path::Path) -> std::io::Result<()> {
