@@ -6,6 +6,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
+use crate::engine::scalarvalue::ScalarValue;
 use crate::storage::cell::Cell;
 use crate::storage::node::{NodePage, OverflowPage, SearchResult};
 
@@ -83,7 +84,6 @@ type InteriorNodeIterator = (u32, usize);
 type LeafNodeIterator = (u32, usize);
 
 #[allow(dead_code)]
-const NULL: serde_json::Value = serde_json::Value::Null;
 const CHUNK_THRESHOLD: usize = 55;
 
 /// Mutable cursor implementation
@@ -743,12 +743,17 @@ impl BTree {
         sql: &str,
     ) {
         let schema_root = self.schema_root_page().expect("db_schema not bootstrapped");
+
+        let row_values = vec![
+            ScalarValue::String(obj_type.to_string()),
+            ScalarValue::String(name.to_string()),
+            ScalarValue::String(tbl_name.to_string()),
+            ScalarValue::Integer(rootpage as i64),
+            ScalarValue::String(sql.to_string()),
+        ];
+
         let mut row = Vec::new();
-        ciborium::ser::into_writer(
-            &serde_json::json!([obj_type, name, tbl_name, rootpage, sql]),
-            &mut row,
-        )
-        .unwrap();
+        ciborium::ser::into_writer(&row_values, &mut row).unwrap();
         let mut cursor = self.open(schema_root);
         cursor.open_readwrite().insert(key, row);
     }
@@ -845,6 +850,7 @@ impl Display for BTree {
 #[cfg(test)]
 mod test {
 
+    use crate::engine::scalarvalue::ScalarValue;
     use crate::test::TestDb;
     use proptest::prelude::*;
     use std::collections::BTreeMap;
@@ -1115,10 +1121,10 @@ mod test {
         assert!(entry.is_some());
 
         let values = entry.unwrap().decode_as_array();
-        assert_eq!(values[0], "table");
-        assert_eq!(values[1], "db_schema");
-        assert_eq!(values[2], "db_schema");
-        assert_eq!(values[3], schema_root as u64);
+        assert_eq!(values[0], ScalarValue::String("table".to_string()));
+        assert_eq!(values[1], ScalarValue::String("db_schema".to_string()));
+        assert_eq!(values[2], ScalarValue::String("db_schema".to_string()));
+        assert_eq!(values[3], ScalarValue::Integer(schema_root as i64));
         assert!(values[4]
             .as_str()
             .unwrap()

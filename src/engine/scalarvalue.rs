@@ -1,5 +1,5 @@
 //TODO: maybe consider removing boolean and making this type only handle numeric types
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ScalarValue {
     Integer(i64),
     Floating(f64),
@@ -201,6 +201,22 @@ impl Ord for ScalarValue {
 }
 
 impl ScalarValue {
+    /// Extract as string reference, similar to serde_json::Value::as_str()
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            ScalarValue::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Extract as u64, similar to serde_json::Value::as_u64()
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            ScalarValue::Integer(i) if *i >= 0 => Some(*i as u64),
+            _ => None,
+        }
+    }
+
     /// LENGTH(s) returns the length of a string, or NULL for NULL.
     /// For non-string types, converts to string first.
     pub fn length(&self) -> ScalarValue {

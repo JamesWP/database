@@ -1,6 +1,8 @@
 use std::fmt::Result;
 use std::fmt::Write;
 
+use crate::engine::scalarvalue::ScalarValue;
+
 use super::node;
 use super::node::NodePage;
 use super::pager::Pager;
@@ -119,8 +121,8 @@ fn join<I: Iterator<Item = T>, T: std::fmt::Display>(iter: &mut I, sep: &str) ->
 }
 
 #[allow(dead_code)]
-fn to_json_string(value: &Vec<serde_json::Value>) -> String {
-    serde_json::Value::Array(value.clone()).to_string()
+fn to_json_string(value: &Vec<ScalarValue>) -> String {
+    format!("{:?}", value)
 }
 
 pub fn dump<W: Write>(output: &mut W, pager: &Pager) -> Result {

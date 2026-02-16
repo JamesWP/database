@@ -1,3 +1,5 @@
+use crate::engine::scalarvalue::ScalarValue;
+
 use super::cell::Key;
 use super::node::NodePage;
 use super::pager::Pager;
@@ -73,13 +75,14 @@ impl<'a> CellReader<'a> {
         self.key
     }
 
-    pub fn decode_as_array(&mut self) -> Vec<serde_json::Value> {
+    pub fn decode_as_array(&mut self) -> Vec<ScalarValue> {
         ciborium::de::from_reader(self).unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::engine::scalarvalue::ScalarValue;
     use crate::test::TestDb;
     use std::io::Read;
 
@@ -192,15 +195,19 @@ mod tests {
         let mut btree = test.btree;
         let root_page = btree.create_tree();
 
-        // Insert a JSON array like [1, "alice", 30]
+        // Insert an array like [1, "alice", 30]
         let key = 400u64;
-        let json_array = serde_json::json!([1, "alice", 30]);
-        let mut value_json = Vec::new();
-        ciborium::ser::into_writer(&json_array, &mut value_json).unwrap();
+        let values = vec![
+            ScalarValue::Integer(1),
+            ScalarValue::String("alice".to_string()),
+            ScalarValue::Integer(30),
+        ];
+        let mut value_bytes = Vec::new();
+        ciborium::ser::into_writer(&values, &mut value_bytes).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(key, value_json.clone());
+            cursor.insert(key, value_bytes.clone());
         }
 
         // Read it back with CellReader
@@ -213,9 +220,9 @@ mod tests {
             let decoded = reader.decode_as_array();
 
             assert_eq!(decoded.len(), 3);
-            assert_eq!(decoded[0], serde_json::json!(1));
-            assert_eq!(decoded[1], serde_json::json!("alice"));
-            assert_eq!(decoded[2], serde_json::json!(30));
+            assert_eq!(decoded[0], ScalarValue::Integer(1));
+            assert_eq!(decoded[1], ScalarValue::String("alice".to_string()));
+            assert_eq!(decoded[2], ScalarValue::Integer(30));
         }
     }
 
@@ -225,15 +232,21 @@ mod tests {
         let mut btree = test.btree;
         let root_page = btree.create_tree();
 
-        // Insert a JSON array with various types
+        // Insert an array with various types
         let key = 500u64;
-        let json_array = serde_json::json!([42, 3.14, "hello", true, false]);
-        let mut value_json = Vec::new();
-        ciborium::ser::into_writer(&json_array, &mut value_json).unwrap();
+        let values = vec![
+            ScalarValue::Integer(42),
+            ScalarValue::Floating(3.14),
+            ScalarValue::String("hello".to_string()),
+            ScalarValue::Boolean(true),
+            ScalarValue::Boolean(false),
+        ];
+        let mut value_bytes = Vec::new();
+        ciborium::ser::into_writer(&values, &mut value_bytes).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(key, value_json.clone());
+            cursor.insert(key, value_bytes.clone());
         }
 
         // Read it back with CellReader
@@ -246,11 +259,11 @@ mod tests {
             let decoded = reader.decode_as_array();
 
             assert_eq!(decoded.len(), 5);
-            assert_eq!(decoded[0], serde_json::json!(42));
-            assert_eq!(decoded[1], serde_json::json!(3.14));
-            assert_eq!(decoded[2], serde_json::json!("hello"));
-            assert_eq!(decoded[3], serde_json::json!(true));
-            assert_eq!(decoded[4], serde_json::json!(false));
+            assert_eq!(decoded[0], ScalarValue::Integer(42));
+            assert_eq!(decoded[1], ScalarValue::Floating(3.14));
+            assert_eq!(decoded[2], ScalarValue::String("hello".to_string()));
+            assert_eq!(decoded[3], ScalarValue::Boolean(true));
+            assert_eq!(decoded[4], ScalarValue::Boolean(false));
         }
     }
 
@@ -262,13 +275,13 @@ mod tests {
 
         // Insert an empty array
         let key = 600u64;
-        let json_array = serde_json::json!([]);
-        let mut value_json = Vec::new();
-        ciborium::ser::into_writer(&json_array, &mut value_json).unwrap();
+        let values: Vec<ScalarValue> = vec![];
+        let mut value_bytes = Vec::new();
+        ciborium::ser::into_writer(&values, &mut value_bytes).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(key, value_json.clone());
+            cursor.insert(key, value_bytes.clone());
         }
 
         // Read it back with CellReader

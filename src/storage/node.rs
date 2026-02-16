@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::cell::{Cell, Key};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum NodePage {
     Leaf(LeafNodePage),
     Interior(InteriorNodePage),

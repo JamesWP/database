@@ -1273,13 +1273,16 @@ mod tests {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
             let mut v0 = Vec::new();
-            ciborium::ser::into_writer(&serde_json::json!([1, 100]), &mut v0).unwrap();
+            let values = vec![ScalarValue::Integer(1), ScalarValue::Integer(100)];
+            ciborium::ser::into_writer(&values, &mut v0).unwrap();
             c.insert(0, v0);
             let mut v1 = Vec::new();
-            ciborium::ser::into_writer(&serde_json::json!([2, 200]), &mut v1).unwrap();
+            let values = vec![ScalarValue::Integer(2), ScalarValue::Integer(200)];
+            ciborium::ser::into_writer(&values, &mut v1).unwrap();
             c.insert(1, v1);
             let mut v2 = Vec::new();
-            ciborium::ser::into_writer(&serde_json::json!([3, 300]), &mut v2).unwrap();
+            let values = vec![ScalarValue::Integer(3), ScalarValue::Integer(300)];
+            ciborium::ser::into_writer(&values, &mut v2).unwrap();
             c.insert(2, v2);
         }
 
@@ -1340,10 +1343,12 @@ mod tests {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
             let mut v0 = Vec::new();
-            ciborium::ser::into_writer(&serde_json::json!([10, 20]), &mut v0).unwrap();
+            let values = vec![ScalarValue::Integer(10), ScalarValue::Integer(20)];
+            ciborium::ser::into_writer(&values, &mut v0).unwrap();
             c.insert(0, v0);
             let mut v1 = Vec::new();
-            ciborium::ser::into_writer(&serde_json::json!([30, 40]), &mut v1).unwrap();
+            let values = vec![ScalarValue::Integer(30), ScalarValue::Integer(40)];
+            ciborium::ser::into_writer(&values, &mut v1).unwrap();
             c.insert(1, v1);
         }
 
