@@ -966,13 +966,21 @@ cargo test test_plan_index_scan
 
 ---
 
-## Future Enhancements (Not in This Phase)
+## Future Enhancements (See Phase G4)
 
-- Range scans (WHERE age > 25, BETWEEN)
-- Multi-column indexes
+**Not included in Phase G3, planned for Phase G4:**
+- Range scans (WHERE age > 25, BETWEEN) — **Item 40**
+- Variable-length B-tree keys (enables TEXT) — **Item 41**
+- Multi-column indexes — **Item 42**
+- TEXT column indexes — **Item 43**
+- Type conversions and NULL handling — **Item 44**
+
+**Even further future (G5+):**
 - UPDATE/DELETE index maintenance (requires those features)
 - DROP INDEX
 - UNIQUE indexes with constraint enforcement
 - Covering indexes (avoid table lookup)
-- TEXT/REAL column support
-- Proper collation for strings (currently only INTEGER preserves sort order)
+- Partial indexes
+- Expression indexes
+
+See `doc/plan/phase-g4-advanced-indexing.md` for detailed implementation plans.
