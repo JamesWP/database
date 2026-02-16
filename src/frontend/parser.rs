@@ -103,6 +103,10 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::Null, lexer::Type::Null) => {
+                self.advance();
+                Ok(())
+            }
             // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
@@ -144,6 +148,7 @@ pub enum Expect {
     Delete,
     Drop,
     By,
+    Null,
 }
 
 impl lexer::Type {
@@ -656,6 +661,25 @@ impl Parser {
                 op,
                 lhs: Box::new(expr),
                 rhs: Box::new(right),
+            }
+        }
+
+        // Check for IS [NOT] NULL
+        if matches!(self.input.peek(), lexer::Type::Is) {
+            self.input.advance(); // consume IS
+            if matches!(self.input.peek(), lexer::Type::Not) {
+                self.input.advance(); // consume NOT
+                self.input.expect(Expect::Null)?;
+                expr = ast::Expression::UnaryOp {
+                    op: ast::UnaryOp::IsNotNull,
+                    expression: Box::new(expr),
+                };
+            } else {
+                self.input.expect(Expect::Null)?;
+                expr = ast::Expression::UnaryOp {
+                    op: ast::UnaryOp::IsNull,
+                    expression: Box::new(expr),
+                };
             }
         }
 

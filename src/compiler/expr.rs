@@ -118,6 +118,8 @@ fn compile_unary_op(
             // Plus is a no-op, just copy the value
             Operation::CopyValue(dest, operand_reg)
         }
+        UnaryOp::IsNull => Operation::IsNullValue(dest, operand_reg),
+        UnaryOp::IsNotNull => Operation::IsNotNullValue(dest, operand_reg),
     };
 
     ctx.emitter.emit(operation);

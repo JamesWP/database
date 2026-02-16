@@ -244,6 +244,22 @@ impl Engine {
                 let dest = self.registers.get_mut(dest);
                 *dest = value;
             }
+            IsNullValue(dest, src) => {
+                let is_null = matches!(
+                    self.registers.get(src),
+                    RegisterValue::ScalarValue(ScalarValue::Null)
+                );
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Boolean(is_null));
+            }
+            IsNotNullValue(dest, src) => {
+                let is_null = matches!(
+                    self.registers.get(src),
+                    RegisterValue::ScalarValue(ScalarValue::Null)
+                );
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Boolean(!is_null));
+            }
             LengthValue(dest, src) => {
                 let src = self.registers.get(src).scalar().unwrap();
                 let result = src.length();

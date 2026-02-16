@@ -17,6 +17,8 @@ pub enum UnaryOp {
     Negate,
     #[allow(dead_code)]
     Not,
+    IsNull,
+    IsNotNull,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1219,6 +1221,8 @@ fn convert_unary_op(op: &ast::UnaryOp) -> UnaryOp {
     match op {
         ast::UnaryOp::Plus => UnaryOp::Plus,
         ast::UnaryOp::Negate => UnaryOp::Negate,
+        ast::UnaryOp::IsNull => UnaryOp::IsNull,
+        ast::UnaryOp::IsNotNull => UnaryOp::IsNotNull,
     }
 }
 
