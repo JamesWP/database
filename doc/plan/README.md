@@ -29,16 +29,19 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 
 ## Phases
 
-| Phase | Focus | Items | File |
-|-------|-------|-------|------|
-| **A** | Critical fixes & test foundations | 6 | [phase-a-critical-fixes.md](phase-a-critical-fixes.md) |
-| **B** | Quick SQL wins + backfill tests | 7 | [phase-b-sql-wins.md](phase-b-sql-wins.md) |
-| **C** | API cleanup + more SQL | 5 | [phase-c-api-cleanup.md](phase-c-api-cleanup.md) |
-| **D** | Core CRUD | 5 | [phase-d-core-crud.md](phase-d-core-crud.md) |
-| **D2** | Refinements (cursor + functions) | 3 | [phase-d2-refinements.md](phase-d2-refinements.md) |
-| **E** | Query power | 4 | [phase-e-query-power.md](phase-e-query-power.md) |
-| **F** | Serialization overhaul | 4 | [phase-f-serialization.md](phase-f-serialization.md) |
-| **G** | Advanced capabilities | 8 | [phase-g-advanced.md](phase-g-advanced.md) |
+| Phase | Focus | Items | File | Status |
+|-------|-------|-------|------|--------|
+| **A** | Critical fixes & test foundations | 6 | [phase-a-critical-fixes.md](completed/phase-a-critical-fixes.md) | Completed |
+| **B** | Quick SQL wins + backfill tests | 7 | [phase-b-sql-wins.md](completed/phase-b-sql-wins.md) | Completed |
+| **C** | API cleanup + more SQL | 5 | [phase-c-api-cleanup.md](completed/phase-c-api-cleanup.md) | Completed |
+| **D** | Core CRUD | 5 | [phase-d-core-crud.md](completed/phase-d-core-crud.md) | Completed |
+| **D2** | Refinements (cursor + functions) | 3 | [phase-d2-refinements.md](completed/phase-d2-refinements.md) | Completed |
+| **D3** | Cursor Stability | 1 | [phase-d3-cursor-stability.md](completed/phase-d3-cursor-stability.md) | Completed |
+| **E** | Query power | 4 | [phase-e-query-power.md](completed/phase-e-query-power.md) | Completed |
+| **F** | Serialization overhaul | 4 | [phase-f-serialization.md](completed/phase-f-serialization.md) | Completed |
+| **G** | Advanced capabilities | 8 | [phase-g-advanced.md](phase-g-advanced.md) | In Progress |
+| **H** | Compiler Type Safety | 1 | [phase-h-compiler-safety.md](completed/phase-h-compiler-safety.md) | Completed |
+| **I** | Bug Fixes | 4 | [phase-i-bug-fixes.md](completed/phase-i-bug-fixes.md) | Completed |
 
 ## Current Test Coverage (161 tests)
 
