@@ -62,6 +62,42 @@ impl Mode for BTreeMode {
                 CommandResult::Message(format!("Created table '{}' at page {}", name, root_page))
             }
 
+            ["tables"] | ["list", "tables"] => {
+                let schema_root = match shared.btree.schema_root_page() {
+                    Some(root) => root,
+                    None => return CommandResult::Error("Database not initialized".to_string()),
+                };
+
+                let mut cursor = shared.btree.open(schema_root);
+                let mut c = cursor.open_readonly();
+
+                println!("Tables:");
+                c.first();
+                loop {
+                    let entry = c.get_entry();
+                    match entry {
+                        None => break,
+                        Some(mut reader) => {
+                            let values = reader.decode_as_array();
+                            // Schema: [type, name, tbl_name, rootpage, sql]
+                            if values.len() >= 5 {
+                                if let Some(obj_type) = values[0].as_str() {
+                                    if obj_type == "table" {
+                                        if let (Some(name), Some(rootpage)) =
+                                            (values[1].as_str(), values[3].as_u64())
+                                        {
+                                            println!("  {} (root page: {})", name, rootpage);
+                                        }
+                                    }
+                                }
+                            }
+                            c.next();
+                        }
+                    }
+                }
+                CommandResult::Ok
+            }
+
             // Cursor operations
             ["open", rest @ ..] | ["read", "table", rest @ ..] => {
                 let name = rest.join(" ");
@@ -281,6 +317,7 @@ impl Mode for BTreeMode {
         r#"BTree mode commands:
   Table management:
     create table <name> (<cols>)  Create a table with schema (SQL syntax)
+    tables / list tables      List all tables in the database
     open <name>               Open a cursor on a table
     read table <name>         Alias for open
     close                     Close the current cursor
@@ -329,22 +366,57 @@ fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {
             let key = entry.key();
             let mut value_buf = Vec::new();
             let value_size = entry.read_to_end(&mut value_buf);
-            let str_value = String::from_utf8(value_buf);
-            match (value_size, str_value) {
-                (Ok(len), Ok(str_value)) if len < 80 => {
-                    println!("Entry: key={}, len={} value={}", key, len, str_value)
-                }
-                (Ok(len), Ok(_)) => {
-                    println!("Entry: key={}, len={} value=<redacted>", key, len)
-                }
-                (Ok(len), Err(_)) => {
-                    println!(
-                        "Entry: key={}, len={} value=<unable to decode utf8>",
-                        key, len
-                    )
-                }
-                (Err(_), _) => println!("Entry: key={}, value=<unable to read value>", key),
+
+            if value_size.is_err() {
+                println!("Entry: key={}, value=<unable to read value>", key);
+                return ControlFlow::Continue(());
             }
+
+            let len = value_size.unwrap();
+
+            // Try CBOR decoding first (as Vec<ScalarValue>)
+            if let Ok(scalar_values) = ciborium::de::from_reader::<
+                Vec<database::engine::scalarvalue::ScalarValue>,
+                _,
+            >(&value_buf[..])
+            {
+                let display = format!("{:?}", scalar_values);
+                if display.len() < 80 {
+                    println!("Entry: key={}, len={} value={}", key, len, display);
+                } else {
+                    println!(
+                        "Entry: key={}, len={} value=<redacted {} items>",
+                        key,
+                        len,
+                        scalar_values.len()
+                    );
+                }
+                return ControlFlow::Continue(());
+            }
+
+            // Try UTF-8 decoding
+            if let Ok(str_value) = String::from_utf8(value_buf.clone()) {
+                if str_value.len() < 80 {
+                    println!("Entry: key={}, len={} value={}", key, len, str_value);
+                } else {
+                    println!("Entry: key={}, len={} value=<redacted text>", key, len);
+                }
+                return ControlFlow::Continue(());
+            }
+
+            // Fall back to hex preview for binary data
+            let hex_preview: String = value_buf
+                .iter()
+                .take(16)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let suffix = if value_buf.len() > 16 { "..." } else { "" };
+            println!(
+                "Entry: key={}, len={} value=<binary: {}{}>",
+                key, len, hex_preview, suffix
+            );
+
             ControlFlow::Continue(())
         }
     }
