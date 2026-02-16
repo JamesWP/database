@@ -1667,7 +1667,6 @@ mod tests {
         let mut test = TestDb::default();
         let users_root = test.btree.create_tree();
         test.btree.insert_schema_entry(
-            1,
             "table",
             "users",
             "users",
@@ -1799,7 +1798,6 @@ mod tests {
         let mut test = TestDb::default();
         let root = test.btree.create_tree();
         test.btree.insert_schema_entry(
-            1,
             "table",
             "data",
             "data",

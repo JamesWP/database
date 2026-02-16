@@ -77,10 +77,7 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
 
             let root_page = btree.create_tree();
             let ddl = sql.to_string();
-            let key = name
-                .bytes()
-                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-            btree.insert_schema_entry(key, "table", name, name, root_page, &ddl);
+            btree.insert_schema_entry("table", name, name, root_page, &ddl);
             Ok(ExecuteResult::CreateTable {
                 table_name: name.clone(),
             })
