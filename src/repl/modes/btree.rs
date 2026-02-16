@@ -297,6 +297,30 @@ impl Mode for BTreeMode {
                 }
             }
 
+            ["inspect", "page", page_num] => {
+                let page_num: u32 = match page_num.parse() {
+                    Ok(n) => n,
+                    Err(_) => return CommandResult::Error("Invalid page number".to_string()),
+                };
+
+                match shared.btree.inspect_page(page_num) {
+                    Ok(_) => CommandResult::Ok,
+                    Err(e) => CommandResult::Error(e),
+                }
+            }
+
+            ["inspect", "pages"] | ["inspect", "all"] => {
+                let file_size = shared.btree.file_size_pages();
+
+                for page_num in 0..file_size {
+                    if let Err(e) = shared.btree.inspect_page(page_num) {
+                        return CommandResult::Error(e);
+                    }
+                    println!();
+                }
+                CommandResult::Ok
+            }
+
             ["dump", path] => {
                 if self.cursor.is_some() {
                     return CommandResult::Error("Close cursor before dumping".to_string());
@@ -339,6 +363,8 @@ impl Mode for BTreeMode {
   Debug:
     verify                    Verify current table's B-tree integrity
     verify all                Verify all tables in the database
+    inspect page <n>          Show raw CBOR structure of page n
+    inspect pages / all       Show raw CBOR structure of all pages
     dump <path>               Export B-tree as graphviz dot file"#
             .to_string()
     }
