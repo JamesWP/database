@@ -107,6 +107,8 @@ pub enum ScalarValue {
 pub enum UnaryOp {
     Plus,
     Negate,
+    IsNull,
+    IsNotNull,
 }
 
 #[derive(Debug)]

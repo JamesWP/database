@@ -136,6 +136,8 @@ impl BytecodeEmitter {
                 | Operation::NotValue(_, _)
                 | Operation::NegateValue(_, _)
                 | Operation::CopyValue(_, _)
+                | Operation::IsNullValue(_, _)
+                | Operation::IsNotNullValue(_, _)
                 // String/Scalar function operations
                 | Operation::LengthValue(_, _)
                 | Operation::UpperValue(_, _)

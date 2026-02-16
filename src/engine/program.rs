@@ -113,6 +113,8 @@ pub enum Operation {
     NotValue(Reg, Reg),                     // Reg = !Reg
     NegateValue(Reg, Reg),                  // Reg = -Reg (arithmetic negation)
     CopyValue(Reg, Reg),                    // Reg = Reg (copy value)
+    IsNullValue(Reg, Reg),                  // Reg = (Reg IS NULL) → Boolean
+    IsNotNullValue(Reg, Reg),               // Reg = (Reg IS NOT NULL) → Boolean
 
     // String/Scalar Functions
     LengthValue(Reg, Reg),    // Reg = LENGTH(Reg)
@@ -262,6 +264,8 @@ impl std::fmt::Display for Operation {
             NotValue(d, s) => write!(f, "{:10} {}, {}", "Not".cyan().bold(), d, s),
             NegateValue(d, s) => write!(f, "{:10} {}, {}", "Neg".cyan().bold(), d, s),
             CopyValue(d, s) => write!(f, "{:10} {}, {}", "Copy".cyan().bold(), d, s),
+            IsNullValue(d, s) => write!(f, "{:10} {}, {}", "IsNull".cyan().bold(), d, s),
+            IsNotNullValue(d, s) => write!(f, "{:10} {}, {}", "IsNotNull".cyan().bold(), d, s),
 
             // String/Scalar Function operations
             LengthValue(d, s) => write!(f, "{:10} {}, {}", "Length".cyan().bold(), d, s),
