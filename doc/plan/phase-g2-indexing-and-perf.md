@@ -1,13 +1,13 @@
-# Phase G2 — Indexing, Performance & Testing
+# Phase G2 — Performance & Testing
 
-Phase G2 adds secondary indexes, query optimization, performance infrastructure, and expanded property-based testing.
+Phase G2 focuses on query optimization, performance infrastructure, and expanded property-based testing.
+
+**Note:** Items 34-35 (CREATE INDEX and Index Scan) have been split into their own dedicated phase: see `phase-g3-indexing.md`
 
 ## Items
 
 | # | Track | Item | Depends on |
 |---|-------|------|------------|
-| 34 | 4.3 | CREATE INDEX | — |
-| 35 | 4.4 | Index scan in planner | 34 |
 | 36 | 1.9 | DISTINCT | — |
 | 37 | 3.5 | Page cache / buffer pool | — |
 | 38 | 6.5 | Interior node split balance | — |
@@ -15,45 +15,6 @@ Phase G2 adds secondary indexes, query optimization, performance infrastructure,
 
 ---
 Important: Each item should be committed separately, follow 'Git Workflow' in CLAUDE.md
-
----
-
-## 34. CREATE INDEX (Track 4.3)
-
-### What Changes
-
-New `CREATE INDEX idx ON table(col)` — creates secondary B-tree mapping index key → primary key.
-
-### Key Files
-
-- `src/frontend/parser.rs` — parse CREATE INDEX
-- `src/frontend/ast.rs` — add CreateIndex statement
-- `src/db.rs` — create index B-tree, add catalog entry
-- On INSERT: also insert into index B-trees
-
-### Tests
-
-- Create index, verify catalog entry / insert data, verify index populated / index survives restart
-
----
-
-## 35. Index Scan in Planner (Track 4.4)
-
-### What Changes
-
-Planner checks available indexes when planning WHERE. If WHERE matches an index, use index scan instead of full table scan.
-
-### Key Files
-
-- `src/planner.rs` — index-aware query planning
-
-### Implementation Approach
-
-When WHERE has `col = literal` and an index exists on `col`, plan an IndexScan: look up in index B-tree to get primary key, then fetch row from table by primary key.
-
-### Tests
-
-- Index scan faster than table scan for selective queries / correct results / planner chooses index when available
 
 ---
 
