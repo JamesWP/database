@@ -8,6 +8,8 @@ use std::{
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use super::node::NodePage;
+
 pub struct Page {
     // TODO: maybe share an existing open page
     content: [u8; PAGE_SIZE as usize],
@@ -30,7 +32,7 @@ struct FreeListPage {
     page_ids: Vec<u32>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ZeroPage {
     // Contains metadata usefull to the pager
     /// Magic number to identify database files: 0x53514C69 ("SQLi")
@@ -301,9 +303,13 @@ impl Pager {
     #[allow(dead_code)]
     pub fn debug(&self, message: &str) {
         for i in 0..self.get_file_size_pages() {
-            let page: serde_json::Value = self.get_and_decode(i);
-
-            println!("{message}: Page {i} : {page}");
+            if i == 0 {
+                let zero_page: ZeroPage = self.get_and_decode(0);
+                println!("{message}: Page {i} (ZeroPage): {zero_page:?}");
+            } else {
+                let node_page: NodePage = self.get_and_decode(i);
+                println!("{message}: Page {i}: {node_page:?}");
+            }
         }
     }
 }
