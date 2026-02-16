@@ -355,6 +355,36 @@ impl Engine {
                         .set_next_operation_index(target.unwrap_resolved());
                 }
             }
+            RewindRowBuffer(buf_reg) => {
+                let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
+                buffer.cursor = 0;
+            }
+            NextFromRowBuffer(dest_regs, buf_reg, target) => {
+                // Borrow checker note: must extract data and drop the buffer borrow
+                // BEFORE writing to dest registers. Follow the pattern used by
+                // YieldFromRowBuffer (which pops a row, then writes to dest regs).
+                let maybe_row = {
+                    let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
+                    if buffer.cursor >= buffer.rows.len() {
+                        None
+                    } else {
+                        let row = buffer.rows[buffer.cursor].clone();
+                        buffer.cursor += 1;
+                        Some(row)
+                    }
+                }; // buffer borrow dropped here
+                match maybe_row {
+                    None => {
+                        self.program
+                            .set_next_operation_index(target.unwrap_resolved());
+                    }
+                    Some(row) => {
+                        for (dest, value) in dest_regs.iter().zip(row.into_iter()) {
+                            *self.registers.get_mut(*dest) = RegisterValue::ScalarValue(value);
+                        }
+                    }
+                }
+            }
             InitGroupTable(reg) => {
                 use std::collections::BTreeMap;
                 *self.registers.get_mut(reg) = RegisterValue::GroupTable(BTreeMap::new());
@@ -1760,6 +1790,64 @@ mod test {
         assert_eq!(yields[1][1], ScalarValue::Integer(20));
         assert_eq!(yields[2][0], ScalarValue::Integer(3)); // [3, 30]
         assert_eq!(yields[2][1], ScalarValue::Integer(30));
+    }
+
+    #[test]
+    fn test_row_buffer_rewind_and_next() {
+        // Test non-destructive iteration with RewindRowBuffer and NextFromRowBuffer
+        use crate::test::TestDb;
+
+        let r_buffer = Reg::new(0);
+        let r_val1 = Reg::new(1);
+        let r_val2 = Reg::new(2);
+
+        let ops = vec![
+            // Initialize buffer
+            Operation::InitRowBuffer(r_buffer),
+            // Add three rows: [1, "a"], [2, "b"], [3, "c"]
+            Operation::StoreValue(r_val1, ScalarValue::Integer(1)),
+            Operation::StoreValue(r_val2, ScalarValue::String("a".to_string())),
+            Operation::AppendToRowBuffer(r_buffer, vec![r_val1, r_val2]),
+            Operation::StoreValue(r_val1, ScalarValue::Integer(2)),
+            Operation::StoreValue(r_val2, ScalarValue::String("b".to_string())),
+            Operation::AppendToRowBuffer(r_buffer, vec![r_val1, r_val2]),
+            Operation::StoreValue(r_val1, ScalarValue::Integer(3)),
+            Operation::StoreValue(r_val2, ScalarValue::String("c".to_string())),
+            Operation::AppendToRowBuffer(r_buffer, vec![r_val1, r_val2]),
+            // First pass: RewindRowBuffer, then iterate with NextFromRowBuffer
+            Operation::RewindRowBuffer(r_buffer), // addr 10
+            // loop1: NextFromRowBuffer jumps to addr 14 when exhausted
+            Operation::NextFromRowBuffer(vec![r_val1, r_val2], r_buffer, JumpTarget::addr(14)), // 11
+            Operation::Yield(vec![r_val1, r_val2]),
+            Operation::GoTo(JumpTarget::addr(11)), // loop back
+            // Second pass: RewindRowBuffer again, iterate again
+            Operation::RewindRowBuffer(r_buffer), // addr 14
+            // loop2: NextFromRowBuffer jumps to Halt when exhausted
+            Operation::NextFromRowBuffer(vec![r_val1, r_val2], r_buffer, JumpTarget::addr(18)), // 15
+            Operation::Yield(vec![r_val1, r_val2]),
+            Operation::GoTo(JumpTarget::addr(15)), // loop back
+            Operation::Halt,                       // addr 18
+        ];
+
+        let mut engine = Engine::with_program(&ops, 3, TestDb::default().btree);
+        let yields = engine.run_with_limit(100);
+
+        // Should yield 6 rows total: 3 from first pass + 3 from second pass
+        assert_eq!(yields.len(), 6);
+        // First pass
+        assert_eq!(yields[0][0], ScalarValue::Integer(1));
+        assert_eq!(yields[0][1], ScalarValue::String("a".to_string()));
+        assert_eq!(yields[1][0], ScalarValue::Integer(2));
+        assert_eq!(yields[1][1], ScalarValue::String("b".to_string()));
+        assert_eq!(yields[2][0], ScalarValue::Integer(3));
+        assert_eq!(yields[2][1], ScalarValue::String("c".to_string()));
+        // Second pass (same rows)
+        assert_eq!(yields[3][0], ScalarValue::Integer(1));
+        assert_eq!(yields[3][1], ScalarValue::String("a".to_string()));
+        assert_eq!(yields[4][0], ScalarValue::Integer(2));
+        assert_eq!(yields[4][1], ScalarValue::String("b".to_string()));
+        assert_eq!(yields[5][0], ScalarValue::Integer(3));
+        assert_eq!(yields[5][1], ScalarValue::String("c".to_string()));
     }
 
     #[test]

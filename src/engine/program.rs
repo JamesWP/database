@@ -133,6 +133,12 @@ pub enum Operation {
     AppendToRowBuffer(Reg, Vec<Reg>),              // Append row to buffer
     SortRowBuffer(Reg, Vec<SortKeySpec>),          // Sort rows in buffer
     YieldFromRowBuffer(Vec<Reg>, Reg, JumpTarget), // Pop row from buffer or jump if empty
+    /// Reset the row buffer's read cursor to the beginning (for re-iteration)
+    RewindRowBuffer(Reg),
+    /// Read the next row from the buffer without removing it.
+    /// If the read cursor is past the end, jump to target.
+    /// Otherwise, copy row values into dest_regs and advance the read cursor.
+    NextFromRowBuffer(Vec<Reg>, Reg, JumpTarget),
 
     // Group Table (for GROUP BY aggregation)
     InitGroupTable(Reg), // Initialize empty group table
@@ -317,6 +323,20 @@ impl std::fmt::Display for Operation {
                     f,
                     "{:10} [{}], {}, {}",
                     "YieldRow".cyan().bold(),
+                    regs_str.join(", "),
+                    buf,
+                    target
+                )
+            }
+            RewindRowBuffer(buf) => {
+                write!(f, "{:10} {}", "RewindBuf".cyan().bold(), buf)
+            }
+            NextFromRowBuffer(regs, buf, target) => {
+                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
+                write!(
+                    f,
+                    "{:10} [{}], {}, {}",
+                    "NextRow".cyan().bold(),
                     regs_str.join(", "),
                     buf,
                     target

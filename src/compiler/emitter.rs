@@ -111,6 +111,9 @@ impl BytecodeEmitter {
                 Operation::YieldFromRowBuffer(_, _, ref mut target) => {
                     *target = resolve_target_with_offset(target, label_positions, offset);
                 }
+                Operation::NextFromRowBuffer(_, _, ref mut target) => {
+                    *target = resolve_target_with_offset(target, label_positions, offset);
+                }
                 Operation::YieldFromGroupTable(_, _, ref mut target) => {
                     *target = resolve_target_with_offset(target, label_positions, offset);
                 }
@@ -151,6 +154,7 @@ impl BytecodeEmitter {
                 | Operation::InitRowBuffer(_)
                 | Operation::AppendToRowBuffer(_, _)
                 | Operation::SortRowBuffer(_, _)
+                | Operation::RewindRowBuffer(_)
                 // Group table operations
                 | Operation::InitGroupTable(_)
                 | Operation::UpdateGroup(_, _, _)
