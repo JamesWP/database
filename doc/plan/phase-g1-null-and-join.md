@@ -138,43 +138,174 @@ The compiler's node system uses a label-based push pipeline:
 
 The left child is also compiled via normal `codegen()`, so both inputs can be arbitrary plan nodes.
 
-### Implementation
+### Implementation Steps
 
-#### 33a. Lexer (`src/frontend/lexer.rs`)
+The JOIN feature is built in 7 incremental commits. Each step compiles, passes all tests, and can be reviewed independently. Steps 33.1–33.2 are VM infrastructure (independent of SQL parsing). Steps 33.3–33.4 are parser changes. Steps 33.5–33.6 are planner changes. Step 33.7 ties everything together.
 
-Add keywords:
-- `Join` — under `'j'` branch (new): `'j' => match_reserved(ident, "join", Type::Join)`
-- `On` — under `'o'` branch: add `"on"` matching (currently handles `or`, `order`)
-- `Inner` — under `'i'` branch: add `"inner"` matching
+---
 
-#### 33b. AST (`src/frontend/ast.rs`)
+### Step 33.1 — RowBuffer struct refactor
 
-Add a `JoinClause` struct and a `joins` field to `SelectStatement`:
+**Commit: pure refactor, zero behavior change. All existing tests must pass.**
 
+Change `RowBuffer` from a raw `Vec` to a struct with a cursor field (needed later by `NextFromRowBuffer`).
+
+**Files:** `src/engine/registers.rs`, `src/engine.rs`
+
+In `src/engine/registers.rs`:
+
+1. Add the struct definition:
+```rust
+#[derive(Clone, Debug)]
+pub struct RowBuffer {
+    pub rows: Vec<Vec<ScalarValue>>,
+    pub cursor: usize,
+}
+```
+
+2. Change `RegisterValue::RowBuffer(Vec<Vec<ScalarValue>>)` to `RegisterValue::RowBuffer(RowBuffer)`.
+
+3. Update `row_buffer_mut()` to return `Option<&mut RowBuffer>` (currently returns `Option<&mut Vec<Vec<ScalarValue>>>`).
+
+In `src/engine.rs`, update existing operations to access `.rows`:
+- `InitRowBuffer(reg)`: change `Vec::new()` to `RowBuffer { rows: Vec::new(), cursor: 0 }`
+- `AppendToRowBuffer`: change `buffer.push(row)` to `buffer.rows.push(row)`
+- `SortRowBuffer`: change `buffer.sort_by(...)` to `buffer.rows.sort_by(...)`
+- `YieldFromRowBuffer`: change `buffer.pop()` to `buffer.rows.pop()`
+
+**Tests:** `cargo test` — all existing tests pass (no behavior change).
+
+---
+
+### Step 33.2 — RewindRowBuffer + NextFromRowBuffer VM instructions
+
+**Commit: add two new VM instructions with unit tests.**
+
+**Files:** `src/engine/program.rs`, `src/engine.rs`, `src/compiler/emitter.rs`
+
+In `src/engine/program.rs`, add to the `Operation` enum:
+```rust
+/// Reset the row buffer's read cursor to the beginning (for re-iteration).
+RewindRowBuffer(Reg),
+
+/// Read the next row from the buffer without removing it.
+/// If the read cursor is past the end, jump to target.
+/// Otherwise, copy row values into dest_regs and advance the read cursor.
+NextFromRowBuffer(Vec<Reg>, Reg, JumpTarget),
+```
+
+Add `Display` formatting for both (follow existing row buffer display patterns around line ~290).
+
+In `src/compiler/emitter.rs` — `finalize_with_offset` (line ~92), this method has an exhaustive `match` on all `Operation` variants. Add:
+- `Operation::NextFromRowBuffer(_, _, ref mut target)` → resolve jump target (same as `YieldFromRowBuffer` arm at line ~111)
+- `Operation::RewindRowBuffer(_)` → add to the no-jump-target arm (the `| Operation::SortRowBuffer(_, _)` list at line ~148)
+
+In `src/engine.rs`, add execution:
+```rust
+RewindRowBuffer(buf_reg) => {
+    let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
+    buffer.cursor = 0;
+}
+NextFromRowBuffer(dest_regs, buf_reg, target) => {
+    // Borrow checker note: must extract data and drop the buffer borrow
+    // BEFORE writing to dest registers. Follow the pattern used by
+    // YieldFromRowBuffer (which pops a row, then writes to dest regs).
+    let maybe_row = {
+        let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
+        if buffer.cursor >= buffer.rows.len() {
+            None
+        } else {
+            let row = buffer.rows[buffer.cursor].clone();
+            buffer.cursor += 1;
+            Some(row)
+        }
+    }; // buffer borrow dropped here
+    match maybe_row {
+        None => {
+            self.program.set_next_operation_index(target.unwrap_resolved());
+        }
+        Some(row) => {
+            for (dest, value) in dest_regs.iter().zip(row.into_iter()) {
+                *self.registers.get_mut(*dest) = RegisterValue::ScalarValue(value);
+            }
+        }
+    }
+}
+```
+
+**Tests:** Add a unit test in `src/engine.rs` (in the `#[cfg(test)]` module, alongside the existing `test_row_buffer_sort` test):
+```rust
+#[test]
+fn test_row_buffer_rewind_and_next() {
+    // Manually build bytecode that:
+    // 1. InitRowBuffer
+    // 2. Append 3 rows: [1, "a"], [2, "b"], [3, "c"]
+    // 3. RewindRowBuffer
+    // 4. NextFromRowBuffer loop: read each row, Yield, loop back
+    // 5. When buffer exhausted, Halt
+    // Verify: 3 yielded rows with correct values
+    //
+    // Then test a second pass:
+    // 6. RewindRowBuffer again
+    // 7. NextFromRowBuffer loop again
+    // Verify: same 3 rows yielded again (non-destructive)
+}
+```
+
+---
+
+### Step 33.3 — Lexer keywords (Join, On, Inner)
+
+**Commit: add lexer tokens, with tokenization test.**
+
+**Files:** `src/frontend/lexer.rs`
+
+Add to the `Type` enum: `Join`, `On`, `Inner`.
+
+In the keyword matching trie:
+- `'j'` branch (new): `'j' => match_reserved(ident, "join", Type::Join)`
+- `'o'` branch: add `"on"` matching (currently handles `or`, `order`)
+- `'i'` branch: add `"inner"` matching
+
+**Tests:** Add a unit test in the lexer's `#[cfg(test)]` module:
+```rust
+#[test]
+fn test_join_keywords() {
+    // Tokenize "SELECT a FROM x JOIN y ON a.id = b.id"
+    // Verify Join, On tokens appear at correct positions
+    // Tokenize "SELECT a FROM x INNER JOIN y ON a.id = b.id"
+    // Verify Inner, Join, On tokens
+}
+```
+
+---
+
+### Step 33.4 — AST JoinClause + Parser JOIN...ON syntax
+
+**Commit: parse JOIN syntax, with parser test. Planner not yet wired up (join queries will error at plan time).**
+
+**Files:** `src/frontend/ast.rs`, `src/frontend/parser.rs`
+
+In `src/frontend/ast.rs`, add:
 ```rust
 #[derive(Debug)]
 pub struct JoinClause {
     pub table: NamedTupleSource,
     pub on_condition: Expression,
 }
-
-#[derive(Debug)]
-pub struct SelectStatement {
-    pub columns: Vec<ColumnExpression>,
-    pub from: NamedTupleSource,
-    pub joins: Vec<JoinClause>,              // NEW — empty for non-join queries
-    pub filter: Option<Expression>,
-    pub limit: Option<Expression>,
-    pub order_by: Option<Vec<OrderByClause>>,
-    pub group_by: Option<Vec<Expression>>,
-}
 ```
 
-Every existing construction of `SelectStatement` must add `joins: vec![]`.
+Add `joins: Vec<JoinClause>` field to `SelectStatement` (between `from` and `filter`). Every existing construction of `SelectStatement` must add `joins: vec![]`.
 
-#### 33c. Parser (`src/frontend/parser.rs`)
+In `src/frontend/parser.rs`:
 
-In `parse_select_statement()`, after parsing the FROM clause (`let from = self.parse_named_tuple_source()?;`), parse optional JOIN clauses:
+Add `Expect::Join` and `Expect::On` to the `Expect` enum (line 130) and matching arms in `expect()` (line 48):
+```rust
+(Expect::Join, lexer::Type::Join) => { self.advance(); Ok(()) }
+(Expect::On, lexer::Type::On) => { self.advance(); Ok(()) }
+```
+
+In `parse_select_statement()`, after `let from = self.parse_named_tuple_source()?;` (line 456), add:
 
 ```rust
 let mut joins = Vec::new();
@@ -200,29 +331,38 @@ loop {
 }
 ```
 
-Add `Expect::Join` and `Expect::On` variants to the Expect enum and its `expect()` implementation.
+Use `parse_expression()` for the ON condition — it is a full expression, typically `a.col = b.col`.
 
-Note: Use `parse_expression()` for the ON condition (not `parse_filter_expression()` or similar) — the ON condition is a full expression, typically `a.col = b.col`.
+Include `joins` in the `SelectStatement` construction at the end of the function.
 
-#### 33d. Planner (`src/planner.rs`) — Column Resolution
-
-**New LogicalPlan variant:**
+**Tests:** Add a unit test in the parser's `#[cfg(test)]` module:
 ```rust
-pub enum LogicalPlan {
-    // ... existing ...
-    Join {
-        left: Box<LogicalPlan>,
-        right: Box<LogicalPlan>,
-        on_condition: PlanExpr,
-        left_column_count: usize,  // for register offset calculation
-    },
+#[test]
+fn test_parse_join() {
+    // Parse "SELECT a.x, b.y FROM alpha AS a JOIN beta AS b ON a.id = b.a_id"
+    // Assert: joins.len() == 1
+    // Assert: joins[0].table is Named { alias: "b", source: Table("beta") }
+    // Assert: joins[0].on_condition is a BinaryOp(Equals, ...)
+    //
+    // Parse "SELECT a.x FROM t1 AS a INNER JOIN t2 AS b ON a.id = b.id"
+    // Assert: joins.len() == 1 (INNER keyword accepted)
+    //
+    // Parse "SELECT x FROM t1 WHERE x > 1" (no join)
+    // Assert: joins.len() == 0 (existing queries unaffected)
 }
 ```
 
-**New JoinExprContext for multi-table column resolution:**
+---
 
-The existing `ExprContext` only supports a single table (line 951). For joins, create a `JoinExprContext`:
+### Step 33.5 — Planner: JoinExprContext + convert_expr_join
 
+**Commit: add join column resolution infrastructure with unit tests. Not yet wired into plan().**
+
+**Files:** `src/planner.rs`
+
+Add `PlanError::AmbiguousColumn(String)` variant.
+
+Add `JoinExprContext` struct:
 ```rust
 struct JoinExprContext {
     /// Maps (table_name_or_alias, column_name) → position in combined output
@@ -232,14 +372,13 @@ struct JoinExprContext {
 }
 ```
 
-Build it from both tables' column definitions:
+Add `build_join_expr_context` function that takes two `schema::Table`s and their aliases, and builds the context:
 1. Left table columns → positions `0..left_col_count`
 2. Right table columns → positions `left_col_count..left_col_count + right_col_count`
-3. For each column name: if it appears in both tables, mark as `None` (ambiguous) in the unqualified map
+3. For each column name appearing in both tables, set `unqualified[name] = None` (ambiguous)
 
-**New `convert_expr_join` function** (parallel to existing `convert_expr` at line 959):
+Add `convert_expr_join` and `convert_scalar_join` functions (parallel to existing `convert_expr` / `convert_scalar`):
 
-This function mirrors `convert_expr` exactly but uses `JoinExprContext` instead of `ExprContext` for column resolution. The structure:
 ```rust
 fn convert_expr_join(expr: &ast::Expression, ctx: &JoinExprContext) -> Result<PlanExpr, PlanError> {
     match expr {
@@ -288,9 +427,65 @@ fn convert_scalar_join(scalar: &ast::ScalarValue, ctx: &JoinExprContext) -> Resu
 }
 ```
 
-**New `plan_select_with_joins` function:**
+**Column resolution example:**
 
-Called from the `plan()` dispatch function (line 257). Modify the `Statement::Select` arm:
+For `SELECT e.name, d.name FROM employees AS e JOIN departments AS d ON e.dept_id = d.id`:
+- Left table `employees` (alias `e`): columns `[id, name, dept_id]` → positions 0, 1, 2
+- Right table `departments` (alias `d`): columns `[id, name]` → positions 3, 4
+- `qualified[("e", "id")] = 0`, `qualified[("e", "name")] = 1`, `qualified[("e", "dept_id")] = 2`
+- `qualified[("d", "id")] = 3`, `qualified[("d", "name")] = 4`
+- `unqualified["dept_id"] = Some(2)` (unique to e)
+- `unqualified["id"] = None` (ambiguous — in both tables)
+- `unqualified["name"] = None` (ambiguous — in both tables)
+- `e.name` → `ColumnRef::Single { column_idx: 1 }`
+- `d.name` → `ColumnRef::Single { column_idx: 4 }`
+- `e.dept_id = d.id` → `BinaryOp { Equals, ColumnRef(2), ColumnRef(3) }`
+
+**Tests:** Unit tests in planner's `#[cfg(test)]` module:
+```rust
+#[test]
+fn test_join_expr_context() {
+    // Build a JoinExprContext manually with:
+    //   left: columns [id, name, dept_id], alias "e"
+    //   right: columns [id, name], alias "d"
+    // Test qualified: ("e", "name") → 1, ("d", "name") → 4
+    // Test unqualified unique: "dept_id" → Some(2)
+    // Test unqualified ambiguous: "name" → None (error)
+    // Test qualified missing: ("e", "nonexistent") → error
+}
+
+#[test]
+fn test_convert_expr_join() {
+    // Build JoinExprContext as above
+    // Convert AST: MultiPartIdentifier("e", "dept_id") → ColumnRef(2)
+    // Convert AST: MultiPartIdentifier("d", "id") → ColumnRef(3)
+    // Convert AST: BinaryOp(Equals, "e.dept_id", "d.id") → BinaryOp(Equals, ColumnRef(2), ColumnRef(3))
+    // Convert AST: Identifier("name") → AmbiguousColumn error
+}
+```
+
+---
+
+### Step 33.6 — Planner: LogicalPlan::Join + plan_select_with_joins
+
+**Commit: wire join planning into the query planner. Queries will plan correctly but fail at compile time (codegen_join not yet implemented).**
+
+**Files:** `src/planner.rs`
+
+Add `LogicalPlan::Join` variant:
+```rust
+pub enum LogicalPlan {
+    // ... existing ...
+    Join {
+        left: Box<LogicalPlan>,
+        right: Box<LogicalPlan>,
+        on_condition: PlanExpr,
+        left_column_count: usize,  // for register offset calculation
+    },
+}
+```
+
+Modify the `plan()` dispatch (line 257):
 ```rust
 Statement::Select(select) => {
     if select.joins.is_empty() {
@@ -301,7 +496,7 @@ Statement::Select(select) => {
 }
 ```
 
-Structure of `plan_select_with_joins`:
+Add `plan_select_with_joins` function:
 
 ```rust
 fn plan_select_with_joins(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
@@ -397,109 +592,34 @@ fn plan_select_with_joins(select: ast::SelectStatement, btree: &BTree) -> Result
 }
 ```
 
-**Column resolution example:**
-
-For `SELECT e.name, d.name FROM employees AS e JOIN departments AS d ON e.dept_id = d.id`:
-- Left table `employees` (alias `e`): columns `[id, name, dept_id]` → positions 0, 1, 2
-- Right table `departments` (alias `d`): columns `[id, name]` → positions 3, 4
-- `qualified[("e", "id")] = 0`, `qualified[("e", "name")] = 1`, `qualified[("e", "dept_id")] = 2`
-- `qualified[("d", "id")] = 3`, `qualified[("d", "name")] = 4`
-- `unqualified["dept_id"] = Some(2)` (unique to e)
-- `unqualified["id"] = None` (ambiguous — in both tables)
-- `unqualified["name"] = None` (ambiguous — in both tables)
-- `e.name` → `ColumnRef::Single { column_idx: 1 }`
-- `d.name` → `ColumnRef::Single { column_idx: 4 }`
-- `e.dept_id = d.id` → `BinaryOp { Equals, ColumnRef(2), ColumnRef(3) }`
-
-**New error variant:** `PlanError::AmbiguousColumn(String)` for unqualified references to columns in both tables.
-
-#### 33e. New VM Instructions (`src/engine/program.rs`)
-
-The existing `YieldFromRowBuffer` uses `buffer.pop()` (destructive, line 329 of `src/engine.rs`). For joins we need non-destructive iteration with rewind capability. Add two new instructions:
-
+**Tests:** Unit test with a real `TestDb`:
 ```rust
-/// Reset the row buffer's read cursor to the beginning (for re-iteration).
-RewindRowBuffer(Reg),
-
-/// Read the next row from the buffer without removing it.
-/// If the read cursor is past the end, jump to target.
-/// Otherwise, copy row values into dest_regs and advance the read cursor.
-NextFromRowBuffer(Vec<Reg>, Reg, JumpTarget),
-```
-
-**Engine implementation:**
-
-The `RowBuffer` register value needs a read cursor. Change from `RowBuffer(Vec<Vec<ScalarValue>>)` to a struct:
-```rust
-pub struct RowBuffer {
-    pub rows: Vec<Vec<ScalarValue>>,
-    pub cursor: usize,  // read position for NextFromRowBuffer
+#[test]
+fn test_plan_join() {
+    // Create TestDb, create two tables (departments, employees)
+    // Insert some rows into each
+    // Plan: "SELECT e.name, d.name FROM employees AS e JOIN departments AS d ON e.dept_id = d.id"
+    // Assert: plan is Project { Join { Scan(employees), Scan(departments), ... }, ... }
+    // Assert: on_condition has correct ColumnRef indices
+    // Assert: left_column_count matches employees column count
 }
 ```
 
-Use the struct approach. In `src/engine/registers.rs`:
+---
 
-1. Add the struct definition:
-```rust
-#[derive(Clone, Debug)]
-pub struct RowBuffer {
-    pub rows: Vec<Vec<ScalarValue>>,
-    pub cursor: usize,
-}
-```
+### Step 33.7 — Compiler: codegen_join + end-to-end SQL tests
 
-2. Change `RegisterValue::RowBuffer(Vec<Vec<ScalarValue>>)` to `RegisterValue::RowBuffer(RowBuffer)`.
+**Commit: implement the nested loop join compiler node and add full SQL integration tests.**
 
-3. Update `row_buffer_mut()` to return `Option<&mut RowBuffer>` (currently returns `Option<&mut Vec<Vec<ScalarValue>>>`).
+**Files:** `src/compiler/nodes.rs`, `tests/sql/inner_join.sql`, `tests/sql/inner_join.expected`
 
-4. In `src/engine.rs`, update existing operations:
-   - `InitRowBuffer(reg)`: change `Vec::new()` to `RowBuffer { rows: Vec::new(), cursor: 0 }`
-   - `AppendToRowBuffer`: change `buffer.push(row)` to `buffer.rows.push(row)`
-   - `SortRowBuffer`: change `buffer.sort_by(...)` to `buffer.rows.sort_by(...)`
-   - `YieldFromRowBuffer`: change `buffer.pop()` to `buffer.rows.pop()`
+Add `codegen_join` to `src/compiler/nodes.rs`:
 
-Engine execution for the new instructions:
-```rust
-RewindRowBuffer(buf_reg) => {
-    let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
-    buffer.cursor = 0;
-}
-NextFromRowBuffer(dest_regs, buf_reg, target) => {
-    // Borrow checker note: must extract data and drop the buffer borrow
-    // BEFORE writing to dest registers. Follow the pattern used by
-    // YieldFromRowBuffer (which pops a row, then writes to dest regs).
-    let maybe_row = {
-        let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
-        if buffer.cursor >= buffer.rows.len() {
-            None
-        } else {
-            let row = buffer.rows[buffer.cursor].clone();
-            buffer.cursor += 1;
-            Some(row)
-        }
-    }; // buffer borrow dropped here
-    match maybe_row {
-        None => {
-            self.program.set_next_operation_index(target.unwrap_resolved());
-        }
-        Some(row) => {
-            for (dest, value) in dest_regs.iter().zip(row.into_iter()) {
-                *self.registers.get_mut(*dest) = RegisterValue::ScalarValue(value);
-            }
-        }
-    }
-}
-```
-
-#### 33f. Compiler (`src/compiler/nodes.rs`) — The Nested Loop (Materialize Right Side)
-
-**Overview:** The join compiles in two phases within the generated bytecode:
+The join compiles in two phases within the generated bytecode:
 1. **Materialize phase:** Run the right child to completion, storing all rows in a buffer
 2. **Join phase:** For each left row, iterate the buffer checking the ON condition
 
 Both children are compiled via normal `codegen()`, so they can be any plan node.
-
-**New `codegen_join` function:**
 
 ```rust
 pub fn codegen_join(
@@ -595,19 +715,14 @@ pub fn codegen_join(
 }
 ```
 
-**Important — wiring new instructions into existing infrastructure:**
+Wire into `codegen()` dispatch (around line 1170):
+```rust
+LogicalPlan::Join { left, right, on_condition, left_column_count } => {
+    codegen_join(left, right, on_condition, *left_column_count, cont, ctx)
+}
+```
 
-Three places must be updated for each new `Operation` variant:
-
-1. **`src/compiler/emitter.rs` — `finalize_with_offset` (line ~92):** This method has an exhaustive `match` on all `Operation` variants. Add:
-   - `Operation::NextFromRowBuffer(_, _, ref mut target)` → resolve jump target (same as `YieldFromRowBuffer` arm at line ~111)
-   - `Operation::RewindRowBuffer(_)` → add to the no-jump-target arm (the `| Operation::SortRowBuffer(_, _)` list at line ~148)
-
-2. **`src/engine/program.rs` — `Display` impl:** Add formatting for both new operations (follow existing row buffer display patterns around line ~290).
-
-3. **`src/engine.rs` — execution `match`:** Add the execution logic (already specified in section 33e above).
-
-**Bytecode execution flow:**
+**Bytecode execution flow (for reference):**
 
 ```
 INIT:
@@ -650,26 +765,7 @@ BODY:
       GoTo(INNER_CHECK)                       → continue buffer iteration
 ```
 
-**Why this is modular:**
-- Both `left` and `right` children are compiled via `codegen()` — they can be Scan, Filter(Scan), or any other plan node
-- The right side's rows are materialized into a buffer that can be iterated multiple times
-- No changes to `NodeOutput`, `NodeContinuation`, or any existing node codegen function
-- Future: could optimize when right child is a simple Scan by using cursor reset instead of materialization (but the buffer approach works universally)
-
-**Wire into `codegen()` dispatch** (around line 1170):
-```rust
-LogicalPlan::Join { left, right, on_condition, left_column_count } => {
-    codegen_join(left, right, on_condition, *left_column_count, cont, ctx)
-}
-```
-
-#### 33g. compile_expr for JOIN
-
-The existing `compile_expr` in `src/compiler/expr.rs` takes `input_regs: &[Reg]` and maps `ColumnRef::Single { column_idx }` to `input_regs[column_idx]`. Since the join's `combined_output` is `left_regs ++ right_read_regs` and the planner produces column indices into this combined layout, `compile_expr` works without modification.
-
-### Tests
-
-SQL test file `tests/sql/inner_join.sql`:
+**Tests:** SQL test file `tests/sql/inner_join.sql`:
 
 ```sql
 -- Setup
