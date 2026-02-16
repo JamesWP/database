@@ -1,6 +1,6 @@
 use crate::engine::program::{Operation, Reg};
 use crate::engine::scalarvalue::ScalarValue;
-use crate::planner::{BinaryOp, ColumnRef, Literal, PlanExpr, UnaryOp};
+use crate::planner::{BinaryOp, Literal, PlanExpr, UnaryOp};
 
 use super::emitter::BytecodeEmitter;
 use super::registers::RegisterAllocator;
@@ -29,16 +29,12 @@ pub fn compile_expr(expr: &PlanExpr, input_regs: &[Reg], ctx: &mut ExprContext) 
     }
 }
 
-fn compile_column_ref(col_ref: &ColumnRef, input_regs: &[Reg], ctx: &mut ExprContext) -> Reg {
-    match col_ref {
-        ColumnRef::Single { column_idx } => {
-            // Copy the value from the input register to a new register
-            let src = input_regs[*column_idx];
-            let dest = ctx.registers.alloc();
-            ctx.emitter.emit(Operation::CopyValue(dest, src));
-            dest
-        }
-    }
+fn compile_column_ref(column_idx: &usize, input_regs: &[Reg], ctx: &mut ExprContext) -> Reg {
+    // Copy the value from the input register to a new register
+    let src = input_regs[*column_idx];
+    let dest = ctx.registers.alloc();
+    ctx.emitter.emit(Operation::CopyValue(dest, src));
+    dest
 }
 
 fn compile_literal(lit: &Literal, ctx: &mut ExprContext) -> Reg {
@@ -206,7 +202,7 @@ mod tests {
         // Simulate input registers from a scan (columns 0 and 1)
         let input_regs = vec![Reg::new(10), Reg::new(11)];
 
-        let expr = PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 });
+        let expr = PlanExpr::ColumnRef(1);
         let result = {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
@@ -327,7 +323,7 @@ mod tests {
             op: BinaryOp::Multiply,
             left: Box::new(PlanExpr::BinaryOp {
                 op: BinaryOp::Add,
-                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                left: Box::new(PlanExpr::ColumnRef(0)),
                 right: Box::new(PlanExpr::Literal(Literal::Integer(5))),
             }),
             right: Box::new(PlanExpr::Literal(Literal::Integer(2))),

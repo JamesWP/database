@@ -620,9 +620,7 @@ pub fn codegen_sort(
         .map(|key| {
             // Extract column index from PlanExpr
             let column_idx = match &key.expr {
-                crate::planner::PlanExpr::ColumnRef(crate::planner::ColumnRef::Single {
-                    column_idx,
-                }) => *column_idx,
+                crate::planner::PlanExpr::ColumnRef(column_idx) => *column_idx,
                 _ => panic!("ORDER BY only supports column references for now"),
             };
             program::SortKeySpec {
@@ -1390,7 +1388,7 @@ mod tests {
     use super::*;
     use crate::engine::scalarvalue::ScalarValue;
     use crate::engine::Engine;
-    use crate::planner::{BinaryOp, ColumnRef, PlanExpr};
+    use crate::planner::{BinaryOp, PlanExpr};
     use crate::test::TestDb;
 
     /// Test that codegen_scan produces correct bytecode structure
@@ -1700,7 +1698,7 @@ mod tests {
         LogicalPlan::Filter {
             predicate: PlanExpr::BinaryOp {
                 op,
-                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                left: Box::new(PlanExpr::ColumnRef(0)),
                 right: Box::new(PlanExpr::Literal(Literal::Integer(value))),
             },
             input: Box::new(input),
@@ -1784,7 +1782,7 @@ mod tests {
         let plan = LogicalPlan::Filter {
             predicate: PlanExpr::BinaryOp {
                 op: BinaryOp::Equals,
-                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })),
+                left: Box::new(PlanExpr::ColumnRef(1)),
                 right: Box::new(PlanExpr::Literal(Literal::Integer(20))),
             },
             input: Box::new(LogicalPlan::Values {
@@ -1830,12 +1828,12 @@ mod tests {
                 op: BinaryOp::And,
                 left: Box::new(PlanExpr::BinaryOp {
                     op: BinaryOp::GreaterThan,
-                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    left: Box::new(PlanExpr::ColumnRef(0)),
                     right: Box::new(PlanExpr::Literal(Literal::Integer(3))),
                 }),
                 right: Box::new(PlanExpr::BinaryOp {
                     op: BinaryOp::LessThan,
-                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    left: Box::new(PlanExpr::ColumnRef(0)),
                     right: Box::new(PlanExpr::Literal(Literal::Integer(7))),
                 }),
             },
@@ -1859,7 +1857,7 @@ mod tests {
     fn test_project_passthrough() {
         // Project [col[0]] from Sequence(1..4) -> [1], [2], [3]
         let plan = LogicalPlan::Project {
-            columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })],
+            columns: vec![PlanExpr::ColumnRef(0)],
             input: Box::new(LogicalPlan::Sequence { start: 1, end: 4 }),
         };
 
@@ -1878,7 +1876,7 @@ mod tests {
         let plan = LogicalPlan::Project {
             columns: vec![PlanExpr::BinaryOp {
                 op: BinaryOp::Add,
-                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                left: Box::new(PlanExpr::ColumnRef(0)),
                 right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
             }],
             input: Box::new(LogicalPlan::Sequence { start: 1, end: 4 }),
@@ -1898,10 +1896,10 @@ mod tests {
         // Project [col[0], col[0] * 2] from Sequence(1..4) -> [1,2], [2,4], [3,6]
         let plan = LogicalPlan::Project {
             columns: vec![
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::ColumnRef(0),
                 PlanExpr::BinaryOp {
                     op: BinaryOp::Multiply,
-                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    left: Box::new(PlanExpr::ColumnRef(0)),
                     right: Box::new(PlanExpr::Literal(Literal::Integer(2))),
                 },
             ],
@@ -1947,10 +1945,7 @@ mod tests {
     fn test_project_reorder() {
         // Project [col[1], col[0]] from Values [[1, 10], [2, 20]] -> [[10, 1], [20, 2]]
         let plan = LogicalPlan::Project {
-            columns: vec![
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
-            ],
+            columns: vec![PlanExpr::ColumnRef(1), PlanExpr::ColumnRef(0)],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![
                     vec![Literal::Integer(1), Literal::Integer(10)],
@@ -1980,13 +1975,13 @@ mod tests {
         let plan = LogicalPlan::Filter {
             predicate: PlanExpr::BinaryOp {
                 op: BinaryOp::GreaterThan,
-                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                left: Box::new(PlanExpr::ColumnRef(0)),
                 right: Box::new(PlanExpr::Literal(Literal::Integer(5))),
             },
             input: Box::new(LogicalPlan::Project {
                 columns: vec![PlanExpr::BinaryOp {
                     op: BinaryOp::Multiply,
-                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    left: Box::new(PlanExpr::ColumnRef(0)),
                     right: Box::new(PlanExpr::Literal(Literal::Integer(2))),
                 }],
                 input: Box::new(LogicalPlan::Sequence { start: 1, end: 5 }),
@@ -2008,7 +2003,7 @@ mod tests {
         let plan = LogicalPlan::Project {
             columns: vec![PlanExpr::BinaryOp {
                 op: BinaryOp::Multiply,
-                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                left: Box::new(PlanExpr::ColumnRef(0)),
                 right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
             }],
             input: Box::new(filter_col0(
@@ -2031,7 +2026,7 @@ mod tests {
         // Count from Project [col[0]] from Sequence(1..10) -> 9
         let plan = LogicalPlan::Count {
             input: Box::new(LogicalPlan::Project {
-                columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })],
+                columns: vec![PlanExpr::ColumnRef(0)],
                 input: Box::new(LogicalPlan::Sequence { start: 1, end: 10 }),
             }),
         };
@@ -2133,7 +2128,7 @@ mod tests {
         let plan = LogicalPlan::Filter {
             predicate: PlanExpr::BinaryOp {
                 op: BinaryOp::GreaterThan,
-                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                left: Box::new(PlanExpr::ColumnRef(0)),
                 right: Box::new(PlanExpr::Literal(Literal::Integer(2))),
             },
             input: Box::new(LogicalPlan::Limit {
@@ -2160,7 +2155,7 @@ mod tests {
             input: Box::new(LogicalPlan::Project {
                 columns: vec![PlanExpr::BinaryOp {
                     op: BinaryOp::Multiply,
-                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    left: Box::new(PlanExpr::ColumnRef(0)),
                     right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
                 }],
                 input: Box::new(LogicalPlan::Sequence { start: 1, end: 10 }),
@@ -2317,7 +2312,7 @@ mod tests {
             input: Box::new(LogicalPlan::Project {
                 columns: vec![PlanExpr::BinaryOp {
                     op: BinaryOp::Multiply,
-                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })),
+                    left: Box::new(PlanExpr::ColumnRef(0)),
                     right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
                 }],
                 input: Box::new(filter_col0(

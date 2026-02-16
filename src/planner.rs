@@ -55,15 +55,6 @@ pub enum BinaryOp {
 // Plan Types
 // ============================================================================
 
-/// Reference to a column from an input node
-#[derive(Debug, Clone, PartialEq)]
-pub enum ColumnRef {
-    /// Column from a single-input node (Filter, Project, etc.)
-    /// column_idx is the index into the input node's output columns
-    Single { column_idx: usize },
-    // Future: Multi { node_idx: usize, column_idx: usize } for JOINs
-}
-
 /// Literal values in expressions
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
@@ -103,7 +94,8 @@ pub struct AggregateExpr {
 /// Planner's expression type - like ast::Expression but with resolved columns
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanExpr {
-    ColumnRef(ColumnRef),
+    /// Reference to a column by index in the input node's output
+    ColumnRef(usize),
     Literal(Literal),
     BinaryOp {
         op: BinaryOp,
@@ -446,7 +438,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
         // We project the indices that correspond to SELECT columns
         let project_exprs: Vec<PlanExpr> = projection_indices
             .into_iter()
-            .map(|idx| PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
+            .map(|idx| PlanExpr::ColumnRef(idx))
             .collect();
 
         plan = LogicalPlan::Project {
@@ -466,9 +458,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
                             .columns
                             .iter()
                             .enumerate()
-                            .map(|(idx, _col)| {
-                                Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
-                            })
+                            .map(|(idx, _col)| Ok(PlanExpr::ColumnRef(idx)))
                             .collect::<Vec<_>>()
                     }
                     _ => vec![convert_column_expr(col_expr, &ctx)],
@@ -529,7 +519,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
             // This tells us where each scan column ended up in the projection
             let mut scan_idx_to_proj_idx: HashMap<usize, usize> = HashMap::new();
             for (proj_idx, expr) in project_exprs.iter().enumerate() {
-                if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = expr {
+                if let PlanExpr::ColumnRef(column_idx) = expr {
                     scan_idx_to_proj_idx.insert(*column_idx, proj_idx);
                 }
             }
@@ -560,7 +550,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
             // If we added extra columns for ORDER BY, add a final projection to remove them
             if has_extra_order_columns {
                 let final_project: Vec<PlanExpr> = (0..select_column_count)
-                    .map(|idx| PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
+                    .map(|idx| PlanExpr::ColumnRef(idx))
                     .collect();
 
                 plan = LogicalPlan::Project {
@@ -643,8 +633,7 @@ fn plan_select_with_joins(
             ast::ColumnExpression::Wildcard => {
                 // Expand to all columns from both tables
                 for idx in 0..(left_col_count + right_col_count) {
-                    project_columns
-                        .push(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }));
+                    project_columns.push(PlanExpr::ColumnRef(idx));
                 }
             }
             ast::ColumnExpression::Named { expression, .. } => {
@@ -668,7 +657,7 @@ fn plan_select_with_joins(
         // Build a map from join output index to projection index
         let mut join_idx_to_proj_idx: HashMap<usize, usize> = HashMap::new();
         for (proj_idx, expr) in project_columns.iter().enumerate() {
-            if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = expr {
+            if let PlanExpr::ColumnRef(column_idx) = expr {
                 join_idx_to_proj_idx.insert(*column_idx, proj_idx);
             }
         }
@@ -697,7 +686,7 @@ fn plan_select_with_joins(
             // Rebuild the index map with the extended projection
             join_idx_to_proj_idx.clear();
             for (proj_idx, expr) in project_columns.iter().enumerate() {
-                if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = expr {
+                if let PlanExpr::ColumnRef(column_idx) = expr {
                     join_idx_to_proj_idx.insert(*column_idx, proj_idx);
                 }
             }
@@ -725,7 +714,7 @@ fn plan_select_with_joins(
         // If we added extra columns for ORDER BY, add a final projection to remove them
         if has_extra_order_columns {
             let final_project: Vec<PlanExpr> = (0..select_column_count)
-                .map(|idx| PlanExpr::ColumnRef(ColumnRef::Single { column_idx: idx }))
+                .map(|idx| PlanExpr::ColumnRef(idx))
                 .collect();
 
             plan = LogicalPlan::Project {
@@ -1195,7 +1184,7 @@ fn convert_scalar(scalar: &ast::ScalarValue, ctx: &ExprContext) -> Result<PlanEx
                     table: ctx.table_ref.to_string(),
                     column: name.clone(),
                 })?;
-            Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos }))
+            Ok(PlanExpr::ColumnRef(*pos))
         }
         ast::ScalarValue::MultiPartIdentifier(table_expr, column_name) => {
             // Extract table name from expression (e.g., "u" from "u.name")
@@ -1213,7 +1202,7 @@ fn convert_scalar(scalar: &ast::ScalarValue, ctx: &ExprContext) -> Result<PlanEx
                     table: ctx.table_ref.to_string(),
                     column: column_name.clone(),
                 })?;
-            Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos }))
+            Ok(PlanExpr::ColumnRef(*pos))
         }
     }
 }
@@ -1318,7 +1307,7 @@ fn convert_scalar_join(
         ast::ScalarValue::Identifier(name) => {
             // Unqualified column reference
             match ctx.unqualified.get(name) {
-                Some(Some(pos)) => Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos })),
+                Some(Some(pos)) => Ok(PlanExpr::ColumnRef(*pos)),
                 Some(None) => Err(PlanError::AmbiguousColumn(name.clone())),
                 None => Err(PlanError::ColumnNotFound {
                     table: "join".to_string(),
@@ -1330,7 +1319,7 @@ fn convert_scalar_join(
             // Qualified column reference (e.g., e.name)
             let ref_table = extract_identifier(table_expr)?;
             match ctx.qualified.get(&(ref_table.clone(), column_name.clone())) {
-                Some(pos) => Ok(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: *pos })),
+                Some(pos) => Ok(PlanExpr::ColumnRef(*pos)),
                 None => Err(PlanError::ColumnNotFound {
                     table: ref_table,
                     column: column_name.clone(),
@@ -1407,13 +1396,11 @@ fn remap_column_indices(
     index_map: &HashMap<usize, usize>,
 ) -> Result<PlanExpr, PlanError> {
     match expr {
-        PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) => {
+        PlanExpr::ColumnRef(column_idx) => {
             let new_idx = *index_map
                 .get(column_idx)
                 .expect("Column from scan should be in projection");
-            Ok(PlanExpr::ColumnRef(ColumnRef::Single {
-                column_idx: new_idx,
-            }))
+            Ok(PlanExpr::ColumnRef(new_idx))
         }
         PlanExpr::Literal(lit) => Ok(PlanExpr::Literal(lit.clone())),
         PlanExpr::BinaryOp { op, left, right } => Ok(PlanExpr::BinaryOp {
@@ -1584,10 +1571,7 @@ mod tests {
         let expr = ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()));
         let result = convert_expr(&expr, &ctx).unwrap();
 
-        assert_eq!(
-            result,
-            PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })
-        );
+        assert_eq!(result, PlanExpr::ColumnRef(2));
     }
 
     #[test]
@@ -1608,10 +1592,7 @@ mod tests {
         ));
         let result = convert_expr(&expr, &ctx).unwrap();
 
-        assert_eq!(
-            result,
-            PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })
-        );
+        assert_eq!(result, PlanExpr::ColumnRef(1));
     }
 
     #[test]
@@ -1677,7 +1658,7 @@ mod tests {
             result,
             PlanExpr::BinaryOp {
                 op: BinaryOp::GreaterThan,
-                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })),
+                left: Box::new(PlanExpr::ColumnRef(2)),
                 right: Box::new(PlanExpr::Literal(Literal::Integer(21))),
             }
         );
@@ -1704,7 +1685,7 @@ mod tests {
             result,
             PlanExpr::UnaryOp {
                 op: UnaryOp::Negate,
-                operand: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })),
+                operand: Box::new(PlanExpr::ColumnRef(2)),
             }
         );
     }
@@ -1736,7 +1717,7 @@ mod tests {
             op: BinaryOp::GreaterThan,
             left: Box::new(PlanExpr::BinaryOp {
                 op: BinaryOp::Add,
-                left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })),
+                left: Box::new(PlanExpr::ColumnRef(2)),
                 right: Box::new(PlanExpr::Literal(Literal::Integer(1))),
             }),
             right: Box::new(PlanExpr::Literal(Literal::Integer(21))),
@@ -1997,10 +1978,7 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![0, 1], // id, name
             }),
-            columns: vec![
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
-            ],
+            columns: vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)],
         };
 
         assert_eq!(plan, expected);
@@ -2028,11 +2006,11 @@ mod tests {
                 }),
                 predicate: PlanExpr::BinaryOp {
                     op: BinaryOp::GreaterThan,
-                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })), // age
+                    left: Box::new(PlanExpr::ColumnRef(1)), // age
                     right: Box::new(PlanExpr::Literal(Literal::Integer(21))),
                 },
             }),
-            columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })], // name
+            columns: vec![PlanExpr::ColumnRef(0)], // name
         };
 
         assert_eq!(plan, expected);
@@ -2058,7 +2036,7 @@ mod tests {
                     rootpage: users_root,
                     columns: vec![1], // name
                 }),
-                columns: vec![PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 })],
+                columns: vec![PlanExpr::ColumnRef(0)],
             }),
             count: 10,
         };
@@ -2082,9 +2060,9 @@ mod tests {
                 columns: vec![0, 1, 2], // all columns
             }),
             columns: vec![
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
+                PlanExpr::ColumnRef(0),
+                PlanExpr::ColumnRef(1),
+                PlanExpr::ColumnRef(2),
             ],
         };
 
@@ -2113,11 +2091,11 @@ mod tests {
                 columns: vec![0, 1, 2, 3, 4], // all 5 columns
             }),
             columns: vec![
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 3 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 4 }),
+                PlanExpr::ColumnRef(0),
+                PlanExpr::ColumnRef(1),
+                PlanExpr::ColumnRef(2),
+                PlanExpr::ColumnRef(3),
+                PlanExpr::ColumnRef(4),
             ],
         };
 
@@ -2137,9 +2115,9 @@ mod tests {
                 columns: vec![0, 1, 2], // all columns
             }),
             columns: vec![
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
+                PlanExpr::ColumnRef(0),
+                PlanExpr::ColumnRef(1),
+                PlanExpr::ColumnRef(2),
                 PlanExpr::Literal(Literal::Integer(999)),
             ],
         };
@@ -2161,9 +2139,9 @@ mod tests {
             }),
             columns: vec![
                 PlanExpr::Literal(Literal::Integer(999)),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
+                PlanExpr::ColumnRef(0),
+                PlanExpr::ColumnRef(1),
+                PlanExpr::ColumnRef(2),
             ],
         };
 
@@ -2183,12 +2161,12 @@ mod tests {
                 columns: vec![0, 1, 2], // all columns
             }),
             columns: vec![
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 }),
+                PlanExpr::ColumnRef(0),
+                PlanExpr::ColumnRef(1),
+                PlanExpr::ColumnRef(2),
                 PlanExpr::BinaryOp {
                     op: BinaryOp::Add,
-                    left: Box::new(PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })),
+                    left: Box::new(PlanExpr::ColumnRef(2)),
                     right: Box::new(PlanExpr::Literal(Literal::Integer(10))),
                 },
             ],
@@ -2259,9 +2237,9 @@ mod tests {
                 columns: vec![0, 1], // id, name
             }),
             columns: vec![
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 0 }),
+                PlanExpr::ColumnRef(0),
                 PlanExpr::Literal(Literal::Null),
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 }),
+                PlanExpr::ColumnRef(1),
             ],
         };
 
@@ -2378,7 +2356,7 @@ mod tests {
         if let LogicalPlan::Sort { input, sort_keys } = plan {
             assert_eq!(sort_keys.len(), 1);
             // Sort key should reference projection column 1 (age in the projection)
-            if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = &sort_keys[0].expr {
+            if let PlanExpr::ColumnRef(column_idx) = &sort_keys[0].expr {
                 assert_eq!(*column_idx, 1, "age should be at projection index 1");
             } else {
                 panic!("Expected simple column reference in sort key");
@@ -2422,7 +2400,7 @@ mod tests {
             {
                 assert_eq!(sort_keys.len(), 1);
                 // Sort key should reference age at projection index 1
-                if let PlanExpr::ColumnRef(ColumnRef::Single { column_idx }) = &sort_keys[0].expr {
+                if let PlanExpr::ColumnRef(column_idx) = &sort_keys[0].expr {
                     assert_eq!(
                         *column_idx, 1,
                         "age should be at projection index 1 in extended projection"
@@ -2592,7 +2570,7 @@ mod tests {
 
     #[test]
     fn test_convert_expr_join() {
-        use super::{build_join_expr_context, convert_expr_join, schema, ColumnRef, PlanExpr};
+        use super::{build_join_expr_context, convert_expr_join, schema, PlanExpr};
 
         let left_table = schema::Table {
             name: "employees".to_string(),
@@ -2625,10 +2603,7 @@ mod tests {
             "dept_id".to_string(),
         ));
         let plan_expr = convert_expr_join(&ast_expr, &ctx).unwrap();
-        assert_eq!(
-            plan_expr,
-            PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })
-        );
+        assert_eq!(plan_expr, PlanExpr::ColumnRef(1));
 
         // Test qualified column: d.id → ColumnRef(2)
         let ast_expr2 = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
@@ -2638,18 +2613,12 @@ mod tests {
             "id".to_string(),
         ));
         let plan_expr2 = convert_expr_join(&ast_expr2, &ctx).unwrap();
-        assert_eq!(
-            plan_expr2,
-            PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })
-        );
+        assert_eq!(plan_expr2, PlanExpr::ColumnRef(2));
 
         // Test unqualified unique column: dept_id → ColumnRef(1)
         let ast_expr3 = ast::Expression::Value(ast::ScalarValue::Identifier("dept_id".to_string()));
         let plan_expr3 = convert_expr_join(&ast_expr3, &ctx).unwrap();
-        assert_eq!(
-            plan_expr3,
-            PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })
-        );
+        assert_eq!(plan_expr3, PlanExpr::ColumnRef(1));
 
         // Test ambiguous column: id → Error
         let ast_expr4 = ast::Expression::Value(ast::ScalarValue::Identifier("id".to_string()));
@@ -2678,14 +2647,8 @@ mod tests {
         };
         let plan_expr5 = convert_expr_join(&ast_expr5, &ctx).unwrap();
         if let PlanExpr::BinaryOp { left, right, .. } = plan_expr5 {
-            assert_eq!(
-                *left,
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 1 })
-            );
-            assert_eq!(
-                *right,
-                PlanExpr::ColumnRef(ColumnRef::Single { column_idx: 2 })
-            );
+            assert_eq!(*left, PlanExpr::ColumnRef(1));
+            assert_eq!(*right, PlanExpr::ColumnRef(2));
         } else {
             panic!("Expected BinaryOp");
         }
@@ -2693,7 +2656,7 @@ mod tests {
 
     #[test]
     fn test_plan_join() {
-        use super::{plan, schema, ColumnRef, LogicalPlan, PlanExpr};
+        use super::{plan, schema, LogicalPlan, PlanExpr};
         use crate::test::TestDb;
 
         // Create TestDb and two tables
