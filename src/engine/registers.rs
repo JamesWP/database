@@ -16,13 +16,20 @@ pub enum Accumulator {
 /// Group table: maps group keys to their accumulators
 pub type GroupTable = BTreeMap<Vec<ScalarValue>, Vec<Accumulator>>;
 
+/// Row buffer with cursor for iteration
+#[derive(Clone, Debug)]
+pub struct RowBuffer {
+    pub rows: Vec<Vec<ScalarValue>>,
+    pub cursor: usize,
+}
+
 #[derive(Clone, Debug)]
 pub enum RegisterValue {
     None,
     ScalarValue(ScalarValue),
     CursorHandle(CursorHandle),
     KeyList(Vec<u64>),
-    RowBuffer(Vec<Vec<ScalarValue>>),
+    RowBuffer(RowBuffer),
     GroupTable(GroupTable),
 }
 
@@ -121,7 +128,7 @@ impl RegisterValue {
         }
     }
 
-    pub(crate) fn row_buffer_mut(&mut self) -> Option<&mut Vec<Vec<ScalarValue>>> {
+    pub(crate) fn row_buffer_mut(&mut self) -> Option<&mut RowBuffer> {
         if let RegisterValue::RowBuffer(ref mut buffer) = self {
             Some(buffer)
         } else {

@@ -310,7 +310,10 @@ impl Engine {
                 }
             }
             InitRowBuffer(reg) => {
-                *self.registers.get_mut(reg) = RegisterValue::RowBuffer(Vec::new());
+                *self.registers.get_mut(reg) = RegisterValue::RowBuffer(registers::RowBuffer {
+                    rows: Vec::new(),
+                    cursor: 0,
+                });
             }
             AppendToRowBuffer(buffer_reg, value_regs) => {
                 let values: Vec<ScalarValue> = value_regs
@@ -318,11 +321,11 @@ impl Engine {
                     .map(|reg| self.registers.get(*reg).scalar().unwrap().clone())
                     .collect();
                 let buffer = self.registers.get_mut(buffer_reg).row_buffer_mut().unwrap();
-                buffer.push(values);
+                buffer.rows.push(values);
             }
             SortRowBuffer(buffer_reg, sort_keys) => {
                 let buffer = self.registers.get_mut(buffer_reg).row_buffer_mut().unwrap();
-                buffer.sort_by(|row_a, row_b| {
+                buffer.rows.sort_by(|row_a, row_b| {
                     for key_spec in sort_keys.iter() {
                         let val_a = &row_a[key_spec.column_index];
                         let val_b = &row_b[key_spec.column_index];
@@ -338,11 +341,11 @@ impl Engine {
                     std::cmp::Ordering::Equal
                 });
                 // Reverse so pop() yields in correct order (lowest to highest)
-                buffer.reverse();
+                buffer.rows.reverse();
             }
             YieldFromRowBuffer(dest_regs, buffer_reg, target) => {
                 let buffer = self.registers.get_mut(buffer_reg).row_buffer_mut().unwrap();
-                if let Some(row) = buffer.pop() {
+                if let Some(row) = buffer.rows.pop() {
                     for (dest_reg, value) in dest_regs.iter().zip(row.into_iter()) {
                         *self.registers.get_mut(*dest_reg) = RegisterValue::ScalarValue(value);
                     }
