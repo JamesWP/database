@@ -2,10 +2,18 @@
 pub enum Statement {
     Select(SelectStatement),
     CreateTable(CreateTableStatement),
+    CreateIndex(CreateIndexStatement),
     Insert(InsertStatement),
     Update(UpdateStatement),
     Delete(DeleteStatement),
     Drop(DropTableStatement),
+}
+
+#[derive(Debug)]
+pub struct CreateIndexStatement {
+    pub index_name: String,
+    pub table_name: String,
+    pub column_name: String,
 }
 
 #[derive(Debug)]

@@ -101,6 +101,9 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                 table_name: name.clone(),
             })
         }
+        Statement::CreateIndex(_) => {
+            todo!("CREATE INDEX not yet implemented")
+        }
         Statement::Select(_)
         | Statement::Insert(_)
         | Statement::Update(_)
