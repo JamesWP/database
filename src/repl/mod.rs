@@ -6,9 +6,14 @@ use std::collections::HashMap;
 use std::io::Write;
 
 pub use mode::{CommandResult, Mode, ModeFactory, ModeId};
+use proptest::strategy::W;
 pub use shared::SharedState;
 
 use modes::{BTreeMode, EngineMode, ParserMode, PlannerMode, SqlMode};
+
+use rustyline::error::ReadlineError;
+use rustyline::{DefaultEditor, Result};
+use std::env;
 
 pub struct Repl {
     shared: SharedState,
@@ -84,21 +89,48 @@ impl Repl {
     }
 
     pub fn run(&mut self) {
+        let mut rl = DefaultEditor::new().expect("editors for repl");
+
+        let history_path = if let Some(mut path) = std::env::home_dir() {
+            path.push(".database-history.txt");
+
+            if !path.exists() {
+                println!("Creating new history file at: {}", path.display());
+
+                Some(path)
+            } else {
+                match rl.load_history(&path.as_path()) {
+                    Err(err) => eprintln!("Unable to load {}: {:?}", &path.display(), err),
+                    Ok(()) => {}
+                }
+
+                Some(path)
+            }
+        } else {
+            eprintln!("Unable to get home directory path");
+            None
+        };
+
         loop {
             // Print prompt
             let prompt = match &self.current_mode {
                 None => "db> ".to_string(),
                 Some(mode) => mode.prompt(),
             };
-            print!("{}", prompt);
-            std::io::stdout().flush().unwrap();
+            let readline = rl.readline(prompt.as_str());
 
-            // Read line
-            let mut line = String::new();
-            let length = std::io::stdin().read_line(&mut line).unwrap();
-            if length == 0 {
-                break; // EOF
-            }
+            let line = match readline {
+                Ok(line) => line,
+                Err(ReadlineError::Interrupted) => {
+                    eprintln!("Press Ctrl+C again to quit");
+                    break;
+                }
+                Err(ReadlineError::Eof) => break,
+                Err(err) => {
+                    eprintln!("Error reading line: {:?}", err);
+                    break;
+                }
+            };
 
             let line = line.trim();
             if line.is_empty() {
@@ -111,6 +143,8 @@ impl Repl {
             // Handle the command
             let result = self.handle_command(&tokens);
 
+            rl.add_history_entry(line);
+
             match result {
                 CommandResult::Ok => {}
                 CommandResult::Message(msg) => println!("{}", msg),
@@ -122,6 +156,16 @@ impl Repl {
                     println!("Type 'help' for available commands");
                 }
                 CommandResult::Error(e) => println!("Error: {}", e),
+            }
+        }
+
+        if let Some(history_path) = history_path {
+            println!("Writing history: {}", history_path.display());
+            match rl.save_history(history_path.as_path()) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Unable to save history: {}", e);
+                }
             }
         }
     }
