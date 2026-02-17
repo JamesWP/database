@@ -1046,6 +1046,26 @@ impl Display for BTree {
     }
 }
 
+/// Encode an i64 integer column value to a u64 B-tree key, preserving sort order.
+///
+/// Flips the sign bit so that negative numbers sort before positive numbers
+/// in unsigned key comparison, matching SQL sort order for integers.
+///
+/// Examples:
+///   i64::MIN → 0x0000_0000_0000_0000
+///        -1  → 0x7FFF_FFFF_FFFF_FFFF
+///         0  → 0x8000_0000_0000_0000
+///         1  → 0x8000_0000_0000_0001
+///   i64::MAX → 0xFFFF_FFFF_FFFF_FFFF
+pub fn encode_integer_key(i: i64) -> u64 {
+    (i as u64) ^ 0x8000_0000_0000_0000
+}
+
+/// Decode a u64 index key back to the original i64 column value.
+pub fn decode_integer_key(key: u64) -> i64 {
+    (key ^ 0x8000_0000_0000_0000) as i64
+}
+
 /// Extract column name from a CREATE INDEX SQL string.
 /// "CREATE INDEX idx ON table(col)" → "col"
 fn extract_column_from_index_sql(sql: &str) -> String {
@@ -1362,6 +1382,27 @@ mod test {
 
         let result = btree.lookup_table("nonexistent");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_integer_key_encoding_order() {
+        use super::{decode_integer_key, encode_integer_key};
+        let values = [-100i64, -1, 0, 1, 100];
+        let encoded: Vec<u64> = values.iter().map(|&v| encode_integer_key(v)).collect();
+
+        // Encoded keys maintain sort order
+        for i in 1..encoded.len() {
+            assert!(
+                encoded[i - 1] < encoded[i],
+                "Keys not ordered: {:?}",
+                values
+            );
+        }
+
+        // Round-trip decode
+        for (i, &v) in values.iter().enumerate() {
+            assert_eq!(decode_integer_key(encoded[i]), v);
+        }
     }
 
     #[test]

@@ -37,6 +37,9 @@ impl Mode for SqlMode {
             Ok(ExecuteResult::CreateTable { table_name }) => {
                 CommandResult::Message(format!("Table '{}' created", table_name))
             }
+            Ok(ExecuteResult::CreateIndex { index_name }) => {
+                CommandResult::Message(format!("Index '{}' created", index_name))
+            }
             Ok(ExecuteResult::DropTable { table_name }) => {
                 CommandResult::Message(format!("Table '{}' dropped", table_name))
             }
