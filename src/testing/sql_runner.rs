@@ -47,6 +47,9 @@ fn execute_sql_script(sql_path: &PathBuf) -> Vec<String> {
                 ExecuteResult::CreateTable { table_name } => {
                     actual_output.push(format!("Table '{}' created", table_name));
                 }
+                ExecuteResult::CreateIndex { index_name } => {
+                    actual_output.push(format!("Index '{}' created", index_name));
+                }
                 ExecuteResult::DropTable { table_name } => {
                     actual_output.push(format!("Table '{}' dropped", table_name));
                 }

@@ -11,6 +11,9 @@ mod btree;
 mod btree_graph;
 mod btree_verify;
 
+pub use btree::encode_integer_key;
+pub use btree::decode_integer_key;
+pub use btree::IndexInfo;
 pub use btree::BTree;
 pub use btree::CursorHandle;
 pub use cell_reader::CellReader;

@@ -1,14 +1,15 @@
 use crate::compiler;
 use crate::engine::scalarvalue::ScalarValue;
 use crate::engine::Engine;
-use crate::frontend::ast::Statement;
+use crate::frontend::ast::{DataType, Statement};
 use crate::frontend::{parse, ParseError};
 use crate::planner::{self, PlanError};
-use crate::storage::BTree;
+use crate::storage::{encode_integer_key, BTree};
 
 #[derive(Debug)]
 pub enum ExecuteResult {
     CreateTable { table_name: String },
+    CreateIndex { index_name: String },
     DropTable { table_name: String },
     Query(QueryExecution),
 }
@@ -42,6 +43,9 @@ pub enum ExecuteError {
     Plan(PlanError),
     TableAlreadyExists(String),
     TableNotFound(String),
+    IndexAlreadyExists(String),
+    ColumnNotFound { table: String, column: String },
+    ColumnNotInteger { table: String, column: String },
 }
 
 impl std::fmt::Display for ExecuteError {
@@ -54,6 +58,19 @@ impl std::fmt::Display for ExecuteError {
             }
             ExecuteError::TableNotFound(name) => {
                 write!(f, "Table '{}' not found", name)
+            }
+            ExecuteError::IndexAlreadyExists(name) => {
+                write!(f, "Index '{}' already exists", name)
+            }
+            ExecuteError::ColumnNotFound { table, column } => {
+                write!(f, "Column '{}' not found in table '{}'", column, table)
+            }
+            ExecuteError::ColumnNotInteger { table, column } => {
+                write!(
+                    f,
+                    "Column '{}' in table '{}' is not INTEGER (V1: only INTEGER columns supported)",
+                    column, table
+                )
             }
         }
     }
@@ -102,7 +119,108 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
             })
         }
         Statement::CreateIndex(_) => {
-            todo!("CREATE INDEX not yet implemented")
+            let ci = match stmt {
+                Statement::CreateIndex(ci) => ci,
+                _ => unreachable!(),
+            };
+
+            // 1. Resolve table and validate it exists
+            let (table_rootpage, ddl) = btree
+                .lookup_table(&ci.table_name)
+                .ok_or_else(|| ExecuteError::TableNotFound(ci.table_name.clone()))?;
+
+            // 2. Check if index already exists
+            let existing = btree.lookup_indexes_for_table(&ci.table_name);
+            for index in &existing {
+                if index.index_name == ci.index_name {
+                    return Err(ExecuteError::IndexAlreadyExists(ci.index_name.clone()));
+                }
+            }
+
+            // 3. Parse DDL to get column info
+            let parsed_ddl = parse(&ddl).map_err(ExecuteError::Parse)?;
+            let create_table = match parsed_ddl {
+                Statement::CreateTable(ct) => ct,
+                _ => return Err(ExecuteError::Parse(crate::frontend::ParseError::UnexpectedToken(
+                    crate::frontend::parser::Expect::Table,
+                    crate::frontend::lexer::Type::Eof,
+                ))),
+            };
+
+            // 4. Find column and verify it's INTEGER (V1 restriction)
+            let column_def = create_table
+                .columns
+                .iter()
+                .find(|col| col.name == ci.column_name)
+                .ok_or_else(|| ExecuteError::ColumnNotFound {
+                    table: ci.table_name.clone(),
+                    column: ci.column_name.clone(),
+                })?;
+
+            if !matches!(column_def.type_name, Some(DataType::Integer)) {
+                return Err(ExecuteError::ColumnNotInteger {
+                    table: ci.table_name.clone(),
+                    column: ci.column_name.clone(),
+                });
+            }
+
+            let column_idx = create_table
+                .columns
+                .iter()
+                .position(|col| col.name == ci.column_name)
+                .unwrap();
+
+            // 5. Create the index B-tree
+            let index_rootpage = btree.create_tree();
+
+            // 6. Scan table and collect (index_key, primary_key) pairs, then write to index.
+            // We collect first to avoid holding readonly borrow while inserting (readwrite borrow).
+            let entries_to_index: Vec<(u64, i64)> = {
+                let mut table_cursor = btree.open(table_rootpage);
+                let mut tc = table_cursor.open_readonly();
+                tc.first();
+                let mut entries = Vec::new();
+                loop {
+                    match tc.get_entry() {
+                        None => break,
+                        Some(mut reader) => {
+                            let table_key = reader.key();
+                            let values = reader.decode_as_array();
+                            if column_idx < values.len() {
+                                if let ScalarValue::Integer(col_int) = values[column_idx] {
+                                    entries.push((
+                                        encode_integer_key(col_int),
+                                        table_key as i64,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    tc.next();
+                }
+                entries
+            };
+
+            for (index_key, pk) in entries_to_index {
+                let index_value = vec![ScalarValue::Integer(pk)];
+                let mut encoded = Vec::new();
+                ciborium::ser::into_writer(&index_value, &mut encoded).unwrap();
+                let mut index_cursor = btree.open(index_rootpage);
+                index_cursor.open_readwrite().insert(index_key, encoded);
+            }
+
+            // 7. Add catalog entry
+            btree.insert_schema_entry(
+                "index",
+                &ci.index_name,
+                &ci.table_name,
+                index_rootpage,
+                sql,
+            );
+
+            Ok(ExecuteResult::CreateIndex {
+                index_name: ci.index_name.clone(),
+            })
         }
         Statement::Select(_)
         | Statement::Insert(_)
