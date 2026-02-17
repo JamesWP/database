@@ -82,6 +82,7 @@ pub enum Type {
     Join,
     On,
     Inner,
+    Index,
 
     #[allow(dead_code)]
     Error(Error),
@@ -531,6 +532,7 @@ impl<'a> Lexer<'a> {
                         _ => Type::Identifier(ident.to_owned()),
                     },
                     Some('n') => match_reserved(ident, "inner", Type::Inner),
+                    Some('d') => match_reserved(ident, "index", Type::Index),
                     _ => Type::Identifier(ident.to_owned()),
                 },
                 Some('s') => match_reserved(ident, "is", Type::Is),
@@ -765,6 +767,20 @@ mod test {
             .iter()
             .any(|t| matches!(t.tipe(), super::Type::FloatingPointNumber(4.5)));
         assert!(has_float_4_5, "Should have FloatingPointNumber(4.5)");
+    }
+
+    #[test]
+    fn test_index_keyword() {
+        let tokens = lex("CREATE INDEX idx_age ON users(age)");
+        let types: Vec<super::Type> = tokens.iter().map(|t| t.tipe()).collect();
+        assert!(matches!(types[0], super::Type::Create));
+        assert!(matches!(types[1], super::Type::Index));
+        assert!(matches!(types[2], super::Type::Identifier(_)));
+        assert!(matches!(types[3], super::Type::On));
+        assert!(matches!(types[4], super::Type::Identifier(_)));
+        assert!(matches!(types[5], super::Type::LeftParen));
+        assert!(matches!(types[6], super::Type::Identifier(_)));
+        assert!(matches!(types[7], super::Type::RightParen));
     }
 
     #[test]
