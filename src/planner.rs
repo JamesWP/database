@@ -267,11 +267,12 @@ pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanErro
                 plan_select_with_joins(select, btree)
             }
         }
-        Statement::CreateTable(_) => Err(PlanError::UnsupportedStatement),
+        Statement::CreateTable(_) | Statement::CreateIndex(_) | Statement::Drop(_) => {
+            Err(PlanError::UnsupportedStatement)
+        }
         Statement::Insert(insert) => plan_insert(insert, btree),
         Statement::Update(update) => plan_update(update, btree),
         Statement::Delete(delete) => plan_delete(delete, btree),
-        Statement::Drop(_) => Err(PlanError::UnsupportedStatement),
     }
 }
 
