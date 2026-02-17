@@ -45,6 +45,14 @@ pub struct CursorState {
 
 impl CursorState {}
 
+/// Metadata for a single index from the catalog
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub index_name: String,
+    pub column_name: String,
+    pub rootpage: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct CursorHandle {
     pager: Arc<RefCell<Pager>>,
@@ -812,6 +820,50 @@ impl BTree {
         }
     }
 
+    /// Look up all indexes for a table by scanning db_schema.
+    pub fn lookup_indexes_for_table(&self, table_name: &str) -> Vec<IndexInfo> {
+        let schema_root = match self.schema_root_page() {
+            Some(root) => root,
+            None => return vec![],
+        };
+
+        let mut indexes = Vec::new();
+        let mut cursor = self.open(schema_root);
+        let mut c = cursor.open_readonly();
+        c.first();
+
+        loop {
+            let entry = c.get_entry();
+            match entry {
+                None => break,
+                Some(mut reader) => {
+                    let values = reader.decode_as_array();
+                    // Row format: [type, name, tbl_name, rootpage, sql]
+                    if values.len() >= 5 {
+                        let obj_type = values[0].as_str().unwrap_or("");
+                        let tbl_name = values[2].as_str().unwrap_or("");
+
+                        if obj_type == "index" && tbl_name == table_name {
+                            let name = values[1].as_str().unwrap_or("").to_string();
+                            let rootpage = values[3].as_u64().unwrap() as u32;
+                            let sql = values[4].as_str().unwrap_or("");
+                            let column_name = extract_column_from_index_sql(sql);
+
+                            indexes.push(IndexInfo {
+                                index_name: name,
+                                column_name,
+                                rootpage,
+                            });
+                        }
+                    }
+                }
+            }
+            c.next();
+        }
+
+        indexes
+    }
+
     /// Delete a schema entry (table) from the catalog by table name.
     /// Returns true if the table was found and deleted, false if not found.
     pub fn delete_schema_entry(&mut self, table_name: &str) -> bool {
@@ -992,6 +1044,17 @@ impl Display for BTree {
 
         Ok(())
     }
+}
+
+/// Extract column name from a CREATE INDEX SQL string.
+/// "CREATE INDEX idx ON table(col)" → "col"
+fn extract_column_from_index_sql(sql: &str) -> String {
+    if let Some(start) = sql.find('(') {
+        if let Some(end) = sql[start..].find(')') {
+            return sql[start + 1..start + end].trim().to_string();
+        }
+    }
+    String::new()
 }
 
 #[cfg(test)]
@@ -1299,6 +1362,45 @@ mod test {
 
         let result = btree.lookup_table("nonexistent");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_lookup_indexes_empty() {
+        let test = TestDb::default();
+        let btree = test.btree;
+
+        let indexes = btree.lookup_indexes_for_table("users");
+        assert_eq!(indexes.len(), 0);
+    }
+
+    #[test]
+    fn test_lookup_indexes_for_table() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        // Insert a table and an index entry
+        let table_root = btree.create_tree();
+        btree.insert_schema_entry(
+            "table",
+            "users",
+            "users",
+            table_root,
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+        );
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry(
+            "index",
+            "idx_age",
+            "users",
+            index_root,
+            "CREATE INDEX idx_age ON users(age)",
+        );
+
+        let indexes = btree.lookup_indexes_for_table("users");
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes[0].index_name, "idx_age");
+        assert_eq!(indexes[0].column_name, "age");
+        assert_eq!(indexes[0].rootpage, index_root);
     }
 
     #[test]
