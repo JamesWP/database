@@ -71,6 +71,10 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::Index, lexer::Type::Index) => {
+                self.advance();
+                Ok(())
+            }
             (Expect::Insert, lexer::Type::Insert) => {
                 self.advance();
                 Ok(())
@@ -148,6 +152,7 @@ pub enum Expect {
     Select,
     Create,
     Table,
+    Index,
     Insert,
     Into,
     Values,
@@ -203,9 +208,18 @@ impl Parser {
     pub(crate) fn parse_statement(&mut self) -> ParseResult<ast::Statement> {
         match self.input.peek() {
             lexer::Type::Select => Ok(ast::Statement::Select(self.parse_select_statement()?)),
-            lexer::Type::Create => Ok(ast::Statement::CreateTable(
-                self.parse_create_table_statement()?,
-            )),
+            lexer::Type::Create => {
+                self.input.advance(); // consume CREATE
+                match self.input.peek() {
+                    lexer::Type::Table => Ok(ast::Statement::CreateTable(
+                        self.parse_create_table_statement_after_create()?,
+                    )),
+                    lexer::Type::Index => Ok(ast::Statement::CreateIndex(
+                        self.parse_create_index_statement()?,
+                    )),
+                    t => Err(ParseError::UnexpectedToken(Expect::Table, t)),
+                }
+            }
             lexer::Type::Insert => Ok(ast::Statement::Insert(self.parse_insert_statement()?)),
             lexer::Type::Update => Ok(ast::Statement::Update(self.parse_update_statement()?)),
             lexer::Type::Delete => Ok(ast::Statement::Delete(self.parse_delete_statement()?)),
@@ -334,6 +348,10 @@ impl Parser {
 
     fn parse_create_table_statement(&mut self) -> ParseResult<ast::CreateTableStatement> {
         self.input.expect(Expect::Create)?;
+        self.parse_create_table_statement_after_create()
+    }
+
+    fn parse_create_table_statement_after_create(&mut self) -> ParseResult<ast::CreateTableStatement> {
         self.input.expect(Expect::Table)?;
         let table_name = self.parse_identifier()?;
         self.input.expect(Expect::LeftParen)?;
@@ -350,6 +368,23 @@ impl Parser {
         Ok(ast::CreateTableStatement {
             table_name,
             columns,
+        })
+    }
+
+    fn parse_create_index_statement(&mut self) -> ParseResult<ast::CreateIndexStatement> {
+        // CREATE INDEX idx_name ON table_name(column_name)
+        // (CREATE already consumed by caller)
+        self.input.expect(Expect::Index)?;
+        let index_name = self.parse_identifier()?;
+        self.input.expect(Expect::On)?;
+        let table_name = self.parse_identifier()?;
+        self.input.expect(Expect::LeftParen)?;
+        let column_name = self.parse_identifier()?;
+        self.input.expect(Expect::RightParen)?;
+        Ok(ast::CreateIndexStatement {
+            index_name,
+            table_name,
+            column_name,
         })
     }
 
@@ -1181,6 +1216,20 @@ mod test {
                 assert!(matches!(select.columns[1], ast::ColumnExpression::Wildcard));
             }
             _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_index() {
+        let sql = "CREATE INDEX idx_age ON users(age)";
+        let stmt = parse(sql).unwrap();
+        match stmt {
+            ast::Statement::CreateIndex(ci) => {
+                assert_eq!(ci.index_name, "idx_age");
+                assert_eq!(ci.table_name, "users");
+                assert_eq!(ci.column_name, "age");
+            }
+            _ => panic!("Expected CreateIndex statement"),
         }
     }
 
