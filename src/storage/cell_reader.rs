@@ -1,12 +1,11 @@
 use crate::engine::scalarvalue::ScalarValue;
 
-use super::cell::Key;
 use super::node::NodePage;
 use super::pager::Pager;
 
 pub struct CellReader<'a> {
     pager: &'a Pager,
-    key: Key,
+    key: Vec<u8>,
     continuation: Option<u32>,
 
     // Owned buffer - safe, no dangling pointers
@@ -55,7 +54,7 @@ impl<'a> CellReader<'a> {
             .expect("Values are always supposed to be in leaf pages");
 
         let cell = leaf_page.get_item_at_index(cell_idx)?;
-        let key = cell.key();
+        let key = cell.key().to_vec();
         let continuation = cell.continuation();
         let value = cell.value();
 
@@ -71,8 +70,9 @@ impl<'a> CellReader<'a> {
         })
     }
 
-    pub fn key(&self) -> Key {
-        self.key
+    /// Returns the raw key bytes for this cell.
+    pub fn key(&self) -> &[u8] {
+        &self.key
     }
 
     pub fn decode_as_array(&mut self) -> Vec<ScalarValue> {
@@ -99,7 +99,7 @@ mod tests {
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(key, value.clone());
+            cursor.insert_u64(key, value.clone());
         }
 
         // Read it back with CellReader
@@ -109,7 +109,7 @@ mod tests {
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
-            assert_eq!(reader.key(), key);
+            assert_eq!(reader.key(), crate::storage::encode_u64_key(key).as_slice());
 
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf).unwrap();
@@ -131,7 +131,7 @@ mod tests {
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(key, value_json.clone());
+            cursor.insert_u64(key, value_json.clone());
         }
 
         // Read it back with CellReader
@@ -141,7 +141,7 @@ mod tests {
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
-            assert_eq!(reader.key(), key);
+            assert_eq!(reader.key(), crate::storage::encode_u64_key(key).as_slice());
 
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf).unwrap();
@@ -167,7 +167,7 @@ mod tests {
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(key, value_json.clone());
+            cursor.insert_u64(key, value_json.clone());
         }
 
         // Read it back with CellReader
@@ -177,7 +177,7 @@ mod tests {
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
-            assert_eq!(reader.key(), key);
+            assert_eq!(reader.key(), crate::storage::encode_u64_key(key).as_slice());
 
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf).unwrap();
@@ -207,7 +207,7 @@ mod tests {
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(key, value_bytes.clone());
+            cursor.insert_u64(key, value_bytes.clone());
         }
 
         // Read it back with CellReader
@@ -246,7 +246,7 @@ mod tests {
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(key, value_bytes.clone());
+            cursor.insert_u64(key, value_bytes.clone());
         }
 
         // Read it back with CellReader
@@ -281,7 +281,7 @@ mod tests {
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(key, value_bytes.clone());
+            cursor.insert_u64(key, value_bytes.clone());
         }
 
         // Read it back with CellReader

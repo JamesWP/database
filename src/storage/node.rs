@@ -12,7 +12,7 @@ pub enum NodePage {
 }
 
 impl NodePage {
-    pub fn search(&self, k: &Key) -> SearchResult {
+    pub fn search(&self, k: &[u8]) -> SearchResult {
         match self {
             NodePage::Leaf(l) => l.search(k),
             NodePage::Interior(i) => i.search(k),
@@ -58,7 +58,7 @@ impl NodePage {
 
     pub fn smallest_key(&self) -> Key {
         match self {
-            NodePage::Leaf(l) => l.cells.first().unwrap().key().clone(),
+            NodePage::Leaf(l) => l.cells.first().unwrap().key().to_vec(),
             NodePage::Interior(i) => i.keys.first().unwrap().clone(),
             _ => panic!(),
         }
@@ -66,7 +66,7 @@ impl NodePage {
 
     pub fn largest_key(&self) -> Key {
         match self {
-            NodePage::Leaf(l) => l.cells.last().unwrap().key().clone(),
+            NodePage::Leaf(l) => l.cells.last().unwrap().key().to_vec(),
             NodePage::Interior(i) => i.keys.last().unwrap().clone(),
             _ => panic!(),
         }
@@ -111,11 +111,11 @@ pub enum SearchResult {
 }
 
 impl LeafNodePage {
-    pub fn search(&self, search_key: &Key) -> SearchResult {
+    pub fn search(&self, search_key: &[u8]) -> SearchResult {
         // Simple linear search through the page.
         for (index, cell) in self.cells.iter().enumerate() {
             let cell_key = cell.key();
-            match search_key.cmp(&cell_key) {
+            match search_key.cmp(cell_key) {
                 Less => return SearchResult::NotPresent(index),
                 Equal => return SearchResult::Found(index),
                 Greater => {} // Continue the search
@@ -148,21 +148,15 @@ impl LeafNodePage {
     }
 
     pub fn get_key(&self, index: usize) -> Key {
-        self.cells[index].key()
+        self.cells[index].key().to_vec()
     }
 
     pub fn verify_key_ordering(&self) -> Result<(), VerifyError> {
-        let keys = || self.cells.iter().map(Cell::key);
-
-        for (left, right) in keys().zip(keys()) {
-            match left.cmp(&right) {
-                Less | Equal => { /* GOOD! */ }
-                Greater => {
-                    return Err(VerifyError::KeyOutOfOrder);
-                }
+        for window in self.cells.windows(2) {
+            if window[0].key() > window[1].key() {
+                return Err(VerifyError::KeyOutOfOrder);
             }
         }
-
         Ok(())
     }
 
@@ -223,17 +217,11 @@ impl InteriorNodePage {
     }
 
     pub fn verify_key_ordering(&self) -> Result<(), VerifyError> {
-        let keys = || self.keys.iter();
-
-        for (left, right) in keys().zip(keys()) {
-            match left.cmp(right) {
-                Less | Equal => { /* GOOD! */ }
-                Greater => {
-                    return Err(VerifyError::KeyOutOfOrder);
-                }
+        for window in self.keys.windows(2) {
+            if window[0] > window[1] {
+                return Err(VerifyError::KeyOutOfOrder);
             }
         }
-
         Ok(())
     }
 
@@ -241,9 +229,9 @@ impl InteriorNodePage {
         self.keys[edge].clone()
     }
 
-    fn search(&self, k: &Key) -> SearchResult {
+    fn search(&self, k: &[u8]) -> SearchResult {
         for (idx, key) in self.keys.iter().enumerate() {
-            match k.cmp(key) {
+            match k.cmp(key.as_slice()) {
                 Less => {
                     return SearchResult::GoDown(idx, self.edges[idx]);
                 }
@@ -263,7 +251,7 @@ impl InteriorNodePage {
 
     pub fn insert_child_page(&mut self, edge_page_smallest_key: Key, edge_page_idx: u32) {
         for (idx, key) in self.keys.iter().enumerate() {
-            match edge_page_smallest_key.cmp(key) {
+            match edge_page_smallest_key.as_slice().cmp(key.as_slice()) {
                 Less => {
                     self.edges.insert(idx + 1, edge_page_idx);
                     self.keys.insert(idx, edge_page_smallest_key);
@@ -291,17 +279,6 @@ impl InteriorNodePage {
 
           E is no longer required
         */
-
-        // InteriorNodePage {
-        //   keys:    [1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14], // len: 14, len/2: 7,
-        //   edges: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] // len: 15, len/2: 7
-
-        //   left_keys:    [1, 2, 3, 4, 5, 6, 7]
-        //   left_edges: [1, 1, 1, 1, 1, 1, 1, 1]
-
-        //   right_keys:    [9,10,11,12,13,14], // len: 14, len/2: 7,
-        //   right_edges: [1, 1, 1, 1, 1, 1, 1] // len: 15, len/2: 7
-        // }
 
         // invariant each of the two interior pages produced must have at least two child pages and one key
         assert!(self.keys.len() >= 3); // One key is removed in the split
@@ -359,21 +336,25 @@ mod test {
 
     use super::{InteriorNodePage, LeafNodePage, SearchResult};
 
+    fn make_key(k: u64) -> Vec<u8> {
+        k.to_be_bytes().to_vec()
+    }
+
     #[test]
     fn test_insertion_ordering() {
         let mut page = LeafNodePage::default();
 
         // []
-        page.insert_item_at_index(0, Cell::new(2, vec![0], None));
+        page.insert_item_at_index(0, Cell::new(make_key(2), vec![0], None));
         // [2]
-        page.insert_item_at_index(0, Cell::new(1, vec![0], None));
+        page.insert_item_at_index(0, Cell::new(make_key(1), vec![0], None));
         // [1, 2]
-        page.insert_item_at_index(2, Cell::new(3, vec![0], None));
+        page.insert_item_at_index(2, Cell::new(make_key(3), vec![0], None));
         // [1, 2, 3]
 
-        assert_eq!(page.cells[0].key(), 1);
-        assert_eq!(page.cells[1].key(), 2);
-        assert_eq!(page.cells[2].key(), 3);
+        assert_eq!(page.cells[0].key(), make_key(1).as_slice());
+        assert_eq!(page.cells[1].key(), make_key(2).as_slice());
+        assert_eq!(page.cells[2].key(), make_key(3).as_slice());
     }
 
     fn found_index(r: SearchResult) -> usize {
@@ -388,30 +369,58 @@ mod test {
     fn test_search() {
         let mut page = LeafNodePage::default();
 
-        page.insert_item_at_index(0, Cell::new(1, vec![0], None));
-        page.insert_item_at_index(1, Cell::new(2, vec![0], None));
-        page.insert_item_at_index(2, Cell::new(3, vec![0], None));
+        page.insert_item_at_index(0, Cell::new(make_key(1), vec![0], None));
+        page.insert_item_at_index(1, Cell::new(make_key(2), vec![0], None));
+        page.insert_item_at_index(2, Cell::new(make_key(3), vec![0], None));
 
         println!("Page: {:?}", page);
-        assert_eq!(0, found_index(page.search(&1)));
-        assert_eq!(1, found_index(page.search(&2)));
-        assert_eq!(2, found_index(page.search(&3)));
+        assert_eq!(0, found_index(page.search(&make_key(1))));
+        assert_eq!(1, found_index(page.search(&make_key(2))));
+        assert_eq!(2, found_index(page.search(&make_key(3))));
+    }
+
+    #[test]
+    fn test_lexicographic_ordering() {
+        // Verify that byte-slice comparison maintains lexicographic order.
+        // Keys "a" < "ab" < "b" < "ba"
+        let mut page = LeafNodePage::default();
+
+        let keys: Vec<Vec<u8>> = vec![b"a".to_vec(), b"ab".to_vec(), b"b".to_vec(), b"ba".to_vec()];
+
+        for (idx, key) in keys.iter().enumerate() {
+            let result = page.search(key);
+            match result {
+                SearchResult::NotPresent(i) => {
+                    page.insert_item_at_index(i, Cell::new(key.clone(), vec![idx as u8], None))
+                }
+                SearchResult::Found(_) => panic!("Unexpected duplicate"),
+                SearchResult::GoDown(_, _) => panic!(),
+            }
+        }
+
+        page.verify_key_ordering().unwrap();
+        assert_eq!(page.num_items(), 4);
+        assert_eq!(page.cells[0].key(), b"a");
+        assert_eq!(page.cells[1].key(), b"ab");
+        assert_eq!(page.cells[2].key(), b"b");
+        assert_eq!(page.cells[3].key(), b"ba");
     }
 
     use proptest::prelude::*;
 
     proptest! {
         #[test]
-        fn test_split(insertions in prop::collection::vec(&(0..100u64, 0..1000u64),0..100usize)) {
+        fn test_split(insertions in prop::collection::vec((0..100u64, 0..1000u64),0..100usize)) {
             let mut page = LeafNodePage::default();
 
             // Count num unique keys
             let n = insertions.iter().map(|(k,_)| k).collect::<HashSet<_>>().len();
 
             for (key, value) in insertions {
+                let key_bytes = key.to_be_bytes().to_vec();
                 let value = value.to_be_bytes().to_vec();
-                let cell = Cell::new(key, value, None);
-                let result = page.search(&key);
+                let cell = Cell::new(key_bytes.clone(), value, None);
+                let result = page.search(&key_bytes);
                 match result {
                     SearchResult::Found(idx) => page.set_item_at_index(idx, cell),
                     SearchResult::NotPresent(idx) => page.insert_item_at_index(idx, cell),
@@ -424,11 +433,7 @@ mod test {
             // Page has N elements, one for each unique key
             assert_eq!(n, page.num_items());
 
-            // println!("both {page:?}");
-
             let (left, right) = page.split();
-
-            // println!("left {left:?} <-> right {right:?}");
 
             // No items were lost in the making of these parts
             assert_eq!(left.num_items() + right.num_items(), n);
@@ -456,12 +461,12 @@ mod test {
 
           E is no longer required
         */
-        let (w, e, r) = (1, 2, 3);
-        let (a, s, d, f) = (10, 20, 30, 40);
+        let (w, e, r) = (make_key(1), make_key(2), make_key(3));
+        let (a, s, d, f) = (10u32, 20u32, 30u32, 40u32);
 
-        let mut interior_node = InteriorNodePage::new(a, w, s);
-        interior_node.insert_child_page(e, d);
-        interior_node.insert_child_page(r, f);
+        let mut interior_node = InteriorNodePage::new(a, w.clone(), s);
+        interior_node.insert_child_page(e.clone(), d);
+        interior_node.insert_child_page(r.clone(), f);
 
         assert_eq!(interior_node.edges, &[a, s, d, f]);
         assert_eq!(interior_node.keys, &[w, e, r]);
@@ -469,21 +474,20 @@ mod test {
         let (left, right) = interior_node.split();
 
         assert_eq!(left.edges, &[a, s]);
-        assert_eq!(left.keys, &[w]);
+        assert_eq!(left.keys, &[make_key(1)]);
 
         assert_eq!(right.edges, &[d, f]);
-        assert_eq!(right.keys, &[r]);
+        assert_eq!(right.keys, &[make_key(3)]);
     }
 
     proptest! {
         #[test]
         fn test_interior_page_split(interior_num_edges in 4u64..150) {
             let num_inserts = interior_num_edges-2; // there are already two edges in the interior page
-            let mut interior_node = InteriorNodePage::new(1, 1, 1);
+            let mut interior_node = InteriorNodePage::new(1, make_key(1), 1);
             for page in 0..num_inserts {
-                interior_node.insert_child_page(page+2,1);
+                interior_node.insert_child_page(make_key(page+2), 1);
             }
-            // println!("{interior_node:?}");
             let (_left, _right) = interior_node.split();
         }
     }

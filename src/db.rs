@@ -4,7 +4,7 @@ use crate::engine::Engine;
 use crate::frontend::ast::{DataType, Statement};
 use crate::frontend::{parse, ParseError};
 use crate::planner::{self, PlanError};
-use crate::storage::{encode_integer_key, BTree};
+use crate::storage::{decode_u64_key, encode_integer_key, BTree};
 
 #[derive(Debug)]
 pub enum ExecuteResult {
@@ -141,10 +141,14 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
             let parsed_ddl = parse(&ddl).map_err(ExecuteError::Parse)?;
             let create_table = match parsed_ddl {
                 Statement::CreateTable(ct) => ct,
-                _ => return Err(ExecuteError::Parse(crate::frontend::ParseError::UnexpectedToken(
-                    crate::frontend::parser::Expect::Table,
-                    crate::frontend::lexer::Type::Eof,
-                ))),
+                _ => {
+                    return Err(ExecuteError::Parse(
+                        crate::frontend::ParseError::UnexpectedToken(
+                            crate::frontend::parser::Expect::Table,
+                            crate::frontend::lexer::Type::Eof,
+                        ),
+                    ))
+                }
             };
 
             // 4. Find column and verify it's INTEGER (V1 restriction)
@@ -175,7 +179,7 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
 
             // 6. Scan table and collect (index_key, primary_key) pairs, then write to index.
             // We collect first to avoid holding readonly borrow while inserting (readwrite borrow).
-            let entries_to_index: Vec<(u64, i64)> = {
+            let entries_to_index: Vec<(Vec<u8>, i64)> = {
                 let mut table_cursor = btree.open(table_rootpage);
                 let mut tc = table_cursor.open_readonly();
                 tc.first();
@@ -184,14 +188,11 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                     match tc.get_entry() {
                         None => break,
                         Some(mut reader) => {
-                            let table_key = reader.key();
+                            let table_key = decode_u64_key(reader.key());
                             let values = reader.decode_as_array();
                             if column_idx < values.len() {
                                 if let ScalarValue::Integer(col_int) = values[column_idx] {
-                                    entries.push((
-                                        encode_integer_key(col_int),
-                                        table_key as i64,
-                                    ));
+                                    entries.push((encode_integer_key(col_int), table_key as i64));
                                 }
                             }
                         }
@@ -206,17 +207,11 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                 let mut encoded = Vec::new();
                 ciborium::ser::into_writer(&index_value, &mut encoded).unwrap();
                 let mut index_cursor = btree.open(index_rootpage);
-                index_cursor.open_readwrite().insert(index_key, encoded);
+                index_cursor.open_readwrite().insert(&index_key, encoded);
             }
 
             // 7. Add catalog entry
-            btree.insert_schema_entry(
-                "index",
-                &ci.index_name,
-                &ci.table_name,
-                index_rootpage,
-                sql,
-            );
+            btree.insert_schema_entry("index", &ci.index_name, &ci.table_name, index_rootpage, sql);
 
             Ok(ExecuteResult::CreateIndex {
                 index_name: ci.index_name.clone(),

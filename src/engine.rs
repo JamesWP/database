@@ -592,7 +592,7 @@ impl Engine {
                     program::MoveOperation::Next => cursor.next(),
                     program::MoveOperation::Last => cursor.last(),
                     program::MoveOperation::Find(_) => {
-                        cursor.find(find_key.unwrap());
+                        cursor.find_u64(find_key.unwrap());
                     }
                 }
             }
@@ -621,7 +621,7 @@ impl Engine {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readonly();
                 let entry = cursor.get_entry().unwrap();
-                let key = entry.key();
+                let key = storage::decode_u64_key(entry.key());
                 drop(cursor);
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Integer(key as i64));
@@ -645,7 +645,7 @@ impl Engine {
                 // Write to btree
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readwrite();
-                cursor.insert(key, bytes);
+                cursor.insert_u64(key, bytes);
             }
             DeleteCursor(cursor_reg) => {
                 // Delete at current cursor position
@@ -1184,13 +1184,13 @@ mod test {
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(12345), ScalarValue::Integer(6789)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert(0, v0);
+            c.insert_u64(0, v0);
             let mut v1 = Vec::new();
             let values = vec![ScalarValue::Integer(12345)];
             ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert(1, v1.clone());
-            c.insert(2, v1.clone());
-            c.insert(3, v1);
+            c.insert_u64(1, v1.clone());
+            c.insert_u64(2, v1.clone());
+            c.insert_u64(3, v1);
         }
 
         let r0 = Reg::new(0);
@@ -1232,13 +1232,13 @@ mod test {
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(12345), ScalarValue::Integer(6789)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert(0, v0);
+            c.insert_u64(0, v0);
             let mut v1 = Vec::new();
             let values = vec![ScalarValue::Integer(12345), ScalarValue::Integer(0)];
             ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert(1, v1.clone());
-            c.insert(2, v1.clone());
-            c.insert(3, v1);
+            c.insert_u64(1, v1.clone());
+            c.insert_u64(2, v1.clone());
+            c.insert_u64(3, v1);
         }
 
         let r0 = Reg::new(0);
@@ -1288,7 +1288,7 @@ mod test {
                 ScalarValue::Integer(30),
             ];
             ciborium::ser::into_writer(&values0, &mut v0).unwrap();
-            c.insert(0, v0);
+            c.insert_u64(0, v0);
             let mut v1 = Vec::new();
             let values1 = vec![
                 ScalarValue::Integer(2),
@@ -1296,7 +1296,7 @@ mod test {
                 ScalarValue::Integer(25),
             ];
             ciborium::ser::into_writer(&values1, &mut v1).unwrap();
-            c.insert(1, v1);
+            c.insert_u64(1, v1);
         }
 
         let r0 = Reg::new(0);
@@ -1371,11 +1371,11 @@ mod test {
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(100), ScalarValue::Integer(200)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert(0, v0);
+            c.insert_u64(0, v0);
             let mut v1 = Vec::new();
             let values = vec![ScalarValue::Integer(300), ScalarValue::Integer(400)];
             ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert(1, v1);
+            c.insert_u64(1, v1);
         }
 
         let r0 = Reg::new(0);
@@ -1491,15 +1491,15 @@ mod test {
             let mut v1 = Vec::new();
             let values = vec![ScalarValue::Integer(10)];
             ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert(1, v1);
+            c.insert_u64(1, v1);
             let mut v2 = Vec::new();
             let values = vec![ScalarValue::Integer(20)];
             ciborium::ser::into_writer(&values, &mut v2).unwrap();
-            c.insert(2, v2);
+            c.insert_u64(2, v2);
             let mut v5 = Vec::new();
             let values = vec![ScalarValue::Integer(50)];
             ciborium::ser::into_writer(&values, &mut v5).unwrap();
-            c.insert(5, v5);
+            c.insert_u64(5, v5);
         }
 
         let r_cursor = Reg::new(0);
@@ -1634,15 +1634,15 @@ mod test {
             let mut v10 = Vec::new();
             let values = vec![ScalarValue::Integer(100)];
             ciborium::ser::into_writer(&values, &mut v10).unwrap();
-            c.insert(10, v10);
+            c.insert_u64(10, v10);
             let mut v20 = Vec::new();
             let values = vec![ScalarValue::Integer(200)];
             ciborium::ser::into_writer(&values, &mut v20).unwrap();
-            c.insert(20, v20);
+            c.insert_u64(20, v20);
             let mut v30 = Vec::new();
             let values = vec![ScalarValue::Integer(300)];
             ciborium::ser::into_writer(&values, &mut v30).unwrap();
-            c.insert(30, v30);
+            c.insert_u64(30, v30);
         }
 
         let r_cursor = Reg::new(0);
@@ -1680,15 +1680,15 @@ mod test {
             let mut v1 = Vec::new();
             let values = vec![ScalarValue::Integer(10)];
             ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert(1, v1);
+            c.insert_u64(1, v1);
             let mut v2 = Vec::new();
             let values = vec![ScalarValue::Integer(20)];
             ciborium::ser::into_writer(&values, &mut v2).unwrap();
-            c.insert(2, v2);
+            c.insert_u64(2, v2);
             let mut v3 = Vec::new();
             let values = vec![ScalarValue::Integer(30)];
             ciborium::ser::into_writer(&values, &mut v3).unwrap();
-            c.insert(3, v3);
+            c.insert_u64(3, v3);
         }
 
         let r_cursor = Reg::new(0);
@@ -1867,15 +1867,15 @@ mod test {
             let mut v10 = Vec::new();
             let values = vec![ScalarValue::Integer(30)];
             ciborium::ser::into_writer(&values, &mut v10).unwrap();
-            c.insert(10, v10);
+            c.insert_u64(10, v10);
             let mut v20 = Vec::new();
             let values = vec![ScalarValue::Integer(10)];
             ciborium::ser::into_writer(&values, &mut v20).unwrap();
-            c.insert(20, v20);
+            c.insert_u64(20, v20);
             let mut v30 = Vec::new();
             let values = vec![ScalarValue::Integer(20)];
             ciborium::ser::into_writer(&values, &mut v30).unwrap();
-            c.insert(30, v30);
+            c.insert_u64(30, v30);
         }
 
         let r_buffer = Reg::new(0);
@@ -1952,7 +1952,7 @@ mod test {
                 ScalarValue::Integer(25),
             ];
             ciborium::ser::into_writer(&values1, &mut v1).unwrap();
-            c.insert(1, v1);
+            c.insert_u64(1, v1);
             let mut v2 = Vec::new();
             let values2 = vec![
                 ScalarValue::Integer(2),
@@ -1960,7 +1960,7 @@ mod test {
                 ScalarValue::Integer(30),
             ];
             ciborium::ser::into_writer(&values2, &mut v2).unwrap();
-            c.insert(2, v2);
+            c.insert_u64(2, v2);
             let mut v3 = Vec::new();
             let values3 = vec![
                 ScalarValue::Integer(3),
@@ -1968,7 +1968,7 @@ mod test {
                 ScalarValue::Integer(28),
             ];
             ciborium::ser::into_writer(&values3, &mut v3).unwrap();
-            c.insert(3, v3);
+            c.insert_u64(3, v3);
         }
 
         // Exact bytecode from debug.txt

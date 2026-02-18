@@ -31,7 +31,7 @@ enum CursorPosition {
     },
 
     /// Position was invalidated by a mutation — lazy seek on next use
-    RequiresSeek { saved_key: u64 },
+    RequiresSeek { saved_key: Vec<u8> },
 
     /// Iterated past the last key
     AtEnd,
@@ -101,7 +101,7 @@ impl<'a, PagerRef> Cursor<'a, PagerRef>
 where
     PagerRef: DerefMut<Target = Pager>,
 {
-    pub fn insert(&mut self, key: u64, value: Value) {
+    pub fn insert(&mut self, key: &[u8], value: Value) {
         assert!(value.len() > 0);
 
         // Save current cursor key if positioned, for RequiresSeek after insert
@@ -127,7 +127,7 @@ where
             (value, None)
         };
 
-        let cell = Cell::new(key, first_part, continuation);
+        let cell = Cell::new(key.to_vec(), first_part, continuation);
 
         // we maintain a stack of the nodes we decended through in case of needing to split them.
         // Starting at the root, we search to find:
@@ -140,7 +140,7 @@ where
         loop {
             let top_page_idx = *stack.last().unwrap();
             let mut top_page: NodePage = self.pager.get_and_decode(top_page_idx);
-            match top_page.search(&key) {
+            match top_page.search(key) {
                 SearchResult::Found(insertion_index) => {
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
@@ -171,6 +171,10 @@ where
         if let Some(saved_key) = saved_cursor_key {
             self.cursor_state.position = CursorPosition::RequiresSeek { saved_key };
         }
+    }
+
+    pub fn insert_u64(&mut self, key: u64, value: Value) {
+        self.insert(&encode_u64_key(key), value)
     }
 
     /// Updates a page with new content
@@ -320,7 +324,7 @@ where
 
     /// Delete a key from the B-tree.
     /// If the key exists, it is removed. If not, this is a no-op.
-    pub fn delete(&mut self, key: u64) {
+    pub fn delete(&mut self, key: &[u8]) {
         // Use find to position the cursor on the target leaf
         let found = self.find(key);
 
@@ -331,6 +335,10 @@ where
 
         // Delete at the current cursor position
         self.delete_current();
+    }
+
+    pub fn delete_u64(&mut self, key: u64) {
+        self.delete(&encode_u64_key(key))
     }
 }
 
@@ -343,8 +351,12 @@ where
     /// If the cursor is in RequiresSeek state, performs a find() to reposition.
     /// Returns true if the saved key was found, false if positioned at insertion point.
     fn ensure_positioned(&mut self) -> bool {
-        if let CursorPosition::RequiresSeek { saved_key } = self.cursor_state.position {
-            let found = self.find(saved_key);
+        let saved_key = match &self.cursor_state.position {
+            CursorPosition::RequiresSeek { saved_key } => Some(saved_key.clone()),
+            _ => None,
+        };
+        if let Some(key) = saved_key {
+            let found = self.find(&key);
             // find() sets position to Valid
             // - If found=true: positioned at the saved key
             // - If found=false: positioned at insertion point (successor of saved key)
@@ -432,14 +444,14 @@ where
     /// Move the cursor to point at the row in the btree identified by the given key
     /// Returns true if the key was found, false if not found.
     /// When false, the cursor is positioned where the key would be inserted.
-    pub fn find(&mut self, key: u64) -> bool {
+    pub fn find(&mut self, key: &[u8]) -> bool {
         let mut page_idx = self.cursor_state.root_page;
         let mut stack = Vec::new();
 
         loop {
             let page: NodePage = self.pager.get_and_decode(page_idx);
 
-            match page.search(&key) {
+            match page.search(key) {
                 SearchResult::Found(index) => {
                     self.cursor_state.position = CursorPosition::Valid {
                         stack,
@@ -463,11 +475,15 @@ where
         }
     }
 
+    pub fn find_u64(&mut self, key: u64) -> bool {
+        self.find(&encode_u64_key(key))
+    }
+
     #[allow(dead_code)]
     fn row_key(&mut self) -> Option<u64> {
         let cell = self.get_entry()?;
 
-        Some(cell.key())
+        Some(decode_u64_key(cell.key()))
     }
 
     pub fn get_entry<'b>(&'b mut self) -> Option<CellReader<'b>> {
@@ -755,7 +771,7 @@ impl BTree {
         // Find the maximum key by scanning backwards from the last entry
         c.last();
         if let Some(entry) = c.get_entry() {
-            entry.key() + 1
+            decode_u64_key(entry.key()) + 1
         } else {
             0
         }
@@ -788,7 +804,7 @@ impl BTree {
         let mut row = Vec::new();
         ciborium::ser::into_writer(&row_values, &mut row).unwrap();
         let mut cursor = self.open(schema_root);
-        cursor.open_readwrite().insert(key, row);
+        cursor.open_readwrite().insert_u64(key, row);
     }
 
     /// Look up a table's root page and DDL by scanning db_schema for a matching name.
@@ -943,8 +959,13 @@ impl BTree {
                             let value = cell.value();
                             let continuation = cell.continuation();
 
+                            let key_hex = key
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
                             println!("  {}:", format!("Cell {}", i).bright_blue());
-                            println!("    {}={}", "key".cyan(), key);
+                            println!("    {}={}", "key".cyan(), key_hex);
                             println!("    {}={}", "value_len".cyan(), value.len());
 
                             if let Some(cont_page) = continuation {
@@ -985,11 +1006,16 @@ impl BTree {
                         let child = interior.get_child_page_by_index(i);
                         if i > 0 {
                             let key = interior.get_key_by_index(i - 1);
+                            let key_hex = key
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
                             println!(
                                 "  {}: {}={}, {}={}",
                                 format!("Edge {}", i).bright_blue(),
                                 "key".cyan(),
-                                key,
+                                key_hex,
                                 "child_page".cyan(),
                                 child
                             );
@@ -1046,24 +1072,36 @@ impl Display for BTree {
     }
 }
 
-/// Encode an i64 integer column value to a u64 B-tree key, preserving sort order.
+/// Encode an i64 integer column value to a variable-length B-tree key, preserving sort order.
 ///
 /// Flips the sign bit so that negative numbers sort before positive numbers
-/// in unsigned key comparison, matching SQL sort order for integers.
+/// in big-endian byte comparison, matching SQL sort order for integers.
 ///
 /// Examples:
-///   i64::MIN → 0x0000_0000_0000_0000
-///        -1  → 0x7FFF_FFFF_FFFF_FFFF
-///         0  → 0x8000_0000_0000_0000
-///         1  → 0x8000_0000_0000_0001
-///   i64::MAX → 0xFFFF_FFFF_FFFF_FFFF
-pub fn encode_integer_key(i: i64) -> u64 {
-    (i as u64) ^ 0x8000_0000_0000_0000
+///   i64::MIN → [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+///        -1  → [0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+///         0  → [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+///         1  → [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]
+///   i64::MAX → [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+pub fn encode_integer_key(i: i64) -> Vec<u8> {
+    let encoded = (i as u64) ^ 0x8000_0000_0000_0000;
+    encoded.to_be_bytes().to_vec()
 }
 
-/// Decode a u64 index key back to the original i64 column value.
-pub fn decode_integer_key(key: u64) -> i64 {
-    (key ^ 0x8000_0000_0000_0000) as i64
+/// Decode a variable-length index key back to the original i64 column value.
+pub fn decode_integer_key(bytes: &[u8]) -> i64 {
+    let val = u64::from_be_bytes(bytes.try_into().unwrap());
+    (val ^ 0x8000_0000_0000_0000) as i64
+}
+
+/// Encode a u64 row key as big-endian bytes, preserving sort order.
+pub fn encode_u64_key(key: u64) -> Vec<u8> {
+    key.to_be_bytes().to_vec()
+}
+
+/// Decode a big-endian byte key back to u64.
+pub fn decode_u64_key(bytes: &[u8]) -> u64 {
+    u64::from_be_bytes(bytes.try_into().unwrap())
 }
 
 /// Extract column name from a CREATE INDEX SQL string.
@@ -1132,7 +1170,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
 
-            cursor.insert(42, vec![42, 255, 64]);
+            cursor.insert_u64(42, vec![42, 255, 64]);
         }
 
         // Test we can read out the new value
@@ -1162,7 +1200,7 @@ mod test {
 
             for i in 1..10u64 {
                 let value = i.to_be_bytes().to_vec();
-                cursor.insert(i, value);
+                cursor.insert_u64(i, value);
             }
         }
 
@@ -1198,7 +1236,7 @@ mod test {
 
             for i in 1..10u64 {
                 let value = i.to_be_bytes().to_vec();
-                cursor.insert(i, value);
+                cursor.insert_u64(i, value);
             }
         }
 
@@ -1207,7 +1245,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
 
-            cursor.find(7);
+            cursor.find_u64(7);
 
             for i in 7..10u64 {
                 let mut buf = [0; 8];
@@ -1232,10 +1270,10 @@ mod test {
 
         let long_string = |s: &str, num| s.repeat(num).into_bytes();
 
-        cursor.insert(1, long_string("AA", 263));
-        cursor.insert(10, long_string("BBBB", 900));
+        cursor.insert_u64(1, long_string("AA", 263));
+        cursor.insert_u64(10, long_string("BBBB", 900));
         cursor.debug("");
-        cursor.insert(11, long_string("C", 1));
+        cursor.insert_u64(11, long_string("C", 1));
 
         cursor.first();
         cursor.debug("");
@@ -1275,7 +1313,7 @@ mod test {
             let value = v.to_string().repeat(len).as_bytes().to_vec();
 
             rust_btree.insert(k, value.clone());
-            cursor.insert(k, value);
+            cursor.insert_u64(k, value);
         }
 
         cursor.verify().unwrap();
@@ -1388,9 +1426,9 @@ mod test {
     fn test_integer_key_encoding_order() {
         use super::{decode_integer_key, encode_integer_key};
         let values = [-100i64, -1, 0, 1, 100];
-        let encoded: Vec<u64> = values.iter().map(|&v| encode_integer_key(v)).collect();
+        let encoded: Vec<Vec<u8>> = values.iter().map(|&v| encode_integer_key(v)).collect();
 
-        // Encoded keys maintain sort order
+        // Encoded keys maintain sort order (Vec<u8> compares lexicographically)
         for i in 1..encoded.len() {
             assert!(
                 encoded[i - 1] < encoded[i],
@@ -1401,7 +1439,7 @@ mod test {
 
         // Round-trip decode
         for (i, &v) in values.iter().enumerate() {
-            assert_eq!(decode_integer_key(encoded[i]), v);
+            assert_eq!(decode_integer_key(&encoded[i]), v);
         }
     }
 
@@ -1611,7 +1649,7 @@ mod test {
             let mut c = cursor.open_readwrite();
             for i in 0..100u64 {
                 let value = format!("[{}, \"row_{}\"]", i, i);
-                c.insert(i, value.into_bytes());
+                c.insert_u64(i, value.into_bytes());
             }
         }
 
@@ -1659,21 +1697,21 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(1, b"first".to_vec());
+            cursor.insert_u64(1, b"first".to_vec());
         }
 
         // Insert key=1 again with value "second"
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(1, b"second".to_vec());
+            cursor.insert_u64(1, b"second".to_vec());
         }
 
         // Read back and verify it's "second"
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
-            cursor.find(1);
+            cursor.find_u64(1);
             let mut buf = vec![];
             cursor
                 .get_entry()
@@ -1695,16 +1733,16 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(1, b"one".to_vec());
-            cursor.insert(3, b"three".to_vec());
-            cursor.insert(5, b"five".to_vec());
+            cursor.insert_u64(1, b"one".to_vec());
+            cursor.insert_u64(3, b"three".to_vec());
+            cursor.insert_u64(5, b"five".to_vec());
         }
 
         // Try to find key 2 (doesn't exist)
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
-            cursor.find(2);
+            cursor.find_u64(2);
             // After find() for non-existent key, cursor should be positioned
             // but get_entry() should return None (or positioned at next key)
             // Current implementation positions at the spot where it would be inserted
@@ -1724,7 +1762,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 0..10u64 {
-                cursor.insert(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
             }
         }
 
@@ -1734,7 +1772,7 @@ mod test {
             let mut cursor = cursor_handle.open_readonly();
 
             // Find key 5
-            cursor.find(5);
+            cursor.find_u64(5);
             let mut buf = [0u8; 8];
             cursor
                 .get_entry()
@@ -1785,7 +1823,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for &key in &keys {
-                cursor.insert(key, key.to_be_bytes().to_vec());
+                cursor.insert_u64(key, key.to_be_bytes().to_vec());
             }
         }
 
@@ -1823,9 +1861,9 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(1, b"one".to_vec());
-            cursor.insert(2, b"two".to_vec());
-            cursor.insert(3, b"three".to_vec());
+            cursor.insert_u64(1, b"one".to_vec());
+            cursor.insert_u64(2, b"two".to_vec());
+            cursor.insert_u64(3, b"three".to_vec());
         }
 
         // Call last() and verify we get key 3
@@ -1856,7 +1894,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 0..100u64 {
-                cursor.insert(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
             }
         }
 
@@ -1888,7 +1926,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=5u64 {
-                cursor.insert(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
             }
         }
 
@@ -1925,14 +1963,14 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(42, b"the answer".to_vec());
+            cursor.insert_u64(42, b"the answer".to_vec());
         }
 
         // find(42) should return true
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
-            let found = cursor.find(42);
+            let found = cursor.find_u64(42);
             assert!(found, "find() should return true for existing key");
 
             // Verify we can read the value
@@ -1957,16 +1995,16 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(1, b"one".to_vec());
-            cursor.insert(3, b"three".to_vec());
-            cursor.insert(5, b"five".to_vec());
+            cursor.insert_u64(1, b"one".to_vec());
+            cursor.insert_u64(3, b"three".to_vec());
+            cursor.insert_u64(5, b"five".to_vec());
         }
 
         // find(2) should return false (2 doesn't exist)
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
-            let found = cursor.find(2);
+            let found = cursor.find_u64(2);
             assert!(!found, "find() should return false for non-existent key");
         }
 
@@ -1974,7 +2012,7 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
-            let found = cursor.find(4);
+            let found = cursor.find_u64(4);
             assert!(!found, "find() should return false for non-existent key");
         }
     }
@@ -1989,14 +2027,14 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(42, b"hello".to_vec());
+            cursor.insert_u64(42, b"hello".to_vec());
         }
 
         // Verify it exists
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
-            let found = cursor.find(42);
+            let found = cursor.find_u64(42);
             assert!(found, "Key 42 should exist before deletion");
         }
 
@@ -2004,14 +2042,14 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.delete(42);
+            cursor.delete_u64(42);
         }
 
         // Verify it's gone
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
-            let found = cursor.find(42);
+            let found = cursor.find_u64(42);
             assert!(!found, "Key 42 should not exist after deletion");
         }
     }
@@ -2026,23 +2064,23 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(10, b"ten".to_vec());
-            cursor.insert(20, b"twenty".to_vec());
+            cursor.insert_u64(10, b"ten".to_vec());
+            cursor.insert_u64(20, b"twenty".to_vec());
         }
 
         // Try to delete a non-existent key (should be no-op)
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.delete(15); // Key 15 doesn't exist
+            cursor.delete_u64(15); // Key 15 doesn't exist
         }
 
         // Verify original keys still exist
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
-            assert!(cursor.find(10), "Key 10 should still exist");
-            assert!(cursor.find(20), "Key 20 should still exist");
+            assert!(cursor.find_u64(10), "Key 10 should still exist");
+            assert!(cursor.find_u64(20), "Key 20 should still exist");
         }
     }
 
@@ -2058,7 +2096,7 @@ mod test {
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=200u64 {
                 let value = format!("value_{}", i).into_bytes();
-                cursor.insert(i, value);
+                cursor.insert_u64(i, value);
             }
         }
 
@@ -2066,16 +2104,16 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.delete(100);
+            cursor.delete_u64(100);
         }
 
         // Verify key 100 is gone but neighbors exist
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
-            assert!(cursor.find(99), "Key 99 should still exist");
-            assert!(!cursor.find(100), "Key 100 should be deleted");
-            assert!(cursor.find(101), "Key 101 should still exist");
+            assert!(cursor.find_u64(99), "Key 99 should still exist");
+            assert!(!cursor.find_u64(100), "Key 100 should be deleted");
+            assert!(cursor.find_u64(101), "Key 101 should still exist");
         }
     }
 
@@ -2090,7 +2128,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=5u64 {
-                cursor.insert(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
             }
         }
 
@@ -2098,24 +2136,30 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.delete(3);
+            cursor.delete_u64(3);
         }
 
         // Scan and verify we see 1, 2, 4, 5 (not 3)
         {
+            use super::encode_u64_key;
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readonly();
             cursor.first();
 
             let mut keys = Vec::new();
             while let Some(entry) = cursor.get_entry() {
-                keys.push(entry.key());
+                keys.push(entry.key().to_vec());
                 cursor.next();
             }
 
             assert_eq!(
                 keys,
-                vec![1, 2, 4, 5],
+                vec![
+                    encode_u64_key(1),
+                    encode_u64_key(2),
+                    encode_u64_key(4),
+                    encode_u64_key(5)
+                ],
                 "Should see all keys except deleted key 3"
             );
         }
@@ -2132,7 +2176,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=10u64 {
-                cursor.insert(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
             }
         }
 
@@ -2141,7 +2185,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=10u64 {
-                cursor.delete(i);
+                cursor.delete_u64(i);
             }
         }
 
@@ -2172,10 +2216,12 @@ mod test {
         // Insert some values
         {
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(1, b"one".to_vec());
-            cursor.insert(2, b"two".to_vec());
-            cursor.insert(3, b"three".to_vec());
+            cursor.insert_u64(1, b"one".to_vec());
+            cursor.insert_u64(2, b"two".to_vec());
+            cursor.insert_u64(3, b"three".to_vec());
         }
+
+        use super::encode_u64_key;
 
         // After first(), should be Valid
         {
@@ -2185,7 +2231,10 @@ mod test {
                 cursor.cursor_state.position,
                 CursorPosition::Valid { .. }
             ));
-            assert_eq!(cursor.get_entry().unwrap().key(), 1);
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(1).as_slice()
+            );
         }
 
         // Navigate through all entries
@@ -2197,14 +2246,20 @@ mod test {
                 cursor.cursor_state.position,
                 CursorPosition::Valid { .. }
             ));
-            assert_eq!(cursor.get_entry().unwrap().key(), 2);
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(2).as_slice()
+            );
 
             cursor.next(); // Move to key 3
             assert!(matches!(
                 cursor.cursor_state.position,
                 CursorPosition::Valid { .. }
             ));
-            assert_eq!(cursor.get_entry().unwrap().key(), 3);
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(3).as_slice()
+            );
 
             cursor.next(); // Move past end
             assert_eq!(cursor.cursor_state.position, CursorPosition::AtEnd);
@@ -2234,21 +2289,25 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=5u64 {
-                cursor.insert(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
             }
         }
 
         // Position at key 3, delete it, verify next() gives us 4
         {
+            use super::encode_u64_key;
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.find(3);
+            cursor.find_u64(3);
             cursor.delete_current();
 
             // After delete, cursor is in RequiresSeek state with saved_key=3
             // next() should call ensure_positioned() -> find(3) -> lands on 4
             cursor.next();
-            assert_eq!(cursor.get_entry().unwrap().key(), 4);
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(4).as_slice()
+            );
         }
     }
 
@@ -2264,7 +2323,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=3u64 {
-                cursor.insert(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
             }
         }
 
@@ -2272,7 +2331,7 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.find(3);
+            cursor.find_u64(3);
             cursor.delete_current();
             cursor.next();
             assert_eq!(cursor.cursor_state.position, CursorPosition::AtEnd);
@@ -2291,20 +2350,24 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.insert(1, b"one".to_vec());
-            cursor.insert(3, b"three".to_vec());
-            cursor.insert(5, b"five".to_vec());
+            cursor.insert_u64(1, b"one".to_vec());
+            cursor.insert_u64(3, b"three".to_vec());
+            cursor.insert_u64(5, b"five".to_vec());
         }
 
         // Position at key 1, insert key 2, verify we can continue iteration
         {
+            use super::encode_u64_key;
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.find(1);
-            cursor.insert(2, b"two".to_vec());
+            cursor.find_u64(1);
+            cursor.insert_u64(2, b"two".to_vec());
             // After insert, cursor is in RequiresSeek state with saved_key=1
             cursor.next();
-            assert_eq!(cursor.get_entry().unwrap().key(), 2);
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(2).as_slice()
+            );
         }
     }
 
@@ -2320,25 +2383,32 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=50u64 {
-                cursor.insert(i, format!("value_{}", i).into_bytes());
+                cursor.insert_u64(i, format!("value_{}", i).into_bytes());
             }
         }
 
         // Position at key 10, insert more keys to force split, verify iteration
         {
+            use super::encode_u64_key;
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.find(10);
+            cursor.find_u64(10);
 
             // Insert 50 more keys to force splits
             for i in 51..=100u64 {
-                cursor.insert(i, format!("value_{}", i).into_bytes());
+                cursor.insert_u64(i, format!("value_{}", i).into_bytes());
             }
 
             // Cursor should still be able to navigate from key 10
-            assert_eq!(cursor.get_entry().unwrap().key(), 10);
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(10).as_slice()
+            );
             cursor.next();
-            assert_eq!(cursor.get_entry().unwrap().key(), 11);
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(11).as_slice()
+            );
         }
     }
 
@@ -2354,7 +2424,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=10u64 {
-                cursor.insert(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
             }
         }
 
@@ -2393,20 +2463,21 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
             for i in 1..=3u64 {
-                cursor.insert(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
             }
         }
 
         // Position at key 2, delete it, verify get_entry() still works
         {
+            use super::encode_u64_key;
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
-            cursor.find(2);
+            cursor.find_u64(2);
             cursor.delete_current();
 
             // get_entry() should trigger ensure_positioned() and find key 3
             let entry = cursor.get_entry().unwrap();
-            assert_eq!(entry.key(), 3);
+            assert_eq!(entry.key(), encode_u64_key(3).as_slice());
         }
     }
 
@@ -2418,30 +2489,207 @@ mod test {
         let root = btree.create_tree();
 
         {
+            use super::encode_u64_key;
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_readwrite();
 
             // Insert multiple values
-            cursor.insert(1, b"value1".to_vec());
-            cursor.insert(2, b"value2".to_vec());
-            cursor.insert(3, b"value3".to_vec());
+            cursor.insert_u64(1, b"value1".to_vec());
+            cursor.insert_u64(2, b"value2".to_vec());
+            cursor.insert_u64(3, b"value3".to_vec());
 
             // Position using first()
             cursor.first();
 
             // Should be positioned on first entry
             let entry = cursor.get_entry().expect("Should find first entry");
-            assert_eq!(entry.key(), 1);
+            assert_eq!(entry.key(), encode_u64_key(1).as_slice());
 
             // Navigate to next
             cursor.next();
             let entry = cursor.get_entry().expect("Should find second entry");
-            assert_eq!(entry.key(), 2);
+            assert_eq!(entry.key(), encode_u64_key(2).as_slice());
 
             // Navigate to next again
             cursor.next();
             let entry = cursor.get_entry().expect("Should find third entry");
-            assert_eq!(entry.key(), 3);
+            assert_eq!(entry.key(), encode_u64_key(3).as_slice());
+        }
+    }
+
+    // ========================================================================
+    // Variable-length key tests (Step 41.7)
+    // ========================================================================
+
+    #[test]
+    fn test_variable_length_keys_ordering() {
+        // Keys of different lengths should sort lexicographically:
+        // "a" < "ab" < "abc" < "b"
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let keys: Vec<&[u8]> = vec![b"abc", b"b", b"a", b"ab"];
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for key in &keys {
+                cursor.insert(key, b"value".to_vec());
+            }
+        }
+
+        // Scan and verify sorted order
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+
+            let expected_order: Vec<&[u8]> = vec![b"a", b"ab", b"abc", b"b"];
+            for expected_key in expected_order {
+                let entry = cursor.get_entry().expect("Should have entry");
+                assert_eq!(entry.key(), expected_key);
+                cursor.next();
+            }
+            assert!(cursor.get_entry().is_none(), "Should be at end");
+        }
+    }
+
+    #[test]
+    fn test_variable_length_keys_long_key() {
+        // Keys up to 1KB should work correctly
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let long_key: Vec<u8> = (0u8..=255).cycle().take(1024).collect();
+        let short_key: Vec<u8> = b"short".to_vec();
+        let medium_key: Vec<u8> = b"medium_length_key_here".to_vec();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(&long_key, b"long_value".to_vec());
+            cursor.insert(&short_key, b"short_value".to_vec());
+            cursor.insert(&medium_key, b"medium_value".to_vec());
+        }
+
+        // Verify long key can be found and read back
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            let found = cursor.find(&long_key);
+            assert!(found, "Long key should be found");
+            let entry = cursor.get_entry().unwrap();
+            assert_eq!(entry.key(), long_key.as_slice());
+        }
+
+        // Verify short key can be found
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            let found = cursor.find(&short_key);
+            assert!(found, "Short key should be found");
+        }
+    }
+
+    #[test]
+    fn test_variable_length_keys_mixed_lengths() {
+        // Mix of 1-byte, 4-byte, 8-byte, and 16-byte keys should all sort correctly
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let keys: Vec<Vec<u8>> = vec![
+            vec![0x01],
+            vec![0x00, 0x00, 0x00, 0x01],
+            vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+            vec![0x00; 16],
+            vec![0xFF],
+            vec![0x00, 0xFF],
+        ];
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for key in &keys {
+                cursor.insert(key, b"v".to_vec());
+            }
+        }
+
+        // Scan and verify they come back in sorted order
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+
+            let mut prev_key: Vec<u8> = vec![];
+            let mut count = 0;
+            while let Some(entry) = cursor.get_entry() {
+                let k = entry.key().to_vec();
+                assert!(
+                    k > prev_key,
+                    "Keys must be strictly increasing: {:?} > {:?}",
+                    k,
+                    prev_key
+                );
+                prev_key = k;
+                count += 1;
+                cursor.next();
+            }
+            assert_eq!(count, keys.len(), "All keys should be present");
+        }
+    }
+
+    #[test]
+    fn test_variable_length_keys_splits() {
+        // Insert many variable-length keys to trigger B-tree splits
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Generate variable-length keys of varying sizes
+        let mut keys: Vec<Vec<u8>> = (0u32..200)
+            .map(|i| {
+                let len = 1 + (i as usize % 20); // lengths 1..20
+                let mut k = vec![0u8; len];
+                k[0] = (i >> 8) as u8;
+                if len > 1 {
+                    k[1] = (i & 0xFF) as u8;
+                }
+                k
+            })
+            .collect();
+
+        // Deduplicate and sort to get the canonical set
+        keys.sort();
+        keys.dedup();
+        let num_keys = keys.len();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for key in &keys {
+                cursor.insert(key, b"val".to_vec());
+            }
+            cursor.verify().unwrap();
+        }
+
+        // Scan and verify all keys present in sorted order
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+
+            let mut count = 0;
+            let mut prev_key: Vec<u8> = vec![];
+            while let Some(entry) = cursor.get_entry() {
+                let k = entry.key().to_vec();
+                assert!(k > prev_key, "Keys must be strictly increasing");
+                prev_key = k;
+                count += 1;
+                cursor.next();
+            }
+            assert_eq!(count, num_keys, "All keys should be accessible after splits");
         }
     }
 }
