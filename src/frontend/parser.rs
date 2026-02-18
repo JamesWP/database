@@ -346,7 +346,9 @@ impl Parser {
         Ok(ast::DropTableStatement { table_name })
     }
 
-    fn parse_create_table_statement_after_create(&mut self) -> ParseResult<ast::CreateTableStatement> {
+    fn parse_create_table_statement_after_create(
+        &mut self,
+    ) -> ParseResult<ast::CreateTableStatement> {
         self.input.expect(Expect::Table)?;
         let table_name = self.parse_identifier()?;
         self.input.expect(Expect::LeftParen)?;

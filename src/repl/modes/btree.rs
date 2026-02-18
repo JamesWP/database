@@ -153,7 +153,7 @@ impl Mode for BTreeMode {
                     Err(_) => return CommandResult::Error("Invalid key (must be u64)".to_string()),
                 };
                 self.with_cursor(|cursor| {
-                    cursor.handle.open_readonly().find(key);
+                    cursor.handle.open_readonly().find_u64(key);
                     CommandResult::Ok
                 })
             }
@@ -190,7 +190,7 @@ impl Mode for BTreeMode {
                     cursor
                         .handle
                         .open_readwrite()
-                        .insert(key, value.into_bytes());
+                        .insert_u64(key, value.into_bytes());
                     CommandResult::Message(format!("Inserted key {}", key))
                 })
             }
@@ -222,7 +222,7 @@ impl Mode for BTreeMode {
                         let key =
                             rng.sample(rand::distributions::Uniform::new(1 << 10, 1u64 << 32));
 
-                        cursor.handle.open_readwrite().insert(key, bytes);
+                        cursor.handle.open_readwrite().insert_u64(key, bytes);
                     }
                     CommandResult::Message(format!(
                         "Inserted {} items with random size up to {}",
@@ -389,12 +389,17 @@ fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {
             ControlFlow::Break(())
         }
         Some(mut entry) => {
-            let key = entry.key();
+            let key_hex = entry
+                .key()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join("");
             let mut value_buf = Vec::new();
             let value_size = entry.read_to_end(&mut value_buf);
 
             if value_size.is_err() {
-                println!("Entry: key={}, value=<unable to read value>", key);
+                println!("Entry: key={}, value=<unable to read value>", key_hex);
                 return ControlFlow::Continue(());
             }
 
@@ -408,11 +413,11 @@ fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {
             {
                 let display = format!("{:?}", scalar_values);
                 if display.len() < 80 {
-                    println!("Entry: key={}, len={} value={}", key, len, display);
+                    println!("Entry: key={}, len={} value={}", key_hex, len, display);
                 } else {
                     println!(
                         "Entry: key={}, len={} value=<redacted {} items>",
-                        key,
+                        key_hex,
                         len,
                         scalar_values.len()
                     );
@@ -423,9 +428,9 @@ fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {
             // Try UTF-8 decoding
             if let Ok(str_value) = String::from_utf8(value_buf.clone()) {
                 if str_value.len() < 80 {
-                    println!("Entry: key={}, len={} value={}", key, len, str_value);
+                    println!("Entry: key={}, len={} value={}", key_hex, len, str_value);
                 } else {
-                    println!("Entry: key={}, len={} value=<redacted text>", key, len);
+                    println!("Entry: key={}, len={} value=<redacted text>", key_hex, len);
                 }
                 return ControlFlow::Continue(());
             }
@@ -440,7 +445,7 @@ fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {
             let suffix = if value_buf.len() > 16 { "..." } else { "" };
             println!(
                 "Entry: key={}, len={} value=<binary: {}{}>",
-                key, len, hex_preview, suffix
+                key_hex, len, hex_preview, suffix
             );
 
             ControlFlow::Continue(())

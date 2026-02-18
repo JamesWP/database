@@ -2648,7 +2648,7 @@ mod tests {
             let mut c = cursor.open_readwrite();
             let mut buf = Vec::new();
             ciborium::ser::into_writer(&values, &mut buf).unwrap();
-            c.insert(1, buf); // key 1 (catalog row 0 is self-referencing db_schema)
+            c.insert_u64(1, buf); // key 1 (catalog row 0 is self-referencing db_schema)
         }
 
         // Create employees table (id, name, dept_id)
@@ -2667,7 +2667,7 @@ mod tests {
             let mut c = cursor.open_readwrite();
             let mut buf = Vec::new();
             ciborium::ser::into_writer(&values, &mut buf).unwrap();
-            c.insert(2, buf); // key 2
+            c.insert_u64(2, buf); // key 2
         }
 
         // Plan: "SELECT e.name, d.name FROM employees AS e JOIN departments AS d ON e.dept_id = d.id"

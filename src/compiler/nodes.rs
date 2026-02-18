@@ -1424,15 +1424,15 @@ mod tests {
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(1), ScalarValue::Integer(100)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert(0, v0);
+            c.insert_u64(0, v0);
             let mut v1 = Vec::new();
             let values = vec![ScalarValue::Integer(2), ScalarValue::Integer(200)];
             ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert(1, v1);
+            c.insert_u64(1, v1);
             let mut v2 = Vec::new();
             let values = vec![ScalarValue::Integer(3), ScalarValue::Integer(300)];
             ciborium::ser::into_writer(&values, &mut v2).unwrap();
-            c.insert(2, v2);
+            c.insert_u64(2, v2);
         }
 
         // Build plan: Count { Scan { rootpage, 2 columns } }
@@ -1494,11 +1494,11 @@ mod tests {
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(10), ScalarValue::Integer(20)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert(0, v0);
+            c.insert_u64(0, v0);
             let mut v1 = Vec::new();
             let values = vec![ScalarValue::Integer(30), ScalarValue::Integer(40)];
             ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert(1, v1);
+            c.insert_u64(1, v1);
         }
 
         let plan = LogicalPlan::Scan {
