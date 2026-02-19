@@ -5,6 +5,7 @@ pub enum ScalarValue {
     Floating(f64),
     Boolean(bool),
     String(String),
+    Blob(Vec<u8>),
     Null,
 }
 
@@ -30,8 +31,12 @@ impl std::hash::Hash for ScalarValue {
                 3u8.hash(state);
                 s.hash(state);
             }
-            ScalarValue::Null => {
+            ScalarValue::Blob(b) => {
                 4u8.hash(state);
+                b.hash(state);
+            }
+            ScalarValue::Null => {
+                5u8.hash(state);
             }
         }
     }
@@ -65,7 +70,9 @@ macro_rules! numeric_ops {
                     (ScalarValue::Boolean(_), _)
                     | (_, ScalarValue::Boolean(_))
                     | (ScalarValue::String(_), _)
-                    | (_, ScalarValue::String(_)) => {
+                    | (_, ScalarValue::String(_))
+                    | (ScalarValue::Blob(_), _)
+                    | (_, ScalarValue::Blob(_)) => {
                         panic!("invalid types for numeric operation")
                     }
                 }
@@ -87,7 +94,7 @@ impl core::ops::Neg for ScalarValue {
             ScalarValue::Null => ScalarValue::Null,
             ScalarValue::Integer(v) => ScalarValue::Integer(-v),
             ScalarValue::Floating(v) => ScalarValue::Floating(-v),
-            ScalarValue::Boolean(_) | ScalarValue::String(_) => {
+            ScalarValue::Boolean(_) | ScalarValue::String(_) | ScalarValue::Blob(_) => {
                 panic!("cannot negate non-numeric type")
             }
         }
@@ -114,7 +121,10 @@ impl core::ops::Add for ScalarValue {
                 ScalarValue::Floating(lhs + rhs)
             }
             (ScalarValue::String(lhs), ScalarValue::String(rhs)) => ScalarValue::String(lhs + &rhs),
-            (ScalarValue::Boolean(_), _) | (_, ScalarValue::Boolean(_)) => {
+            (ScalarValue::Boolean(_), _)
+            | (_, ScalarValue::Boolean(_))
+            | (ScalarValue::Blob(_), _)
+            | (_, ScalarValue::Blob(_)) => {
                 panic!("invalid types for add operation")
             }
             (ScalarValue::String(_), _) | (_, ScalarValue::String(_)) => {
@@ -138,6 +148,7 @@ impl PartialOrd for ScalarValue {
                 lhs.partial_cmp(&(*rhs as f64))
             }
             (ScalarValue::String(lhs), ScalarValue::String(rhs)) => lhs.partial_cmp(rhs),
+            (ScalarValue::Blob(lhs), ScalarValue::Blob(rhs)) => lhs.partial_cmp(rhs),
             (ScalarValue::Boolean(_), ScalarValue::Boolean(_)) => None,
             (_, _) => None,
         }
@@ -183,19 +194,28 @@ impl Ord for ScalarValue {
                 }
             }
             (ScalarValue::String(lhs), ScalarValue::String(rhs)) => lhs.cmp(rhs),
+            (ScalarValue::Blob(lhs), ScalarValue::Blob(rhs)) => lhs.cmp(rhs),
             (ScalarValue::Boolean(lhs), ScalarValue::Boolean(rhs)) => lhs.cmp(rhs),
 
-            // Mixed-type ordering: Boolean < Integer/Floating < String
+            // Mixed-type ordering: Boolean < Integer/Floating < String < Blob
             (ScalarValue::Boolean(_), ScalarValue::Integer(_)) => Ordering::Less,
             (ScalarValue::Boolean(_), ScalarValue::Floating(_)) => Ordering::Less,
             (ScalarValue::Boolean(_), ScalarValue::String(_)) => Ordering::Less,
+            (ScalarValue::Boolean(_), ScalarValue::Blob(_)) => Ordering::Less,
             (ScalarValue::Integer(_), ScalarValue::Boolean(_)) => Ordering::Greater,
             (ScalarValue::Floating(_), ScalarValue::Boolean(_)) => Ordering::Greater,
             (ScalarValue::Integer(_), ScalarValue::String(_)) => Ordering::Less,
+            (ScalarValue::Integer(_), ScalarValue::Blob(_)) => Ordering::Less,
             (ScalarValue::Floating(_), ScalarValue::String(_)) => Ordering::Less,
+            (ScalarValue::Floating(_), ScalarValue::Blob(_)) => Ordering::Less,
             (ScalarValue::String(_), ScalarValue::Integer(_)) => Ordering::Greater,
             (ScalarValue::String(_), ScalarValue::Floating(_)) => Ordering::Greater,
             (ScalarValue::String(_), ScalarValue::Boolean(_)) => Ordering::Greater,
+            (ScalarValue::String(_), ScalarValue::Blob(_)) => Ordering::Less,
+            (ScalarValue::Blob(_), ScalarValue::Boolean(_)) => Ordering::Greater,
+            (ScalarValue::Blob(_), ScalarValue::Integer(_)) => Ordering::Greater,
+            (ScalarValue::Blob(_), ScalarValue::Floating(_)) => Ordering::Greater,
+            (ScalarValue::Blob(_), ScalarValue::String(_)) => Ordering::Greater,
         }
     }
 }
@@ -223,6 +243,7 @@ impl ScalarValue {
         match self {
             ScalarValue::Null => ScalarValue::Null,
             ScalarValue::String(s) => ScalarValue::Integer(s.len() as i64),
+            ScalarValue::Blob(b) => ScalarValue::Integer(b.len() as i64),
             ScalarValue::Integer(i) => ScalarValue::Integer(i.to_string().len() as i64),
             ScalarValue::Floating(f) => ScalarValue::Integer(f.to_string().len() as i64),
             ScalarValue::Boolean(b) => ScalarValue::Integer(b.to_string().len() as i64),
@@ -238,6 +259,7 @@ impl ScalarValue {
             ScalarValue::Integer(i) => ScalarValue::String(i.to_string().to_uppercase()),
             ScalarValue::Floating(f) => ScalarValue::String(f.to_string().to_uppercase()),
             ScalarValue::Boolean(b) => ScalarValue::String(b.to_string().to_uppercase()),
+            ScalarValue::Blob(_) => panic!("UPPER requires string type"),
         }
     }
 
@@ -250,6 +272,7 @@ impl ScalarValue {
             ScalarValue::Integer(i) => ScalarValue::String(i.to_string().to_lowercase()),
             ScalarValue::Floating(f) => ScalarValue::String(f.to_string().to_lowercase()),
             ScalarValue::Boolean(b) => ScalarValue::String(b.to_string().to_lowercase()),
+            ScalarValue::Blob(_) => panic!("LOWER requires string type"),
         }
     }
 
@@ -260,7 +283,7 @@ impl ScalarValue {
             ScalarValue::Null => ScalarValue::Null,
             ScalarValue::Integer(i) => ScalarValue::Integer(i.abs()),
             ScalarValue::Floating(f) => ScalarValue::Floating(f.abs()),
-            ScalarValue::Boolean(_) | ScalarValue::String(_) => {
+            ScalarValue::Boolean(_) | ScalarValue::String(_) | ScalarValue::Blob(_) => {
                 panic!("ABS requires numeric type")
             }
         }
@@ -331,6 +354,7 @@ impl PartialEq for ScalarValue {
             (Self::Boolean(left), Self::Boolean(right)) => left == right,
             (Self::Floating(left), Self::Floating(right)) => (left - right).abs() < 0.00001,
             (Self::String(left), Self::String(right)) => left == right,
+            (Self::Blob(left), Self::Blob(right)) => left == right,
             _ => false,
         }
     }
@@ -346,6 +370,7 @@ impl PartialEq for ScalarValue {
             (Self::Boolean(left), Self::Boolean(right)) => left == right,
             (Self::Floating(left), Self::Floating(right)) => left == right,
             (Self::String(left), Self::String(right)) => left == right,
+            (Self::Blob(left), Self::Blob(right)) => left == right,
             _ => false,
         }
     }
@@ -359,6 +384,7 @@ impl std::fmt::Display for ScalarValue {
             ScalarValue::Floating(fl) => write!(f, "{}", fl.to_string().green()),
             ScalarValue::Boolean(b) => write!(f, "{}", b.to_string().green()),
             ScalarValue::String(s) => write!(f, "{}", format!("\"{}\"", s).green()),
+            ScalarValue::Blob(b) => write!(f, "{}", format!("Blob({})", b.len()).green()),
             ScalarValue::Null => write!(f, "{}", "NULL".dimmed()),
         }
     }

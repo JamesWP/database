@@ -4,6 +4,7 @@ use crate::engine::Engine;
 use crate::frontend::ast::{DataType, Statement};
 use crate::frontend::{parse, ParseError};
 use crate::planner::{self, PlanError};
+use crate::storage;
 use crate::storage::{decode_u64_key, encode_integer_key, BTree};
 
 #[derive(Debug)]
@@ -111,8 +112,8 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                 return Err(ExecuteError::TableNotFound(name.clone()));
             }
 
-            // Delete the catalog entry
-            btree.delete_schema_entry(name);
+            // Delete the catalog entry (and associated indexes)
+            btree.delete_schema_entries_for_table(name);
 
             Ok(ExecuteResult::DropTable {
                 table_name: name.clone(),
@@ -203,11 +204,15 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
             };
 
             for (index_key, pk) in entries_to_index {
+                // Compose index key: [encoded column value] + [encoded rowid]
+                let mut full_key = index_key;
+                full_key.extend_from_slice(&storage::encode_u64_key(pk as u64));
+
                 let index_value = vec![ScalarValue::Integer(pk)];
                 let mut encoded = Vec::new();
                 ciborium::ser::into_writer(&index_value, &mut encoded).unwrap();
                 let mut index_cursor = btree.open(index_rootpage);
-                index_cursor.open_readwrite().insert(&index_key, encoded);
+                index_cursor.open_readwrite().insert(&full_key, encoded);
             }
 
             // 7. Add catalog entry

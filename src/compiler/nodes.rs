@@ -438,6 +438,87 @@ pub fn codegen_filter(
 /// next_label = child.next_label  // delegate to child
 /// output_regs = newly allocated registers
 /// ```
+pub fn codegen_index_scan(
+    index_rootpage: u32,
+    search_value: &Literal,
+    table_rootpage: u32,
+    columns: &[usize],
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    let index_cursor_reg = ctx.registers.alloc();
+    let table_cursor_reg = ctx.registers.alloc();
+    let search_key_reg = ctx.registers.alloc();
+    let flag_reg = ctx.registers.alloc();
+    let pk_reg = ctx.registers.alloc();
+
+    let output_regs = ctx.registers.alloc_block(columns.len());
+
+    // INIT: Open cursors and encode search key
+    ctx.init_emitter
+        .emit(Operation::Open(index_cursor_reg, index_rootpage));
+    ctx.init_emitter
+        .emit(Operation::Open(table_cursor_reg, table_rootpage));
+
+    // Store search value and encode to index key prefix
+    let search_scalar = literal_to_scalar(search_value);
+    ctx.init_emitter
+        .emit(Operation::StoreValue(search_key_reg, search_scalar));
+    ctx.init_emitter
+        .emit(Operation::EncodeIndexKey(search_key_reg, search_key_reg));
+
+    // Find first entry in index >= search key
+    ctx.init_emitter.emit(Operation::MoveCursor(
+        index_cursor_reg,
+        MoveOperation::Find(search_key_reg),
+    ));
+
+    // BODY: Check if positioned on matching key prefix
+    let index_check = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(index_check);
+
+    ctx.body_emitter
+        .emit(Operation::CanReadCursor(flag_reg, index_cursor_reg));
+    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
+
+    // Verify current key matches our prefix
+    ctx.body_emitter.emit(Operation::KeyMatchesPrefix(
+        flag_reg,
+        index_cursor_reg,
+        search_key_reg,
+    ));
+    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
+
+    // Read primary key from index value (V1 stores it in the value too)
+    ctx.body_emitter
+        .emit(Operation::ReadCursor(vec![pk_reg], index_cursor_reg));
+
+    // Look up row in table by primary key
+    ctx.body_emitter.emit(Operation::MoveCursor(
+        table_cursor_reg,
+        MoveOperation::Find(pk_reg),
+    ));
+
+    // Read full row from table
+    ctx.body_emitter
+        .emit(Operation::ReadCursor(output_regs.clone(), table_cursor_reg));
+
+    // Yield this row
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    // INDEX_NEXT: advance to next entry in index
+    let index_next = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(index_next);
+    ctx.body_emitter
+        .emit(Operation::MoveCursor(index_cursor_reg, MoveOperation::Next));
+    ctx.body_emitter.emit_goto(index_check);
+
+    NodeOutput {
+        next: index_next,
+        output_regs,
+    }
+}
+
 pub fn codegen_project(
     columns: &[PlanExpr],
     input: &LogicalPlan,
@@ -811,6 +892,7 @@ pub fn codegen_insert(
     rootpage: u32,
     table_columns: &[usize],
     input: &LogicalPlan,
+    indexes: &[crate::planner::IndexMaintenanceInfo],
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
@@ -819,6 +901,14 @@ pub fn codegen_insert(
     let flag_reg = ctx.registers.alloc();
     let key_reg = ctx.registers.alloc();
     let counter_reg = ctx.registers.alloc();
+
+    // Allocate registers for index cursors
+    let mut index_cursor_regs = Vec::new();
+    for index in indexes {
+        let reg = ctx.registers.alloc();
+        ctx.init_emitter.emit(Operation::Open(reg, index.rootpage));
+        index_cursor_regs.push(reg);
+    }
 
     // INIT: Open cursor and discover next key
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
@@ -886,7 +976,20 @@ pub fn codegen_insert(
         reordered
     };
     ctx.body_emitter
-        .emit(Operation::WriteCursor(cursor_reg, key_reg, reordered_regs));
+        .emit(Operation::WriteCursor(cursor_reg, key_reg, reordered_regs.clone()));
+
+    // Write to each index
+    for (i, index) in indexes.iter().enumerate() {
+        let index_cursor = index_cursor_regs[i];
+        let indexed_column_reg = reordered_regs[index.column_idx];
+
+        ctx.body_emitter.emit(Operation::WriteIndex(
+            index_cursor,
+            indexed_column_reg, // Column value to index
+            key_reg,            // Primary key (table key)
+        ));
+    }
+
     ctx.body_emitter.emit(Operation::IncrementValue(key_reg));
     ctx.body_emitter
         .emit(Operation::IncrementValue(counter_reg));
@@ -1317,6 +1420,19 @@ pub fn codegen(
 ) -> NodeOutput {
     match plan {
         LogicalPlan::Scan { rootpage, columns } => codegen_scan(*rootpage, columns, cont, ctx),
+        LogicalPlan::IndexScan {
+            index_rootpage,
+            search_value,
+            table_rootpage,
+            columns,
+        } => codegen_index_scan(
+            *index_rootpage,
+            search_value,
+            *table_rootpage,
+            columns,
+            cont,
+            ctx,
+        ),
         LogicalPlan::Count { input } => codegen_count(input, cont, ctx),
         LogicalPlan::Values { rows } => codegen_values(rows, cont, ctx),
         LogicalPlan::Filter { predicate, input } => codegen_filter(predicate, input, cont, ctx),
@@ -1333,7 +1449,8 @@ pub fn codegen(
             rootpage,
             table_columns,
             input,
-        } => codegen_insert(*rootpage, table_columns, input, cont, ctx),
+            indexes,
+        } => codegen_insert(*rootpage, table_columns, input, indexes, cont, ctx),
         LogicalPlan::Update {
             rootpage,
             table_columns,
@@ -2214,6 +2331,7 @@ mod tests {
                     ],
                 ],
             }),
+            indexes: vec![],
         };
 
         let (ops, num_registers) = compile_plan(&plan);
@@ -2247,6 +2365,7 @@ mod tests {
                     ],
                 ],
             }),
+            indexes: vec![],
         };
 
         let (ops, num_registers) = compile_plan(&insert_plan);
@@ -2292,6 +2411,7 @@ mod tests {
             input: Box::new(LogicalPlan::Values {
                 rows: vec![vec![Literal::Integer(42)]],
             }),
+            indexes: vec![],
         };
 
         let (ops, num_registers) = compile_plan(&plan);

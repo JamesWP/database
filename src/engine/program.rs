@@ -151,8 +151,11 @@ pub enum Operation {
     ReadCursor(Vec<Reg>, Reg), // ReadCursor(dest_regs, cursor): read row values
     ReadKey(Reg, Reg),         // ReadKey(dest, cursor): read btree key as integer
     WriteCursor(Reg, Reg, Vec<Reg>), // WriteCursor(cursor, key, values): insert row
+    WriteIndex(Reg, Reg, Reg), // WriteIndex(cursor, value, pk): insert into index
     DeleteCursor(Reg),         // DeleteCursor(cursor): delete row at current cursor position
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
+    EncodeIndexKey(Reg, Reg),  // EncodeIndexKey(dest, src): scalar to index blob
+    KeyMatchesPrefix(Reg, Reg, Reg), // Reg = KeyMatchesPrefix(cursor, prefix_reg)
 
     // Control Flow
     Yield(Vec<Reg>),
@@ -403,11 +406,20 @@ impl std::fmt::Display for Operation {
                     regs_str.join(", ")
                 )
             }
+            WriteIndex(cursor, val, pk) => {
+                write!(f, "{:10} {}, {}, {}", "WriteIdx".cyan().bold(), cursor, val, pk)
+            }
             DeleteCursor(cursor) => {
                 write!(f, "{:10} {}", "Delete".cyan().bold(), cursor)
             }
             CanReadCursor(dest, cursor) => {
                 write!(f, "{:10} {}, {}", "CanRead".cyan().bold(), dest, cursor)
+            }
+            EncodeIndexKey(dest, src) => {
+                write!(f, "{:10} {}, {}", "EncIdxKey".cyan().bold(), dest, src)
+            }
+            KeyMatchesPrefix(dest, cursor, prefix) => {
+                write!(f, "{:10} {}, {}, {}", "KeyPrefix".cyan().bold(), dest, cursor, prefix)
             }
 
             // Control flow

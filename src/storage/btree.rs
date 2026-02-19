@@ -880,21 +880,21 @@ impl BTree {
         indexes
     }
 
-    /// Delete a schema entry (table) from the catalog by table name.
-    /// Returns true if the table was found and deleted, false if not found.
-    pub fn delete_schema_entry(&mut self, table_name: &str) -> bool {
+    /// Delete all schema entries (table and indexes) from the catalog by table name.
+    /// Returns true if any entry was found and deleted.
+    pub fn delete_schema_entries_for_table(&mut self, table_name: &str) -> bool {
         let schema_root = match self.schema_root_page() {
             Some(root) => root,
             None => return false,
         };
 
-        // Scan to find the row with matching name, then delete it
+        let mut deleted_any = false;
         let mut cursor = self.open(schema_root);
         let mut c = cursor.open_readwrite();
         c.first();
         loop {
             let mut entry = match c.get_entry() {
-                None => return false, // End of scan, not found
+                None => break, // End of scan
                 Some(reader) => reader,
             };
 
@@ -903,15 +903,22 @@ impl BTree {
             if values.len() >= 5 {
                 let obj_type = values[0].as_str().unwrap_or("");
                 let name = values[1].as_str().unwrap_or("");
-                if obj_type == "table" && name == table_name {
-                    // Found it - delete at current cursor position
+                let tbl_name = values[2].as_str().unwrap_or("");
+
+                // Delete if it's the table itself or an index on this table
+                if (obj_type == "table" && name == table_name) || (obj_type == "index" && tbl_name == table_name) {
                     c.delete_current();
-                    return true;
+                    deleted_any = true;
+                    // c.delete_current() might invalidate the iterator or move it,
+                    // but our B-tree delete_current implementation handles it.
+                    // Let's re-read the current entry or just continue.
+                    continue;
                 }
             }
 
             c.next();
         }
+        deleted_any
     }
 
     #[allow(dead_code)]

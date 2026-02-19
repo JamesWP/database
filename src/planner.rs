@@ -74,6 +74,12 @@ pub struct SortKey {
     pub descending: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexMaintenanceInfo {
+    pub rootpage: u32,
+    pub column_idx: usize,
+}
+
 /// Aggregate function types
 #[derive(Debug, Clone, PartialEq)]
 pub enum AggregateFunction {
@@ -119,6 +125,14 @@ pub enum LogicalPlan {
     /// rootpage: the B-tree root page number for this table
     /// columns: indices of columns to read from the table schema
     Scan { rootpage: u32, columns: Vec<usize> },
+
+    /// Scan via an index
+    IndexScan {
+        index_rootpage: u32,
+        search_value: Literal,
+        table_rootpage: u32,
+        columns: Vec<usize>,
+    },
 
     /// Filter rows based on a predicate (1 input)
     /// Pass-through: outputs all columns from its child unchanged.
@@ -181,6 +195,7 @@ pub enum LogicalPlan {
         rootpage: u32,
         table_columns: Vec<usize>,
         input: Box<LogicalPlan>,
+        indexes: Vec<IndexMaintenanceInfo>,
     },
 
     /// Update rows in a table
@@ -368,19 +383,33 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
                 )
         );
 
-    // 8. Build plan bottom-up: Scan → Filter? → Count/Aggregate/Project → Sort? → Limit?
-    let mut plan = LogicalPlan::Scan {
-        rootpage: table.rootpage,
-        columns: mapping.scan_columns,
+    // 8. Build plan bottom-up: IndexScan | (Scan → Filter?) → Count/Aggregate/Project → Sort? → Limit?
+    let mut plan = if let Some(ref filter) = select.filter {
+        if let Some(index_scan) = try_plan_index_scan(
+            filter,
+            &table_name,
+            table.rootpage,
+            &mapping.scan_columns,
+            btree,
+        ) {
+            index_scan
+        } else {
+            // Fall back to Scan + Filter
+            let scan = LogicalPlan::Scan {
+                rootpage: table.rootpage,
+                columns: mapping.scan_columns,
+            };
+            LogicalPlan::Filter {
+                input: Box::new(scan),
+                predicate: convert_expr(filter, &resolver)?,
+            }
+        }
+    } else {
+        LogicalPlan::Scan {
+            rootpage: table.rootpage,
+            columns: mapping.scan_columns,
+        }
     };
-
-    // Add Filter if WHERE clause exists
-    if let Some(ref filter) = select.filter {
-        plan = LogicalPlan::Filter {
-            input: Box::new(plan),
-            predicate: convert_expr(filter, &resolver)?,
-        };
-    }
 
     // Add aggregation, count, or projection
     if is_count_star {
@@ -802,11 +831,92 @@ fn plan_insert(insert: ast::InsertStatement, btree: &BTree) -> Result<LogicalPla
         rows.push(literals);
     }
 
+    // Look up indexes for this table
+    let index_infos = btree.lookup_indexes_for_table(&insert.table_name);
+    let mut indexes = Vec::new();
+    for index_info in index_infos {
+        // Find column index
+        let col_idx = table
+            .columns
+            .iter()
+            .position(|col| col.name == index_info.column_name)
+            .expect("Index column not found in table");
+
+        indexes.push(IndexMaintenanceInfo {
+            rootpage: index_info.rootpage,
+            column_idx: col_idx,
+        });
+    }
+
     Ok(LogicalPlan::Insert {
         rootpage: table.rootpage,
         table_columns,
         input: Box::new(LogicalPlan::Values { rows }),
+        indexes,
     })
+}
+
+/// Try to use an index for the given filter.
+fn try_plan_index_scan(
+    filter: &ast::Expression,
+    table_name: &str,
+    table_rootpage: u32,
+    scan_columns: &[usize],
+    btree: &BTree,
+) -> Option<LogicalPlan> {
+    // Only support simple equality for now: WHERE col = literal
+    let (col_name, literal) = extract_equality_filter(filter)?;
+
+    // Look up indexes for this table
+    let indexes = btree.lookup_indexes_for_table(table_name);
+    let index = indexes.iter().find(|idx| idx.column_name == col_name)?;
+
+    Some(LogicalPlan::IndexScan {
+        index_rootpage: index.rootpage,
+        search_value: literal,
+        table_rootpage,
+        columns: scan_columns.to_vec(),
+    })
+}
+
+fn extract_equality_filter(expr: &ast::Expression) -> Option<(String, Literal)> {
+    match expr {
+        ast::Expression::BinaryOp { op, lhs, rhs } if matches!(op, ast::BinaryOp::Equals) => {
+            // Case 1: col = literal
+            if let Some(col) = extract_column_name(lhs) {
+                if let Some(lit) = extract_literal(rhs) {
+                    return Some((col, lit));
+                }
+            }
+            // Case 2: literal = col
+            if let Some(col) = extract_column_name(rhs) {
+                if let Some(lit) = extract_literal(lhs) {
+                    return Some((col, lit));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn extract_column_name(expr: &ast::Expression) -> Option<String> {
+    match expr {
+        ast::Expression::Value(ast::ScalarValue::Identifier(name)) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn extract_literal(expr: &ast::Expression) -> Option<Literal> {
+    match expr {
+        ast::Expression::Value(s) => match s {
+            ast::ScalarValue::IntegerNumber(i) => Some(Literal::Integer(*i)),
+            ast::ScalarValue::StringLiteral(s) => Some(Literal::String(s.clone())),
+            ast::ScalarValue::FloatingNumber(f) => Some(Literal::Float(*f)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn plan_update(update: ast::UpdateStatement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
@@ -2187,6 +2297,7 @@ mod tests {
                     Literal::Integer(30),
                 ]],
             }),
+            indexes: vec![],
         };
 
         assert_eq!(result, expected);
@@ -2208,6 +2319,7 @@ mod tests {
                     Literal::String("alice".to_string()),
                 ]],
             }),
+            indexes: vec![],
         };
 
         assert_eq!(result, expected);
@@ -2246,6 +2358,7 @@ mod tests {
                     Literal::Integer(30),
                 ]],
             }),
+            indexes: vec![],
         };
 
         assert_eq!(result, expected);
@@ -2706,6 +2819,47 @@ mod tests {
             }
         } else {
             panic!("Expected Project node");
+        }
+    }
+
+    #[test]
+    fn test_plan_index_scan() {
+        use super::{plan, LogicalPlan, Literal};
+        use crate::test::TestDb;
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        // Create table and index
+        let sql_table = "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)";
+        let users_root = btree.create_tree();
+        btree.insert_schema_entry("table", "users", "users", users_root, sql_table);
+
+        let sql_index = "CREATE INDEX idx_age ON users(age)";
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry("index", "idx_age", "users", index_root, sql_index);
+
+        // Query that should use index
+        let stmt = parse_sql("SELECT name FROM users WHERE age = 30");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+
+        match plan {
+            LogicalPlan::Project { input, .. } => {
+                match *input {
+                    LogicalPlan::IndexScan {
+                        index_rootpage,
+                        search_value,
+                        table_rootpage,
+                        ..
+                    } => {
+                        assert_eq!(index_rootpage, index_root);
+                        assert_eq!(search_value, Literal::Integer(30));
+                        assert_eq!(table_rootpage, users_root);
+                    }
+                    _ => panic!("Expected IndexScan, got {:?}", input),
+                }
+            }
+            _ => panic!("Expected Project, got {:?}", plan),
         }
     }
 }

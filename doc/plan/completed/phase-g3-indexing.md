@@ -33,19 +33,26 @@ Important: Each item should be committed separately, follow 'Git Workflow' in CL
 
 ### Storage Layer
 
-Each index is stored as a **separate B-tree** with its own root page:
+Each index is stored as a **separate B-tree** with its own root page. To support non-unique indexes and multiple rows with the same indexed value, we use **composite keys**:
 
 ```
 Table B-tree:          Index B-tree (on age):
-key → row             indexed_value → primary_key
-1 → [1,'alice',30]    25 → 2
-2 → [2,'bob',25]      30 → 1
-3 → [3,'carol',30]    30 → 3
+key → row             [indexed_value, primary_key] → (empty)
+1 → [1,'alice',30]    [25, 2] → []
+2 → [2,'bob',25]      [30, 1] → []
+3 → [3,'carol',30]    [30, 3] → []
 ```
 
-The index B-tree maps `indexed_column_value → primary_key`. When evaluating `WHERE age = 30`, the engine:
-1. Looks up `30` in the index B-tree → finds keys [1, 3]
-2. For each key, looks up the full row in the table B-tree
+The index B-tree key is the concatenation of the encoded column value and the encoded primary key. This ensures:
+1. **Uniqueness**: Every entry in the index B-tree is unique because primary keys are unique.
+2. **Ordering**: Entries are sorted by the indexed value first, then by the primary key.
+3. **Prefix Search**: We can find all rows matching an indexed value by seeking to the prefix `[indexed_value]` and iterating.
+
+**V1 Key Encoding:**
+- **Key**: `[encoded_column_value][encoded_primary_key]`
+- **Value**: Empty (the primary key is already in the key)
+
+*Note: For V1, we may still store the primary key in the value to simplify initial implementation of `ReadCursor`, but the goal is to leverage composite keys.*
 
 ### Catalog Schema
 
@@ -95,17 +102,19 @@ for index in indexes {
 
 ### Index Key Encoding
 
-**V1 Limitation: INTEGER columns only**
+**Composite Keys:**
+Since the B-tree now supports arbitrary length keys, we encode the index entry as:
+`[encoded_column_value] + [encoded_rowid]`
 
-For V1, CREATE INDEX is restricted to INTEGER columns. The key encoding is straightforward:
-- Positive integers: stored directly as u64
-- Negative integers: use two's complement representation with sign bit flip (`(i as u64) ^ 0x8000000000000000`)
+**INTEGER column encoding (V1):**
+- **Column Value**: 8 bytes, big-endian `i64` with sign bit flip (preserves sort order).
+- **Rowid**: 8 bytes, big-endian `u64` (preserves sort order).
 
-This preserves sort order: negative numbers sort before positive, and within each group the natural order is maintained.
+This 16-byte composite key allows multiple rows to have the same integer value while keeping each B-tree entry unique.
 
 **Index B-tree structure:**
-- **Key**: Encoded integer value (maintains sort order)
-- **Value**: `[primary_key]` as CBOR array
+- **Key**: 16 bytes (8 bytes value + 8 bytes rowid)
+- **Value**: Empty or `[primary_key]` as CBOR array (for V1 simplicity)
 
 **Future enhancements** (not in V1):
 - TEXT columns: concatenate bytes directly (UTF-8 ordering)
@@ -521,18 +530,21 @@ Statement::CreateIndex(_) => {
                     let index_key_value = &values[column_idx];
 
                     // Encode INTEGER to u64 key (preserves sort order)
-                    let index_key = match index_key_value {
+                    let mut index_key = match index_key_value {
                         ScalarValue::Integer(i) => encode_integer_key(*i),
-                        ScalarValue::Null => 0, // NULL sorts first
+                        ScalarValue::Null => vec![0; 8], // NULL sorts first (TODO: better NULL handling)
                         _ => continue, // Skip non-integer values (shouldn't happen)
                     };
 
-                    // Encode primary key as index value
+                    // Append primary key to index key to handle duplicates and make entries unique
+                    index_key.extend_from_slice(&encode_u64_key(table_key));
+
+                    // Encode primary key as index value (optional but useful for V1)
                     let index_value = vec![ScalarValue::Integer(table_key as i64)];
                     let mut encoded = Vec::new();
                     ciborium::ser::into_writer(&index_value, &mut encoded).unwrap();
 
-                    index_cursor.open_readwrite().insert(index_key, encoded);
+                    index_cursor.open_readwrite().insert(&index_key, encoded);
                 }
             }
         }
@@ -601,20 +613,22 @@ Index 'idx_age' created
 Add public functions for encoding/decoding:
 
 ```rust
-/// Encode i64 to u64 preserving sort order.
+/// Encode i64 to Vec<u8> preserving sort order.
 /// Flip the sign bit so negative numbers sort before positive.
-///
-/// Examples:
-///   -100 → 0x7FFF_FFFF_FFFF_FF9C
-///      0 → 0x8000_0000_0000_0000
-///    100 → 0x8000_0000_0000_0064
-pub fn encode_integer_key(i: i64) -> u64 {
-    (i as u64) ^ 0x8000_0000_0000_0000
+pub fn encode_integer_key(i: i64) -> Vec<u8> {
+    let encoded = (i as u64) ^ 0x8000_0000_0000_0000;
+    encoded.to_be_bytes().to_vec()
 }
 
-/// Decode u64 back to i64
-pub fn decode_integer_key(key: u64) -> i64 {
-    (key ^ 0x8000_0000_0000_0000) as i64
+/// Decode a variable-length index key back to the original i64 column value.
+pub fn decode_integer_key(bytes: &[u8]) -> i64 {
+    let val = u64::from_be_bytes(bytes.try_into().unwrap());
+    (val ^ 0x8000_0000_0000_0000) as i64
+}
+
+/// Encode a u64 row key as big-endian bytes, preserving sort order.
+pub fn encode_u64_key(key: u64) -> Vec<u8> {
+    key.to_be_bytes().to_vec()
 }
 ```
 
@@ -719,16 +733,23 @@ for (i, index) in indexes.iter().enumerate() {
 2. In `src/engine.rs`, execute WriteIndex (around line 640):
 ```rust
 WriteIndex(cursor_reg, value_reg, pk_reg) => {
-    // Encode the indexed value to u64 key
+    // Encode the indexed value
     let indexed_value = self.registers.get(*value_reg).scalar().unwrap();
-    let index_key = match indexed_value {
+    let mut index_key = match indexed_value {
         ScalarValue::Integer(i) => encode_integer_key(*i),
-        ScalarValue::Null => 0,  // NULL sorts first
+        ScalarValue::Null => vec![0; 8],  // NULL sorts first
         _ => panic!("WriteIndex: only INTEGER columns supported in V1"),
     };
 
-    // Encode primary key as index value
+    // Append primary key to make the entry unique in the index B-tree
     let pk_value = self.registers.get(*pk_reg).scalar().unwrap();
+    let pk = match pk_value {
+        ScalarValue::Integer(i) => *i as u64,
+        _ => panic!("WriteIndex: primary key must be INTEGER"),
+    };
+    index_key.extend_from_slice(&encode_u64_key(pk));
+
+    // Encode primary key as index value (optional for V1)
     let index_value = vec![pk_value.clone()];
     let mut encoded = Vec::new();
     ciborium::ser::into_writer(&index_value, &mut encoded).unwrap();
@@ -736,7 +757,7 @@ WriteIndex(cursor_reg, value_reg, pk_reg) => {
     // Write to index B-tree
     let cursor = self.registers.get_mut(*cursor_reg).cursor_mut().unwrap();
     let mut c = cursor.open_readwrite();
-    c.insert(index_key, encoded);
+    c.insert(&index_key, encoded);
 }
 ```
 
@@ -882,7 +903,7 @@ pub fn codegen_index_scan(
 
 2. Add `Operation::EncodeIndexKey(dest_reg, src_reg)` to `src/engine/program.rs`:
 ```rust
-/// Encode a ScalarValue to a u64 index key (preserves sort order)
+/// Encode a ScalarValue to a Vec<u8> index key (preserves sort order)
 EncodeIndexKey(Reg, Reg),
 ```
 
@@ -892,18 +913,51 @@ EncodeIndexKey(dest, src) => {
     let value = self.registers.get(*src).scalar().unwrap();
     let encoded_key = match value {
         ScalarValue::Integer(i) => encode_integer_key(*i),
-        ScalarValue::Null => 0,
+        ScalarValue::Null => vec![0; 8],
         _ => panic!("EncodeIndexKey: only INTEGER supported in V1"),
     };
     *self.registers.get_mut(*dest) = RegisterValue::ScalarValue(
-        ScalarValue::Integer(encoded_key as i64)
+        ScalarValue::Blob(encoded_key) // Or a new RegisterValue variant
     );
 }
 ```
 
-4. Update `codegen()` dispatch for IndexScan
+4. Update `MoveCursor` in `src/engine.rs` to support byte-slice keys:
+```rust
+            MoveCursor(reg, operation) => {
+                let cursor = self.registers.get_mut(reg).cursor_mut().unwrap();
+                let mut cursor = cursor.open_readwrite();
+                match operation {
+                    program::MoveOperation::First => { cursor.first(); }
+                    program::MoveOperation::Next => { cursor.next(); }
+                    program::MoveOperation::Last => { cursor.last(); }
+                    program::MoveOperation::Find(key_reg) => {
+                        let key_value = self.registers.get(*key_reg).scalar().unwrap();
+                        let key_bytes = match key_value {
+                            ScalarValue::Integer(k) => encode_u64_key(*k as u64),
+                            ScalarValue::Blob(b) => b.clone(),
+                            _ => panic!("Find requires Integer or Blob key"),
+                        };
+                        cursor.find(&key_bytes);
+                    }
+                }
+            }
+```
 
-**Note:** For V1 with INTEGER-only indexes, the index B-tree may have multiple entries with the same key (duplicates). The simple Find + iterate approach will work for exact matches.
+**Note:** For prefix matching, after `MoveCursor(Find)`, we must check if the current key starts with our search prefix.
+
+```rust
+    // BODY: Check if positioned on matching key
+    let index_check = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(index_check);
+
+    ctx.body_emitter.emit(Operation::CanReadCursor(flag_reg, index_cursor_reg));
+    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
+
+    // NEW: Check prefix
+    ctx.body_emitter.emit(Operation::KeyMatchesPrefix(flag_reg, index_cursor_reg, search_key_reg));
+    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
+```
 
 **Verification:** `cargo build`
 

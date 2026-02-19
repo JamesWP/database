@@ -575,11 +575,13 @@ impl Engine {
                 *self.registers.get_mut(reg) = RegisterValue::CursorHandle(cursor);
             }
             MoveCursor(reg, operation) => {
-                // Extract key value if this is a Find operation
-                let find_key = if let program::MoveOperation::Find(key_reg) = operation {
-                    Some(match self.registers.get(key_reg).scalar().unwrap() {
-                        ScalarValue::Integer(k) => *k as u64,
-                        other => panic!("Find requires Integer key, got {:?}", other),
+                // Extract key value first to avoid borrow conflict
+                let key_bytes = if let program::MoveOperation::Find(key_reg) = operation {
+                    let key_value = self.registers.get(key_reg).scalar().unwrap();
+                    Some(match key_value {
+                        ScalarValue::Integer(k) => storage::encode_u64_key(*k as u64),
+                        ScalarValue::Blob(b) => b.clone(),
+                        other => panic!("Find requires Integer or Blob key, got {:?}", other),
                     })
                 } else {
                     None
@@ -592,7 +594,7 @@ impl Engine {
                     program::MoveOperation::Next => cursor.next(),
                     program::MoveOperation::Last => cursor.last(),
                     program::MoveOperation::Find(_) => {
-                        cursor.find_u64(find_key.unwrap());
+                        cursor.find(&key_bytes.unwrap());
                     }
                 }
             }
@@ -604,6 +606,36 @@ impl Engine {
                 drop(cursor);
                 let value = ScalarValue::Boolean(value);
                 *self.registers.get_mut(dest) = RegisterValue::ScalarValue(value);
+            }
+            EncodeIndexKey(dest, src) => {
+                let value = self.registers.get(src).scalar().unwrap();
+                let encoded_key = match value {
+                    ScalarValue::Integer(i) => storage::encode_integer_key(*i),
+                    ScalarValue::Null => vec![0; 8], // NULL sorts first
+                    _ => panic!("EncodeIndexKey: only INTEGER supported in V1"),
+                };
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Blob(encoded_key));
+            }
+            KeyMatchesPrefix(dest, cursor_reg, prefix_reg) => {
+                let prefix_bytes = match self.registers.get(prefix_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("KeyMatchesPrefix requires Blob prefix"),
+                };
+
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let mut cursor = cursor.open_readonly();
+                let entry = cursor.get_entry();
+                let matches = match entry {
+                    Some(reader) => {
+                        let key = reader.key();
+                        key.starts_with(&prefix_bytes)
+                    }
+                    None => false,
+                };
+                drop(cursor);
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Boolean(matches));
             }
             ReadCursor(regs, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
@@ -646,6 +678,33 @@ impl Engine {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readwrite();
                 cursor.insert_u64(key, bytes);
+            }
+            WriteIndex(cursor_reg, value_reg, pk_reg) => {
+                // Encode the indexed value
+                let indexed_value = self.registers.get(value_reg).scalar().unwrap();
+                let mut index_key = match indexed_value {
+                    ScalarValue::Integer(i) => storage::encode_integer_key(*i),
+                    ScalarValue::Null => vec![0; 8], // NULL sorts first
+                    _ => panic!("WriteIndex: only INTEGER columns supported in V1"),
+                };
+
+                // Append primary key to make the entry unique in the index B-tree
+                let pk_value = self.registers.get(pk_reg).scalar().unwrap();
+                let pk = match pk_value {
+                    ScalarValue::Integer(i) => *i as u64,
+                    _ => panic!("WriteIndex: primary key must be INTEGER"),
+                };
+                index_key.extend_from_slice(&storage::encode_u64_key(pk));
+
+                // Encode primary key as index value (optional for V1)
+                let index_value_encoded = vec![pk_value.clone()];
+                let mut encoded = Vec::new();
+                ciborium::ser::into_writer(&index_value_encoded, &mut encoded).unwrap();
+
+                // Write to index B-tree
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let mut c = cursor.open_readwrite();
+                c.insert(&index_key, encoded);
             }
             DeleteCursor(cursor_reg) => {
                 // Delete at current cursor position

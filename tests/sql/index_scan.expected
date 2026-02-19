@@ -1,0 +1,15 @@
+Table 'users' created
+1
+1
+1
+1
+Index 'idx_age' created
+1	Alice
+3	Charlie
+2	Bob
+4	Diana
+OK
+1
+2	Bob
+4	Diana
+5	Eve

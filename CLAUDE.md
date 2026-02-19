@@ -230,6 +230,19 @@ cargo run -- test.db btree verify all
 - Look for `continuation=<page_num> (overflow)` in magenta for large values
 - Verify catalog keys are sequential (0, 1, 2...) not hashes
 
+## Indexes
+
+Each secondary index is a separate B-tree with its own root page.
+- **V1 Restriction**: Single-column, `INTEGER` only, equality filters only.
+- **Index Catalog**: Stored in `db_schema` with `type='index'`.
+- **Key Encoding**: Composite key: `[encoded_column_value][encoded_rowid]`.
+  - Column Value: Big-endian `i64` with sign bit flipped (preserves sort order).
+  - Rowid: Big-endian `u64`.
+- **Value Encoding**: Stored as `[primary_key]` in the index B-tree value (for simplicity).
+- **Maintenance**: INSERT updates all indexes for the table.
+- **Query Optimization**: Planner detects applicable indexes for `WHERE col = literal` and generates `IndexScan` bytecode.
+- **Prefix Matching**: Uses `MoveCursor(Find)` to position at the first candidate and `KeyMatchesPrefix` to verify.
+
 ## Makefile Targets
 
 ```bash
