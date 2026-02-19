@@ -7,13 +7,20 @@ Builds on phase-g3-indexing.md to add multi-column indexes, TEXT support, range 
 | # | Track | Item | Depends on |
 |---|-------|------|------------|
 | 40 | 4.5 | Range scan optimization (>, <, BETWEEN) | G3 |
-| 41 | 3.6 | Variable-length B-tree keys | — |
 | 42 | 4.6 | Multi-column indexes | 41 |
 | 43 | 4.7 | TEXT column indexes | 41 |
 | 44 | 4.8 | Type conversions and NULL handling | — |
 
 ---
 Important: Each item should be committed separately, follow 'Git Workflow' in CLAUDE.md
+
+---
+
+## Completed Items
+
+| # | Track | Item | Completed |
+|---|-------|------|-----------|
+| 41 | 3.6 | Variable-length B-tree keys | 2026-02-18 |
 
 ---
 
