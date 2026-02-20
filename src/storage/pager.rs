@@ -1,6 +1,7 @@
 use std::{
     borrow::Borrow,
     cell::RefCell,
+    collections::HashMap,
     fs::{File, OpenOptions},
     io::{Read, Seek, Write},
     os::unix::prelude::MetadataExt,
@@ -19,6 +20,14 @@ impl Default for Page {
     fn default() -> Self {
         Self {
             content: [0; PAGE_SIZE as usize],
+        }
+    }
+}
+
+impl Clone for Page {
+    fn clone(&self) -> Self {
+        Self {
+            content: self.content,
         }
     }
 }
@@ -68,6 +77,8 @@ impl Default for ZeroPage {
 pub struct Pager {
     path: String,
     file: RefCell<File>,
+    /// In-memory page cache: page_number → (page_content, is_dirty)
+    cache: RefCell<HashMap<u32, (Page, bool)>>,
 }
 
 impl std::fmt::Debug for Pager {
@@ -76,6 +87,15 @@ impl std::fmt::Debug for Pager {
             .field("path", &self.path)
             .field("file", &"<File>")
             .finish()
+    }
+}
+
+impl Drop for Pager {
+    fn drop(&mut self) {
+        // Flush the file buffer to ensure OS-level buffering is committed.
+        // With write-through caching, there are no dirty cache pages,
+        // but the file handle may have unflushed OS buffers.
+        self.file.borrow_mut().flush().unwrap();
     }
 }
 
@@ -99,6 +119,7 @@ impl Pager {
         Pager {
             path: path.to_owned(),
             file: RefCell::new(file),
+            cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -128,14 +149,23 @@ impl Pager {
     }
 
     pub fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
-        // println!("Reading page {}", idx.borrow());
+        let page_no = *idx.borrow();
+
+        // Cache hit: return a copy of the cached page
+        if let Some((page, _dirty)) = self.cache.borrow().get(&page_no) {
+            return page.clone();
+        }
+
+        // Cache miss: read from disk and insert into cache
         let mut p = Page::default();
         let content = p.content.as_mut_slice();
 
         let mut file = self.file.borrow_mut();
-        let offset = PAGE_SIZE * (*idx.borrow() as u64);
+        let offset = PAGE_SIZE * (page_no as u64);
         file.seek(std::io::SeekFrom::Start(offset)).unwrap();
         file.read_exact(content).unwrap();
+
+        self.cache.borrow_mut().insert(page_no, (p.clone(), false));
 
         p
     }
@@ -149,11 +179,18 @@ impl Pager {
     }
 
     pub fn set<P: Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
-        // println!("Writing page {}", idx.borrow());
+        let page_no = *idx.borrow();
+        let page = page.borrow();
+
+        // Write through: update cache (clean) and write to disk immediately
+        self.cache
+            .borrow_mut()
+            .insert(page_no, (page.clone(), false));
+
         let mut file = self.file.borrow_mut();
-        let offset = PAGE_SIZE * (*idx.borrow() as u64);
+        let offset = PAGE_SIZE * (page_no as u64);
         file.seek(std::io::SeekFrom::Start(offset)).unwrap();
-        file.write_all(&page.borrow().content).unwrap();
+        file.write_all(&page.content).unwrap();
     }
 
     pub fn encode_and_set<P: Borrow<P> + Serialize, PageNo: Borrow<u32>>(
@@ -670,5 +707,71 @@ mod test {
         // Verify b is still valid
         let page_b = pager.get(b);
         assert_eq!(page_b.content[0], 0); // Should be zeros (never written to)
+    }
+
+    #[test]
+    fn test_page_cache_read_hit() {
+        // After a write, a subsequent read should return the cached value
+        // (not go to disk) and return the correct data.
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let mut pager = Pager::new(path);
+        let page_idx = pager.allocate();
+
+        // Write a page
+        let mut page = pager.get(page_idx);
+        page.content[0] = 77;
+        page.content[255] = 88;
+        pager.set(page_idx, &page);
+
+        // Read it back — should be served from cache with the written values
+        let read_back = pager.get(page_idx);
+        assert_eq!(77, read_back.content[0]);
+        assert_eq!(88, read_back.content[255]);
+        assert_eq!(0, read_back.content[1]); // untouched bytes are zero
+    }
+
+    #[test]
+    fn test_page_cache_repeated_reads() {
+        // Multiple reads of the same page should return consistent data.
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let mut pager = Pager::new(path);
+        let page_idx = pager.allocate();
+
+        let mut page = pager.get(page_idx);
+        page.content[42] = 123;
+        pager.set(page_idx, &page);
+
+        // Read the same page multiple times
+        for _ in 0..10 {
+            let p = pager.get(page_idx);
+            assert_eq!(123, p.content[42]);
+        }
+    }
+
+    #[test]
+    fn test_page_cache_correct_after_mutations() {
+        // After writing multiple pages, all should be readable with correct data.
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        let mut pager = Pager::new(path);
+
+        let p1 = pager.allocate();
+        let p2 = pager.allocate();
+        let p3 = pager.allocate();
+
+        for (idx, page_no) in [p1, p2, p3].iter().enumerate() {
+            let mut page = pager.get(*page_no);
+            page.content[0] = (idx + 1) as u8;
+            pager.set(*page_no, &page);
+        }
+
+        assert_eq!(1, pager.get(p1).content[0]);
+        assert_eq!(2, pager.get(p2).content[0]);
+        assert_eq!(3, pager.get(p3).content[0]);
     }
 }
