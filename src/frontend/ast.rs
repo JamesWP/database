@@ -70,6 +70,7 @@ pub struct JoinClause {
 
 #[derive(Debug)]
 pub struct SelectStatement {
+    pub distinct: bool,
     pub columns: Vec<ColumnExpression>,
     pub from: NamedTupleSource,
     pub joins: Vec<JoinClause>,

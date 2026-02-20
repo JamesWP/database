@@ -496,6 +496,13 @@ impl Parser {
 
     fn parse_select_statement(&mut self) -> ParseResult<ast::SelectStatement> {
         self.input.expect(Expect::Select)?;
+        let distinct = match self.input.peek() {
+            lexer::Type::Distinct => {
+                self.input.advance();
+                true
+            }
+            _ => false,
+        };
         let columns = self.parse_column_expressions()?;
 
         self.input.expect(Expect::From)?;
@@ -565,6 +572,7 @@ impl Parser {
         };
 
         Ok(ast::SelectStatement {
+            distinct,
             columns,
             from,
             joins,
