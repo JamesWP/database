@@ -634,6 +634,85 @@ pub fn codegen_limit(
     }
 }
 
+/// Generate bytecode for a Distinct node.
+///
+/// Distinct collects all rows into a GroupTable keyed on all output columns
+/// (with empty aggregate specs). The BTreeMap naturally deduplicates.
+/// Then yields each unique row.
+///
+/// ```text
+/// INIT:
+///   InitGroupTable(table)
+///
+/// BODY:
+///   ... child code ...
+///   collect_row:
+///     UpdateGroup(table, child_output_regs, [])
+///     GoTo(child.next)
+///   yield_from_groups:
+///     YieldFromGroupTable(output_regs, table, on_done)
+///     GoTo(on_tuple)
+///   distinct_next:
+///     GoTo(yield_from_groups)
+/// ```
+pub fn codegen_distinct(
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    use crate::engine::program::Operation;
+
+    // Allocate register for group table
+    let table_reg = ctx.registers.alloc();
+
+    // INIT: initialize empty group table
+    ctx.init_emitter.emit(Operation::InitGroupTable(table_reg));
+
+    // Create labels
+    let collect_row = ctx.body_emitter.create_label();
+    let yield_from_groups = ctx.body_emitter.create_label();
+
+    // Child's on_tuple → collect_row, on_done → yield_from_groups
+    let child_cont = NodeContinuation {
+        on_tuple: collect_row,
+        on_done: yield_from_groups,
+    };
+
+    // Compile child
+    let child_output = codegen(input, &child_cont, ctx);
+
+    // collect_row: insert row into group table (deduplicates automatically)
+    ctx.body_emitter.bind_label(collect_row);
+    ctx.body_emitter.emit(Operation::UpdateGroup(
+        table_reg,
+        child_output.output_regs.clone(),
+        vec![], // no aggregates — pure dedup
+    ));
+    ctx.body_emitter.emit_goto(child_output.next);
+
+    // yield_from_groups: pop unique rows and yield
+    ctx.body_emitter.bind_label(yield_from_groups);
+
+    let num_outputs = child_output.output_regs.len();
+    let output_regs: Vec<Reg> = (0..num_outputs).map(|_| ctx.registers.alloc()).collect();
+
+    ctx.body_emitter.emit(Operation::YieldFromGroupTable(
+        output_regs.clone(),
+        table_reg,
+        JumpTarget::Unresolved(cont.on_done),
+    ));
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    let distinct_next = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_label(distinct_next);
+    ctx.body_emitter.emit_goto(yield_from_groups);
+
+    NodeOutput {
+        next: distinct_next,
+        output_regs,
+    }
+}
+
 /// Generate bytecode for a Sort node.
 ///
 /// Sort materializes all rows from its child, sorts them based on sort keys,
@@ -975,8 +1054,11 @@ pub fn codegen_insert(
 
         reordered
     };
-    ctx.body_emitter
-        .emit(Operation::WriteCursor(cursor_reg, key_reg, reordered_regs.clone()));
+    ctx.body_emitter.emit(Operation::WriteCursor(
+        cursor_reg,
+        key_reg,
+        reordered_regs.clone(),
+    ));
 
     // Write to each index
     for (i, index) in indexes.iter().enumerate() {
@@ -1468,6 +1550,7 @@ pub fn codegen(
             on_condition,
             left_column_count,
         } => codegen_join(left, right, on_condition, *left_column_count, cont, ctx),
+        LogicalPlan::Distinct { input } => codegen_distinct(input, cont, ctx),
     }
 }
 

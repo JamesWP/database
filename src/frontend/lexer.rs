@@ -83,6 +83,7 @@ pub enum Type {
     On,
     Inner,
     Index,
+    Distinct,
 
     #[allow(dead_code)]
     Error(Error),
@@ -513,6 +514,7 @@ impl<'a> Lexer<'a> {
                     Some('s') => match_reserved(ident, "desc", Type::Desc),
                     _ => Type::Identifier(ident.to_owned()),
                 },
+                Some('i') => match_reserved(ident, "distinct", Type::Distinct),
                 Some('r') => match_reserved(ident, "drop", Type::Drop),
                 _ => Type::Identifier(ident.to_owned()),
             },

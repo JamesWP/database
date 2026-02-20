@@ -227,6 +227,11 @@ pub enum LogicalPlan {
         on_condition: PlanExpr,
         left_column_count: usize, // for register offset calculation
     },
+
+    /// Deduplicate rows from input (1 input)
+    /// Materializes all rows, removes duplicates, yields unique rows.
+    /// Output: same columns as input.
+    Distinct { input: Box<LogicalPlan> },
 }
 
 // ============================================================================
@@ -326,6 +331,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     let table = resolve_table(&table_name, btree)?;
 
     // 3. Detect if this query uses aggregation
+    let is_distinct = select.distinct;
     let has_group_by = select.group_by.is_some();
     let has_aggregates = select.columns.iter().any(|col| has_aggregate(col));
     let use_aggregation = has_group_by || has_aggregates;
@@ -589,6 +595,13 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
                 };
             }
         }
+    }
+
+    // Add Distinct if SELECT DISTINCT
+    if is_distinct {
+        plan = LogicalPlan::Distinct {
+            input: Box::new(plan),
+        };
     }
 
     // Add Limit if LIMIT clause exists
@@ -2824,7 +2837,7 @@ mod tests {
 
     #[test]
     fn test_plan_index_scan() {
-        use super::{plan, LogicalPlan, Literal};
+        use super::{plan, Literal, LogicalPlan};
         use crate::test::TestDb;
 
         let test = TestDb::default();
@@ -2844,22 +2857,50 @@ mod tests {
         let plan = plan(stmt, &btree).expect("Planning failed");
 
         match plan {
-            LogicalPlan::Project { input, .. } => {
-                match *input {
-                    LogicalPlan::IndexScan {
-                        index_rootpage,
-                        search_value,
-                        table_rootpage,
-                        ..
-                    } => {
-                        assert_eq!(index_rootpage, index_root);
-                        assert_eq!(search_value, Literal::Integer(30));
-                        assert_eq!(table_rootpage, users_root);
-                    }
-                    _ => panic!("Expected IndexScan, got {:?}", input),
+            LogicalPlan::Project { input, .. } => match *input {
+                LogicalPlan::IndexScan {
+                    index_rootpage,
+                    search_value,
+                    table_rootpage,
+                    ..
+                } => {
+                    assert_eq!(index_rootpage, index_root);
+                    assert_eq!(search_value, Literal::Integer(30));
+                    assert_eq!(table_rootpage, users_root);
                 }
-            }
+                _ => panic!("Expected IndexScan, got {:?}", input),
+            },
             _ => panic!("Expected Project, got {:?}", plan),
+        }
+    }
+
+    #[test]
+    fn test_plan_distinct() {
+        use super::{plan, LogicalPlan};
+        use crate::test::TestDb;
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let sql_table = "CREATE TABLE colors (id INTEGER, category TEXT)";
+        let colors_root = btree.create_tree();
+        btree.insert_schema_entry("table", "colors", "colors", colors_root, sql_table);
+
+        let stmt = parse_sql("SELECT DISTINCT category FROM colors");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+
+        // Plan should be: Distinct { Project { Scan } }
+        match plan {
+            LogicalPlan::Distinct { input } => match *input {
+                LogicalPlan::Project { input, .. } => match *input {
+                    LogicalPlan::Scan { rootpage, .. } => {
+                        assert_eq!(rootpage, colors_root);
+                    }
+                    _ => panic!("Expected Scan inside Project, got {:?}", input),
+                },
+                _ => panic!("Expected Project inside Distinct, got {:?}", input),
+            },
+            _ => panic!("Expected Distinct at top, got {:?}", plan),
         }
     }
 }
