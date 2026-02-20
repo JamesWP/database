@@ -74,7 +74,8 @@ Each feature should follow TDD per CLAUDE.md:
 ## Example prompt
 
 ```txt
+in a new branch
 implement the plan in @doc/plan/phase-b-sql-wins.md
 overall plan structure in @doc/plan/README.md       
-of course, follow general project guidance in @CLAUDE.md 
+of course, follow general project guidance in @CLAUDE.md especially Git Workflow
 ```
