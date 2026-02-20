@@ -2533,6 +2533,74 @@ mod tests {
         assert_eq!(yields[1][0], ScalarValue::Integer(70));
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(50))]
+
+        /// Generate random LogicalPlan trees (Sequence + Filter + Project + Limit + Sort + Distinct)
+        /// and verify that compile_plan produces valid bytecode without panicking.
+        /// "Valid bytecode" means: non-empty and register count is positive.
+        #[test]
+        fn test_compile_random_plans_no_panic(
+            seed_count in 1i64..50,
+            filter_val in 0i64..20,
+            project_mul in 1i64..10,
+            limit_count in 1u64..20,
+            include_filter: bool,
+            include_project: bool,
+            include_limit: bool,
+            include_sort: bool,
+            include_distinct: bool,
+        ) {
+            use crate::planner::{BinaryOp, Literal, PlanExpr, SortKey};
+
+            // Build a plan bottom-up: Sequence [→ Filter] [→ Project] [→ Sort] [→ Distinct] [→ Limit]
+            let mut plan = LogicalPlan::Sequence { start: 0, end: seed_count };
+
+            if include_filter {
+                plan = LogicalPlan::Filter {
+                    predicate: PlanExpr::BinaryOp {
+                        op: BinaryOp::GreaterThan,
+                        left: Box::new(PlanExpr::ColumnRef(0)),
+                        right: Box::new(PlanExpr::Literal(Literal::Integer(filter_val))),
+                    },
+                    input: Box::new(plan),
+                };
+            }
+
+            if include_project {
+                plan = LogicalPlan::Project {
+                    columns: vec![PlanExpr::BinaryOp {
+                        op: BinaryOp::Multiply,
+                        left: Box::new(PlanExpr::ColumnRef(0)),
+                        right: Box::new(PlanExpr::Literal(Literal::Integer(project_mul))),
+                    }],
+                    input: Box::new(plan),
+                };
+            }
+
+            if include_sort {
+                plan = LogicalPlan::Sort {
+                    sort_keys: vec![SortKey { expr: PlanExpr::ColumnRef(0), descending: false }],
+                    input: Box::new(plan),
+                };
+            }
+
+            if include_distinct {
+                plan = LogicalPlan::Distinct { input: Box::new(plan) };
+            }
+
+            if include_limit {
+                plan = LogicalPlan::Limit { count: limit_count, input: Box::new(plan) };
+            }
+
+            let (ops, num_registers) = compile_plan(&plan);
+
+            // Must produce some bytecode and at least one register
+            proptest::prop_assert!(!ops.is_empty(), "compile_plan returned empty bytecode");
+            proptest::prop_assert!(num_registers > 0, "compile_plan allocated no registers");
+        }
+    }
+
     /// Test DELETE bytecode generation (print only, don't execute)
     #[test]
     fn test_codegen_delete_bytecode_structure() {

@@ -480,6 +480,32 @@ mod test {
         assert_eq!(right.keys, &[make_key(3)]);
     }
 
+    #[test]
+    fn test_interior_split_balance() {
+        // Verify that after a split, both sides are within 1 key of each other.
+        for n_keys in 3..=20 {
+            let mut node = InteriorNodePage::new(1, make_key(1), 1);
+            for i in 2..=(n_keys as u64) {
+                node.insert_child_page(make_key(i), i as u32);
+            }
+            assert_eq!(node.keys.len(), n_keys);
+
+            let (left, right) = node.split();
+            let diff = (left.keys.len() as i64 - right.keys.len() as i64).unsigned_abs();
+            assert!(
+                diff <= 1,
+                "n_keys={n_keys}: left {} keys, right {} keys — diff {diff} > 1",
+                left.keys.len(),
+                right.keys.len()
+            );
+            // Invariants must hold
+            assert_eq!(left.keys.len() + 1, left.edges.len());
+            assert_eq!(right.keys.len() + 1, right.edges.len());
+            // Total keys accounted for (left + promoted + right = original)
+            assert_eq!(left.keys.len() + 1 + right.keys.len(), n_keys);
+        }
+    }
+
     proptest! {
         #[test]
         fn test_interior_page_split(interior_num_edges in 4u64..150) {
@@ -488,7 +514,10 @@ mod test {
             for page in 0..num_inserts {
                 interior_node.insert_child_page(make_key(page+2), 1);
             }
-            let (_left, _right) = interior_node.split();
+            let (left, right) = interior_node.split();
+// Both sides should be within 1 key of each other
+            let diff = (left.keys.len() as i64 - right.keys.len() as i64).unsigned_abs();
+            prop_assert!(diff <= 1);
         }
     }
 }

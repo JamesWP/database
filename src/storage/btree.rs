@@ -1374,6 +1374,58 @@ mod test {
             let mut btree = test.btree;
             do_test_ordering(elements.as_slice(), &mut btree, ordering);
         }
+
+    }
+
+    proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(5))]
+
+        /// Large-scale insert proptest: 200+ random unique keys inserted in
+        /// arbitrary order. After all inserts, verify() must pass and a forward
+        /// scan must yield keys in strictly ascending order.
+        #[test]
+        fn test_large_insert_sorted_and_verified(
+            mut keys in prop::collection::vec(0u64..100_000, 200..300usize),
+        ) {
+            let test = TestDb::default();
+            let mut btree = test.btree;
+            let root = btree.create_tree();
+
+            // Deduplicate so every key is unique
+            keys.sort_unstable();
+            keys.dedup();
+
+            {
+                let mut cursor_handle = btree.open(root);
+                let mut cursor = cursor_handle.open_readwrite();
+                for &k in &keys {
+                    cursor.insert_u64(k, k.to_be_bytes().to_vec());
+                }
+                // Verify structural integrity after all inserts
+                cursor.verify().unwrap();
+            }
+
+            // Scan and check ascending order
+            {
+                let mut cursor_handle = btree.open(root);
+                let mut cursor = cursor_handle.open_readonly();
+                cursor.first();
+                let mut prev: Option<Vec<u8>> = None;
+                loop {
+                    match cursor.get_entry() {
+                        Some(entry) => {
+                            let key = entry.key().to_vec();
+                            if let Some(ref p) = prev {
+                                prop_assert!(key > *p, "Keys not in ascending order");
+                            }
+                            prev = Some(key);
+                            cursor.next();
+                        }
+                        None => break,
+                    }
+                }
+            }
+        }
     }
 
     // ========================================================================
