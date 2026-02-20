@@ -300,6 +300,19 @@ impl ScalarValue {
             _ => false, // Non-string comparisons return false
         }
     }
+
+    /// Return a plain (no ANSI color codes) string representation for display,
+    /// e.g. for computing column widths in tabular output.
+    pub fn plain_string(&self) -> String {
+        match self {
+            ScalarValue::Integer(i) => i.to_string(),
+            ScalarValue::Floating(f) => f.to_string(),
+            ScalarValue::Boolean(b) => b.to_string(),
+            ScalarValue::String(s) => format!("\"{}\"", s),
+            ScalarValue::Blob(b) => format!("Blob({})", b.len()),
+            ScalarValue::Null => "NULL".to_string(),
+        }
+    }
 }
 
 /// Implement SQL LIKE pattern matching using dynamic programming
