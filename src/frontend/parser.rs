@@ -1287,4 +1287,53 @@ mod test {
             _ => panic!("Expected Select statement"),
         }
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(50))]
+
+        /// Generate random valid SELECT and INSERT SQL strings and verify that
+        /// the parser either succeeds or fails gracefully (no panics, no UB).
+        #[test]
+        fn test_parse_select_no_panic(
+            table in "[a-z][a-z0-9_]{0,8}",
+            col1 in "[a-z][a-z0-9_]{0,8}",
+            col2 in "[a-z][a-z0-9_]{0,8}",
+            limit in 1i64..1000,
+        ) {
+            // Basic SELECT — must parse successfully
+            let sql = format!("SELECT {col1} FROM {table}");
+            proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
+
+            // SELECT with LIMIT
+            let sql = format!("SELECT {col1} FROM {table} LIMIT {limit}");
+            proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
+
+            // SELECT with WHERE
+            let sql = format!("SELECT {col1} FROM {table} WHERE {col2} = {limit}");
+            proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
+
+            // SELECT DISTINCT
+            let sql = format!("SELECT DISTINCT {col1} FROM {table}");
+            proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
+
+            // INSERT
+            let sql = format!("INSERT INTO {table} VALUES ({limit}, {limit})");
+            proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
+        }
+
+        /// Verify that CREATE TABLE / CREATE INDEX round-trip through the parser
+        /// without panicking for valid identifiers and data types.
+        #[test]
+        fn test_parse_ddl_no_panic(
+            table in "[a-z][a-z0-9_]{0,8}",
+            col in "[a-z][a-z0-9_]{0,8}",
+            idx in "[a-z][a-z0-9_]{0,8}",
+        ) {
+            let sql = format!("CREATE TABLE {table} ({col} INTEGER)");
+            proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
+
+            let sql = format!("CREATE INDEX {idx} ON {table} ({col})");
+            proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
+        }
+    }
 }
