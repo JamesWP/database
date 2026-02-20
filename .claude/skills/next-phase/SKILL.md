@@ -39,3 +39,23 @@ provide a recomended next step.
 - Follow the Git Workflow from CLAUDE.md
 - Use TaskCreate to track progress through multi-step phases
 - Run `cargo test` before and after changes
+
+## Completion Steps
+
+After implementing all items in the phase:
+
+1. Move the phase file to `doc/plan/completed/`
+2. Update `doc/plan/README.md` to mark the phase as Completed
+3. Commit: `git add doc/plan/ && git commit -m "Mark Phase <X> as completed"`
+4. Push the branch: `git push -u origin <branch>`
+5. Create a PR: `gh pr create --title "Phase <X>: <title>" --body "..."`
+6. Discard any accidental formatting-only changes: `git restore <file>`
+
+## Proptest Guidelines
+
+When adding proptests, keep test suites fast:
+- Use `#![proptest_config(ProptestConfig::with_cases(N))]` inside `proptest! {}` blocks to cap case counts
+- Large/slow tests (e.g. 200+ B-tree inserts): max 5 cases
+- Medium tests (compiler, parser): max 50 cases
+- Put slow tests in their own `proptest! {}` block so the config only applies to them
+- Verify the new tests complete in reasonable time before committing
