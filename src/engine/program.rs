@@ -407,7 +407,14 @@ impl std::fmt::Display for Operation {
                 )
             }
             WriteIndex(cursor, val, pk) => {
-                write!(f, "{:10} {}, {}, {}", "WriteIdx".cyan().bold(), cursor, val, pk)
+                write!(
+                    f,
+                    "{:10} {}, {}, {}",
+                    "WriteIdx".cyan().bold(),
+                    cursor,
+                    val,
+                    pk
+                )
             }
             DeleteCursor(cursor) => {
                 write!(f, "{:10} {}", "Delete".cyan().bold(), cursor)
@@ -419,7 +426,14 @@ impl std::fmt::Display for Operation {
                 write!(f, "{:10} {}, {}", "EncIdxKey".cyan().bold(), dest, src)
             }
             KeyMatchesPrefix(dest, cursor, prefix) => {
-                write!(f, "{:10} {}, {}, {}", "KeyPrefix".cyan().bold(), dest, cursor, prefix)
+                write!(
+                    f,
+                    "{:10} {}, {}, {}",
+                    "KeyPrefix".cyan().bold(),
+                    dest,
+                    cursor,
+                    prefix
+                )
             }
 
             // Control flow

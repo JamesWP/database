@@ -906,7 +906,9 @@ impl BTree {
                 let tbl_name = values[2].as_str().unwrap_or("");
 
                 // Delete if it's the table itself or an index on this table
-                if (obj_type == "table" && name == table_name) || (obj_type == "index" && tbl_name == table_name) {
+                if (obj_type == "table" && name == table_name)
+                    || (obj_type == "index" && tbl_name == table_name)
+                {
                     c.delete_current();
                     deleted_any = true;
                     // c.delete_current() might invalidate the iterator or move it,
@@ -2696,7 +2698,10 @@ mod test {
                 count += 1;
                 cursor.next();
             }
-            assert_eq!(count, num_keys, "All keys should be accessible after splits");
+            assert_eq!(
+                count, num_keys,
+                "All keys should be accessible after splits"
+            );
         }
     }
 }
