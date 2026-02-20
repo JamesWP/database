@@ -1,18 +1,5 @@
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
 use database::db::{self, ExecuteResult};
-use database::engine::scalarvalue::ScalarValue;
-
-/// Format a ScalarValue without ANSI color codes (for width calculation)
-fn plain_value(v: &ScalarValue) -> String {
-    match v {
-        ScalarValue::Integer(i) => i.to_string(),
-        ScalarValue::Floating(f) => f.to_string(),
-        ScalarValue::Boolean(b) => b.to_string(),
-        ScalarValue::String(s) => format!("\"{}\"", s),
-        ScalarValue::Blob(b) => format!("Blob({})", b.len()),
-        ScalarValue::Null => "NULL".to_string(),
-    }
-}
 
 #[derive(Debug)]
 pub struct SqlMode;
@@ -61,7 +48,7 @@ impl Mode for SqlMode {
                 let num_cols = rows[0].len();
                 let plain_rows: Vec<Vec<String>> = rows
                     .iter()
-                    .map(|row| row.iter().map(plain_value).collect())
+                    .map(|row| row.iter().map(|v| v.plain_string()).collect())
                     .collect();
 
                 let mut col_widths = vec![0; num_cols];
