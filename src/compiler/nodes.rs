@@ -92,11 +92,19 @@ pub struct NodeOutput {
 ///   ADVANCE: MoveCursor(cursor, Next)
 ///   EMIT:    GoTo(on_tuple)
 /// ```
+/// Generate bytecode for a Scan node.
+///
+/// When `with_key` is false, output registers contain only the requested
+/// columns. When `with_key` is true, the B-tree row key is read between
+/// `ReadCursor` and `MoveCursor(Next)` (so it reflects the current row) and
+/// appended as the last output register. This is used by
+/// `codegen_populate_index` which needs the primary key to build index entries.
 pub fn codegen_scan(
     rootpage: u32,
     columns: &[usize],
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
+    with_key: bool,
 ) -> NodeOutput {
     // Allocate registers for cursor, flag, and output columns
     let cursor_reg = ctx.registers.alloc();
@@ -106,8 +114,15 @@ pub fn codegen_scan(
     let num_read = columns.iter().max().map(|&m| m + 1).unwrap_or(0);
     let all_regs = ctx.registers.alloc_block(num_read);
 
-    // Map output_regs to only the needed columns
-    let output_regs: Vec<Reg> = columns.iter().map(|&i| all_regs[i]).collect();
+    // Map output_regs to only the needed columns; optionally append key register
+    let mut output_regs: Vec<Reg> = columns.iter().map(|&i| all_regs[i]).collect();
+    let key_reg = if with_key {
+        let r = ctx.registers.alloc();
+        output_regs.push(r);
+        Some(r)
+    } else {
+        None
+    };
 
     // INIT (init_emitter): Open cursor and move to first row
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
@@ -125,6 +140,11 @@ pub fn codegen_scan(
     // READ: Read current row into all registers (num_read values)
     ctx.body_emitter
         .emit(Operation::ReadCursor(all_regs.clone(), cursor_reg));
+
+    // KEY (optional): Read row key before advancing so callers can use it
+    if let Some(kr) = key_reg {
+        ctx.body_emitter.emit(Operation::ReadKey(kr, cursor_reg));
+    }
 
     // ADVANCE: Move cursor to next row (makes next row "pending")
     ctx.body_emitter
@@ -1493,6 +1513,71 @@ pub fn codegen_delete(
     }
 }
 
+/// Generate bytecode for a PopulateIndex node.
+///
+/// Composes `codegen_scan(..., with_key=true)` (which reads the row key before
+/// advancing) with a `WriteIndex` call in the tuple handler.
+/// Produces no output rows.
+///
+/// ```text
+/// INIT (from codegen_scan with_key=true):
+///   Open(index_cursor, index_rootpage)
+///   Open(table_cursor, table_rootpage)
+///   MoveCursor(table_cursor, First)
+///
+/// BODY (from codegen_scan + on_tuple handler):
+///   check: CanReadCursor(flag, table_cursor)
+///          GotoIfFalse(on_done, flag)
+///          ReadCursor([col_regs...], table_cursor)
+///          ReadKey(pk_reg, table_cursor)     ← before advance
+///          MoveCursor(table_cursor, Next)
+///          GoTo(on_tuple)
+///   on_tuple: WriteIndex(index_cursor, col_reg, pk_reg)
+///             GoTo(check)
+///   on_done:  GoTo(cont.on_done)
+/// ```
+pub fn codegen_populate_index(
+    input: &LogicalPlan,
+    index_rootpage: u32,
+    column_idx: usize,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // Open index cursor in INIT (before the child scan opens the table cursor)
+    let index_cursor = ctx.registers.alloc();
+    ctx.init_emitter
+        .emit(Operation::Open(index_cursor, index_rootpage));
+
+    // Set up continuation labels for the child node
+    let child_on_tuple = ctx.body_emitter.create_label();
+    let child_on_done = ctx.body_emitter.create_label();
+    let child_cont = NodeContinuation {
+        on_tuple: child_on_tuple,
+        on_done: child_on_done,
+    };
+
+    // Compile the child (expected: Scan with with_key=true).
+    // output_regs = [col_0, ..., col_N-1, pk_key]
+    let scan_out = codegen(input, &child_cont, ctx);
+    let col_reg = scan_out.output_regs[column_idx];
+    let pk_reg = *scan_out.output_regs.last().expect("key reg");
+
+    // child_on_tuple: write one index entry, then advance to next row
+    ctx.body_emitter.bind_label(child_on_tuple);
+    ctx.body_emitter
+        .emit(Operation::WriteIndex(index_cursor, col_reg, pk_reg));
+    ctx.body_emitter.emit_goto(scan_out.next);
+
+    // child_on_done: all rows consumed, jump to cont.on_done (no rows yielded)
+    ctx.body_emitter.bind_label(child_on_done);
+    ctx.body_emitter.emit_goto(cont.on_done);
+
+    NodeOutput {
+        next: scan_out.next,
+        output_regs: vec![],
+    }
+}
+
 /// Main codegen dispatch function.
 /// Routes to the appropriate codegen based on plan type.
 pub fn codegen(
@@ -1501,7 +1586,11 @@ pub fn codegen(
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
     match plan {
-        LogicalPlan::Scan { rootpage, columns } => codegen_scan(*rootpage, columns, cont, ctx),
+        LogicalPlan::Scan {
+            rootpage,
+            columns,
+            with_key,
+        } => codegen_scan(*rootpage, columns, cont, ctx, *with_key),
         LogicalPlan::IndexScan {
             index_rootpage,
             search_value,
@@ -1551,6 +1640,11 @@ pub fn codegen(
             left_column_count,
         } => codegen_join(left, right, on_condition, *left_column_count, cont, ctx),
         LogicalPlan::Distinct { input } => codegen_distinct(input, cont, ctx),
+        LogicalPlan::PopulateIndex {
+            input,
+            index_rootpage,
+            column_idx,
+        } => codegen_populate_index(input, *index_rootpage, *column_idx, cont, ctx),
     }
 }
 
@@ -1601,7 +1695,7 @@ mod tests {
         let on_done = ctx.body_emitter.create_label();
         let cont = NodeContinuation { on_tuple, on_done };
 
-        let output = codegen_scan(42, &[0, 1], &cont, &mut ctx);
+        let output = codegen_scan(42, &[0, 1], &cont, &mut ctx, false);
 
         // Check that we got 2 output registers
         assert_eq!(output.output_regs.len(), 2);
@@ -1640,6 +1734,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: root,
                 columns: vec![0, 1],
+                with_key: false,
             }),
         };
 
@@ -1666,6 +1761,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: root,
                 columns: vec![0],
+                with_key: false,
             }),
         };
 
@@ -1704,6 +1800,7 @@ mod tests {
         let plan = LogicalPlan::Scan {
             rootpage: root,
             columns: vec![0, 1],
+            with_key: false,
         };
 
         let (ops, num_registers) = compile_plan(&plan);
@@ -2463,6 +2560,7 @@ mod tests {
         let scan_plan = LogicalPlan::Scan {
             rootpage: root,
             columns: vec![0, 1],
+            with_key: false,
         };
 
         let (ops, num_registers) = compile_plan(&scan_plan);

@@ -124,7 +124,11 @@ pub enum LogicalPlan {
     /// Scan rows from a table (leaf node, no inputs)
     /// rootpage: the B-tree root page number for this table
     /// columns: indices of columns to read from the table schema
-    Scan { rootpage: u32, columns: Vec<usize> },
+    Scan {
+        rootpage: u32,
+        columns: Vec<usize>,
+        with_key: bool,
+    },
 
     /// Scan via an index
     IndexScan {
@@ -232,8 +236,17 @@ pub enum LogicalPlan {
     /// Materializes all rows, removes duplicates, yields unique rows.
     /// Output: same columns as input.
     Distinct { input: Box<LogicalPlan> },
-}
 
+    /// Populate an index B-tree from an existing table.
+    /// Scans all rows in the table, encoding each row's indexed column and
+    /// primary key as a composite index key, then writes to the index B-tree.
+    /// Output: no rows (yields immediately to on_done).
+    PopulateIndex {
+        input: Box<LogicalPlan>,
+        index_rootpage: u32,
+        column_idx: usize,
+    },
+}
 // ============================================================================
 // Schema (for column resolution)
 // ============================================================================
@@ -404,6 +417,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
             let scan = LogicalPlan::Scan {
                 rootpage: table.rootpage,
                 columns: mapping.scan_columns,
+                with_key: false,
             };
             LogicalPlan::Filter {
                 input: Box::new(scan),
@@ -414,6 +428,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
         LogicalPlan::Scan {
             rootpage: table.rootpage,
             columns: mapping.scan_columns,
+            with_key: false,
         }
     };
 
@@ -668,10 +683,12 @@ fn plan_select_with_joins(
     let left_scan = LogicalPlan::Scan {
         rootpage: left_table.rootpage,
         columns: (0..left_col_count).collect(),
+        with_key: false,
     };
     let right_scan = LogicalPlan::Scan {
         rootpage: right_table.rootpage,
         columns: (0..right_col_count).collect(),
+        with_key: false,
     };
 
     // 5. Convert ON condition using join resolver
@@ -2020,6 +2037,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
                 columns: vec![0, 1], // id, name
+                with_key: false,
             }),
             columns: vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)],
         };
@@ -2046,6 +2064,7 @@ mod tests {
                 input: Box::new(LogicalPlan::Scan {
                     rootpage: users_root,
                     columns: vec![1, 2], // name, age
+                    with_key: false,
                 }),
                 predicate: PlanExpr::BinaryOp {
                     op: BinaryOp::GreaterThan,
@@ -2078,6 +2097,7 @@ mod tests {
                 input: Box::new(LogicalPlan::Scan {
                     rootpage: users_root,
                     columns: vec![1], // name
+                    with_key: false,
                 }),
                 columns: vec![PlanExpr::ColumnRef(0)],
             }),
@@ -2101,6 +2121,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
                 columns: vec![0, 1, 2], // all columns
+                with_key: false,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -2132,6 +2153,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: root,
                 columns: vec![0, 1, 2, 3, 4], // all 5 columns
+                with_key: false,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -2156,6 +2178,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
                 columns: vec![0, 1, 2], // all columns
+                with_key: false,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -2179,6 +2202,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
                 columns: vec![0, 1, 2], // all columns
+                with_key: false,
             }),
             columns: vec![
                 PlanExpr::Literal(Literal::Integer(999)),
@@ -2202,6 +2226,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
                 columns: vec![0, 1, 2], // all columns
+                with_key: false,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -2260,6 +2285,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
                 columns: vec![], // No columns needed from scan
+                with_key: false,
             }),
             columns: vec![PlanExpr::Literal(Literal::Null)],
         };
@@ -2278,6 +2304,7 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
                 columns: vec![0, 1], // id, name
+                with_key: false,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),

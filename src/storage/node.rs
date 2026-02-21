@@ -507,17 +507,17 @@ mod test {
     }
 
     proptest! {
-        #[test]
-        fn test_interior_page_split(interior_num_edges in 4u64..150) {
-            let num_inserts = interior_num_edges-2; // there are already two edges in the interior page
-            let mut interior_node = InteriorNodePage::new(1, make_key(1), 1);
-            for page in 0..num_inserts {
-                interior_node.insert_child_page(make_key(page+2), 1);
+            #[test]
+            fn test_interior_page_split(interior_num_edges in 4u64..150) {
+                let num_inserts = interior_num_edges-2; // there are already two edges in the interior page
+                let mut interior_node = InteriorNodePage::new(1, make_key(1), 1);
+                for page in 0..num_inserts {
+                    interior_node.insert_child_page(make_key(page+2), 1);
+                }
+                let (left, right) = interior_node.split();
+    // Both sides should be within 1 key of each other
+                let diff = (left.keys.len() as i64 - right.keys.len() as i64).unsigned_abs();
+                prop_assert!(diff <= 1);
             }
-            let (left, right) = interior_node.split();
-// Both sides should be within 1 key of each other
-            let diff = (left.keys.len() as i64 - right.keys.len() as i64).unsigned_abs();
-            prop_assert!(diff <= 1);
         }
-    }
 }

@@ -1288,6 +1288,18 @@ mod test {
         }
     }
 
+    /// SQL reserved keywords that must not be used as identifiers in tests.
+    const RESERVED_KEYWORDS: &[&str] = &[
+        "select", "from", "where", "insert", "into", "values", "create", "table", "index", "on",
+        "drop", "update", "delete", "set", "order", "by", "limit", "distinct", "inner", "join",
+        "group", "having", "as", "and", "or", "not", "is", "null", "in", "like", "between", "asc",
+        "desc", "integer", "text", "float", "boolean", "blob", "count", "sum", "avg", "min", "max",
+    ];
+
+    fn is_reserved(s: &str) -> bool {
+        RESERVED_KEYWORDS.contains(&s.to_ascii_lowercase().as_str())
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(50))]
 
@@ -1300,6 +1312,10 @@ mod test {
             col2 in "[a-z][a-z0-9_]{0,8}",
             limit in 1i64..1000,
         ) {
+            proptest::prop_assume!(!is_reserved(&table));
+            proptest::prop_assume!(!is_reserved(&col1));
+            proptest::prop_assume!(!is_reserved(&col2));
+
             // Basic SELECT — must parse successfully
             let sql = format!("SELECT {col1} FROM {table}");
             proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
@@ -1329,6 +1345,10 @@ mod test {
             col in "[a-z][a-z0-9_]{0,8}",
             idx in "[a-z][a-z0-9_]{0,8}",
         ) {
+            proptest::prop_assume!(!is_reserved(&table));
+            proptest::prop_assume!(!is_reserved(&col));
+            proptest::prop_assume!(!is_reserved(&idx));
+
             let sql = format!("CREATE TABLE {table} ({col} INTEGER)");
             proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
 
