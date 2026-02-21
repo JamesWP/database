@@ -156,6 +156,11 @@ pub enum Operation {
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
     EncodeIndexKey(Reg, Reg),  // EncodeIndexKey(dest, src): scalar to index blob
     KeyMatchesPrefix(Reg, Reg, Reg), // Reg = KeyMatchesPrefix(cursor, prefix_reg)
+    /// Check if the current key's column-value prefix exceeds an upper bound.
+    /// dest = true means the current entry is OUT of range (scan should stop).
+    /// inclusive=true (for <=): stop when key_prefix > bound (key > upper)
+    /// inclusive=false (for <): stop when key_prefix >= bound (key >= upper)
+    KeyExceedsBound(Reg, Reg, Reg, bool), // (dest, cursor, bound_reg, inclusive)
 
     // Control Flow
     Yield(Vec<Reg>),
@@ -433,6 +438,17 @@ impl std::fmt::Display for Operation {
                     dest,
                     cursor,
                     prefix
+                )
+            }
+            KeyExceedsBound(dest, cursor, bound, inclusive) => {
+                write!(
+                    f,
+                    "{:10} {}, {}, {}, {}",
+                    "KeyExceed".cyan().bold(),
+                    dest,
+                    cursor,
+                    bound,
+                    if *inclusive { "incl" } else { "excl" }
                 )
             }
 
