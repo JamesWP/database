@@ -43,6 +43,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **G2** | Performance & Testing | 4 | [phase-g2-indexing-and-perf.md](completed/phase-g2-indexing-and-perf.md) | Completed |
 | **H** | Compiler Type Safety | 1 | [phase-h-compiler-safety.md](completed/phase-h-compiler-safety.md) | Completed |
 | **I** | Bug Fixes | 4 | [phase-i-bug-fixes.md](completed/phase-i-bug-fixes.md) | Completed |
+| **J** | Cleanup and Refactor | 3 | [phase-j-cleanup-and-refactor.md](completed/phase-j-cleanup-and-refactor.md) | Completed |
 
 ## Current Test Coverage (161 tests)
 
