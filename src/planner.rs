@@ -131,15 +131,10 @@ pub enum LogicalPlan {
     },
 
     /// Scan via an index
+    /// Scan via an index — handles both equality and range predicates.
+    /// Equality (col = X): lower_bound = Some((X, true)), upper_bound = Some((X, true))
+    /// Range (col > X): lower_bound = Some((X, false)), upper_bound = None
     IndexScan {
-        index_rootpage: u32,
-        search_value: Literal,
-        table_rootpage: u32,
-        columns: Vec<usize>,
-    },
-
-    /// Range scan via an index (supports >, >=, <, <=)
-    IndexRangeScan {
         index_rootpage: u32,
         lower_bound: Option<(Literal, bool)>, // (value, inclusive)
         upper_bound: Option<(Literal, bool)>, // (value, inclusive)
@@ -421,14 +416,6 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
             btree,
         ) {
             index_scan
-        } else if let Some(range_scan) = try_plan_index_range_scan(
-            filter,
-            &table_name,
-            table.rootpage,
-            &mapping.scan_columns,
-            btree,
-        ) {
-            range_scan
         } else {
             // Fall back to Scan + Filter
             let scan = LogicalPlan::Scan {
@@ -903,7 +890,7 @@ fn plan_insert(insert: ast::InsertStatement, btree: &BTree) -> Result<LogicalPla
     })
 }
 
-/// Try to use an index for the given filter.
+/// Try to use an index for the given filter (equality or range predicate).
 fn try_plan_index_scan(
     filter: &ast::Expression,
     table_name: &str,
@@ -911,35 +898,18 @@ fn try_plan_index_scan(
     scan_columns: &[usize],
     btree: &BTree,
 ) -> Option<LogicalPlan> {
-    // Only support simple equality for now: WHERE col = literal
-    let (col_name, literal) = extract_equality_filter(filter)?;
+    let (col_name, lower_bound, upper_bound) =
+        if let Some((col, lit)) = extract_equality_filter(filter) {
+            // Equality: col = X → [X, X] inclusive on both sides
+            (col, Some((lit.clone(), true)), Some((lit, true)))
+        } else {
+            extract_range_filter(filter)?
+        };
 
-    // Look up indexes for this table
     let indexes = btree.lookup_indexes_for_table(table_name);
     let index = indexes.iter().find(|idx| idx.column_name == col_name)?;
 
     Some(LogicalPlan::IndexScan {
-        index_rootpage: index.rootpage,
-        search_value: literal,
-        table_rootpage,
-        columns: scan_columns.to_vec(),
-    })
-}
-
-/// Try to use an index for a range filter (>, >=, <, <=).
-fn try_plan_index_range_scan(
-    filter: &ast::Expression,
-    table_name: &str,
-    table_rootpage: u32,
-    scan_columns: &[usize],
-    btree: &BTree,
-) -> Option<LogicalPlan> {
-    let (col_name, lower_bound, upper_bound) = extract_range_filter(filter)?;
-
-    let indexes = btree.lookup_indexes_for_table(table_name);
-    let index = indexes.iter().find(|idx| idx.column_name == col_name)?;
-
-    Some(LogicalPlan::IndexRangeScan {
         index_rootpage: index.rootpage,
         lower_bound,
         upper_bound,
@@ -2990,12 +2960,14 @@ mod tests {
             LogicalPlan::Project { input, .. } => match *input {
                 LogicalPlan::IndexScan {
                     index_rootpage,
-                    search_value,
+                    lower_bound,
+                    upper_bound,
                     table_rootpage,
                     ..
                 } => {
                     assert_eq!(index_rootpage, index_root);
-                    assert_eq!(search_value, Literal::Integer(30));
+                    assert_eq!(lower_bound, Some((Literal::Integer(30), true)));
+                    assert_eq!(upper_bound, Some((Literal::Integer(30), true)));
                     assert_eq!(table_rootpage, users_root);
                 }
                 _ => panic!("Expected IndexScan, got {:?}", input),
@@ -3025,7 +2997,7 @@ mod tests {
         let p = plan(stmt, &btree).expect("Planning failed");
         match p {
             LogicalPlan::Project { input, .. } => match *input {
-                LogicalPlan::IndexRangeScan {
+                LogicalPlan::IndexScan {
                     index_rootpage,
                     lower_bound,
                     upper_bound,
@@ -3037,7 +3009,7 @@ mod tests {
                     assert_eq!(upper_bound, None);
                     assert_eq!(table_rootpage, data_root);
                 }
-                _ => panic!("Expected IndexRangeScan, got {:?}", input),
+                _ => panic!("Expected IndexScan, got {:?}", input),
             },
             _ => panic!("Expected Project, got {:?}", p),
         }
@@ -3047,7 +3019,7 @@ mod tests {
         let p = plan(stmt, &btree).expect("Planning failed");
         match p {
             LogicalPlan::Project { input, .. } => match *input {
-                LogicalPlan::IndexRangeScan {
+                LogicalPlan::IndexScan {
                     lower_bound,
                     upper_bound,
                     ..
@@ -3055,7 +3027,7 @@ mod tests {
                     assert_eq!(lower_bound, Some((Literal::Integer(10), true)));
                     assert_eq!(upper_bound, Some((Literal::Integer(40), true)));
                 }
-                _ => panic!("Expected IndexRangeScan, got {:?}", input),
+                _ => panic!("Expected IndexScan, got {:?}", input),
             },
             _ => panic!("Expected Project, got {:?}", p),
         }
