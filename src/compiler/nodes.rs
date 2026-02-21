@@ -460,87 +460,6 @@ pub fn codegen_filter(
 /// ```
 pub fn codegen_index_scan(
     index_rootpage: u32,
-    search_value: &Literal,
-    table_rootpage: u32,
-    columns: &[usize],
-    cont: &NodeContinuation,
-    ctx: &mut CodegenContext,
-) -> NodeOutput {
-    let index_cursor_reg = ctx.registers.alloc();
-    let table_cursor_reg = ctx.registers.alloc();
-    let search_key_reg = ctx.registers.alloc();
-    let flag_reg = ctx.registers.alloc();
-    let pk_reg = ctx.registers.alloc();
-
-    let output_regs = ctx.registers.alloc_block(columns.len());
-
-    // INIT: Open cursors and encode search key
-    ctx.init_emitter
-        .emit(Operation::Open(index_cursor_reg, index_rootpage));
-    ctx.init_emitter
-        .emit(Operation::Open(table_cursor_reg, table_rootpage));
-
-    // Store search value and encode to index key prefix
-    let search_scalar = literal_to_scalar(search_value);
-    ctx.init_emitter
-        .emit(Operation::StoreValue(search_key_reg, search_scalar));
-    ctx.init_emitter
-        .emit(Operation::EncodeIndexKey(search_key_reg, search_key_reg));
-
-    // Find first entry in index >= search key
-    ctx.init_emitter.emit(Operation::MoveCursor(
-        index_cursor_reg,
-        MoveOperation::Find(search_key_reg),
-    ));
-
-    // BODY: Check if positioned on matching key prefix
-    let index_check = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(index_check);
-
-    ctx.body_emitter
-        .emit(Operation::CanReadCursor(flag_reg, index_cursor_reg));
-    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
-
-    // Verify current key matches our prefix
-    ctx.body_emitter.emit(Operation::KeyMatchesPrefix(
-        flag_reg,
-        index_cursor_reg,
-        search_key_reg,
-    ));
-    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
-
-    // Read primary key from index value (V1 stores it in the value too)
-    ctx.body_emitter
-        .emit(Operation::ReadCursor(vec![pk_reg], index_cursor_reg));
-
-    // Look up row in table by primary key
-    ctx.body_emitter.emit(Operation::MoveCursor(
-        table_cursor_reg,
-        MoveOperation::Find(pk_reg),
-    ));
-
-    // Read full row from table
-    ctx.body_emitter
-        .emit(Operation::ReadCursor(output_regs.clone(), table_cursor_reg));
-
-    // Yield this row
-    ctx.body_emitter.emit_goto(cont.on_tuple);
-
-    // INDEX_NEXT: advance to next entry in index
-    let index_next = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(index_next);
-    ctx.body_emitter
-        .emit(Operation::MoveCursor(index_cursor_reg, MoveOperation::Next));
-    ctx.body_emitter.emit_goto(index_check);
-
-    NodeOutput {
-        next: index_next,
-        output_regs,
-    }
-}
-
-pub fn codegen_index_range_scan(
-    index_rootpage: u32,
     lower_bound: &Option<(Literal, bool)>,
     upper_bound: &Option<(Literal, bool)>,
     table_rootpage: u32,
@@ -1726,24 +1645,11 @@ pub fn codegen(
         } => codegen_scan(*rootpage, columns, cont, ctx, *with_key),
         LogicalPlan::IndexScan {
             index_rootpage,
-            search_value,
-            table_rootpage,
-            columns,
-        } => codegen_index_scan(
-            *index_rootpage,
-            search_value,
-            *table_rootpage,
-            columns,
-            cont,
-            ctx,
-        ),
-        LogicalPlan::IndexRangeScan {
-            index_rootpage,
             lower_bound,
             upper_bound,
             table_rootpage,
             columns,
-        } => codegen_index_range_scan(
+        } => codegen_index_scan(
             *index_rootpage,
             lower_bound,
             upper_bound,
