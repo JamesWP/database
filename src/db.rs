@@ -3,9 +3,8 @@ use crate::engine::scalarvalue::ScalarValue;
 use crate::engine::Engine;
 use crate::frontend::ast::{DataType, Statement};
 use crate::frontend::{parse, ParseError};
-use crate::planner::{self, PlanError};
-use crate::storage;
-use crate::storage::{decode_u64_key, encode_integer_key, BTree};
+use crate::planner::{self, LogicalPlan, PlanError};
+use crate::storage::BTree;
 
 #[derive(Debug)]
 pub enum ExecuteResult {
@@ -178,42 +177,23 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
             // 5. Create the index B-tree
             let index_rootpage = btree.create_tree();
 
-            // 6. Scan table and collect (index_key, primary_key) pairs, then write to index.
-            // We collect first to avoid holding readonly borrow while inserting (readwrite borrow).
-            let entries_to_index: Vec<(Vec<u8>, i64)> = {
-                let mut table_cursor = btree.open(table_rootpage);
-                let mut tc = table_cursor.open_readonly();
-                tc.first();
-                let mut entries = Vec::new();
-                loop {
-                    match tc.get_entry() {
-                        None => break,
-                        Some(mut reader) => {
-                            let table_key = decode_u64_key(reader.key());
-                            let values = reader.decode_as_array();
-                            if column_idx < values.len() {
-                                if let ScalarValue::Integer(col_int) = values[column_idx] {
-                                    entries.push((encode_integer_key(col_int), table_key as i64));
-                                }
-                            }
-                        }
-                    }
-                    tc.next();
-                }
-                entries
+            // 6. Populate index by running a PopulateIndex plan via the engine
+            let plan = LogicalPlan::PopulateIndex {
+                input: Box::new(LogicalPlan::Scan {
+                    rootpage: table_rootpage,
+                    columns: (0..create_table.columns.len()).collect(),
+                    with_key: true,
+                }),
+                index_rootpage,
+                column_idx,
             };
-
-            for (index_key, pk) in entries_to_index {
-                // Compose index key: [encoded column value] + [encoded rowid]
-                let mut full_key = index_key;
-                full_key.extend_from_slice(&storage::encode_u64_key(pk as u64));
-
-                let index_value = vec![ScalarValue::Integer(pk)];
-                let mut encoded = Vec::new();
-                ciborium::ser::into_writer(&index_value, &mut encoded).unwrap();
-                let mut index_cursor = btree.open(index_rootpage);
-                index_cursor.open_readwrite().insert(&full_key, encoded);
-            }
+            let compiled = compiler::compile(&plan);
+            Engine::with_program(
+                compiled.operations(),
+                compiled.num_registers(),
+                btree.clone(),
+            )
+            .run();
 
             // 7. Add catalog entry
             btree.insert_schema_entry("index", &ci.index_name, &ci.table_name, index_rootpage, sql);
