@@ -612,7 +612,7 @@ impl Engine {
                 let encoded_key = match value {
                     ScalarValue::Integer(i) => storage::encode_integer_key(*i),
                     ScalarValue::Null => vec![0; 8], // NULL sorts first
-                    _ => panic!("EncodeIndexKey: only INTEGER supported in V1"),
+                    _ => panic!("EncodeIndexKey: only INTEGER and NULL are supported"),
                 };
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Blob(encoded_key));
@@ -685,7 +685,7 @@ impl Engine {
                 let mut index_key = match indexed_value {
                     ScalarValue::Integer(i) => storage::encode_integer_key(*i),
                     ScalarValue::Null => vec![0; 8], // NULL sorts first
-                    _ => panic!("WriteIndex: only INTEGER columns supported in V1"),
+                    _ => panic!("WriteIndex: only INTEGER and NULL column values are supported"),
                 };
 
                 // Append primary key to make the entry unique in the index B-tree
@@ -696,7 +696,7 @@ impl Engine {
                 };
                 index_key.extend_from_slice(&storage::encode_u64_key(pk));
 
-                // Encode primary key as index value (optional for V1)
+                // Encode primary key as index value
                 let index_value_encoded = vec![pk_value.clone()];
                 let mut encoded = Vec::new();
                 ciborium::ser::into_writer(&index_value_encoded, &mut encoded).unwrap();
