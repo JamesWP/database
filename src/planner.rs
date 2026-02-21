@@ -138,6 +138,15 @@ pub enum LogicalPlan {
         columns: Vec<usize>,
     },
 
+    /// Range scan via an index (supports >, >=, <, <=)
+    IndexRangeScan {
+        index_rootpage: u32,
+        lower_bound: Option<(Literal, bool)>, // (value, inclusive)
+        upper_bound: Option<(Literal, bool)>, // (value, inclusive)
+        table_rootpage: u32,
+        columns: Vec<usize>,
+    },
+
     /// Filter rows based on a predicate (1 input)
     /// Pass-through: outputs all columns from its child unchanged.
     /// Only rows where predicate evaluates to true are emitted.
@@ -412,6 +421,14 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
             btree,
         ) {
             index_scan
+        } else if let Some(range_scan) = try_plan_index_range_scan(
+            filter,
+            &table_name,
+            table.rootpage,
+            &mapping.scan_columns,
+            btree,
+        ) {
+            range_scan
         } else {
             // Fall back to Scan + Filter
             let scan = LogicalPlan::Scan {
@@ -907,6 +924,92 @@ fn try_plan_index_scan(
         table_rootpage,
         columns: scan_columns.to_vec(),
     })
+}
+
+/// Try to use an index for a range filter (>, >=, <, <=).
+fn try_plan_index_range_scan(
+    filter: &ast::Expression,
+    table_name: &str,
+    table_rootpage: u32,
+    scan_columns: &[usize],
+    btree: &BTree,
+) -> Option<LogicalPlan> {
+    let (col_name, lower_bound, upper_bound) = extract_range_filter(filter)?;
+
+    let indexes = btree.lookup_indexes_for_table(table_name);
+    let index = indexes.iter().find(|idx| idx.column_name == col_name)?;
+
+    Some(LogicalPlan::IndexRangeScan {
+        index_rootpage: index.rootpage,
+        lower_bound,
+        upper_bound,
+        table_rootpage,
+        columns: scan_columns.to_vec(),
+    })
+}
+
+/// Extract a range filter from an expression involving a single column.
+/// Returns (column_name, lower_bound, upper_bound).
+/// Each bound is (Literal, inclusive: bool).
+fn extract_range_filter(
+    expr: &ast::Expression,
+) -> Option<(String, Option<(Literal, bool)>, Option<(Literal, bool)>)> {
+    // Try single comparison: col > lit, col >= lit, col < lit, col <= lit
+    if let Some((col, lower, upper)) = extract_single_range(expr) {
+        return Some((col, lower, upper));
+    }
+    // Try AND: (col > L) AND (col < U)
+    if let ast::Expression::BinaryOp {
+        op: ast::BinaryOp::And,
+        lhs,
+        rhs,
+    } = expr
+    {
+        let left = extract_single_range(lhs)?;
+        let right = extract_single_range(rhs)?;
+        if left.0 != right.0 {
+            return None; // Different columns
+        }
+        let col = left.0;
+        let lower = left.1.or(right.1);
+        let upper = left.2.or(right.2);
+        if lower.is_none() && upper.is_none() {
+            return None;
+        }
+        return Some((col, lower, upper));
+    }
+    None
+}
+
+fn extract_single_range(
+    expr: &ast::Expression,
+) -> Option<(String, Option<(Literal, bool)>, Option<(Literal, bool)>)> {
+    let ast::Expression::BinaryOp { op, lhs, rhs } = expr else {
+        return None;
+    };
+    match op {
+        ast::BinaryOp::GreaterThan => {
+            let col = extract_column_name(lhs)?;
+            let lit = extract_literal(rhs)?;
+            Some((col, Some((lit, false)), None))
+        }
+        ast::BinaryOp::GreaterThanOrEqual => {
+            let col = extract_column_name(lhs)?;
+            let lit = extract_literal(rhs)?;
+            Some((col, Some((lit, true)), None))
+        }
+        ast::BinaryOp::LessThan => {
+            let col = extract_column_name(lhs)?;
+            let lit = extract_literal(rhs)?;
+            Some((col, None, Some((lit, false))))
+        }
+        ast::BinaryOp::LessThanOrEqual => {
+            let col = extract_column_name(lhs)?;
+            let lit = extract_literal(rhs)?;
+            Some((col, None, Some((lit, true))))
+        }
+        _ => None,
+    }
 }
 
 fn extract_equality_filter(expr: &ast::Expression) -> Option<(String, Literal)> {
@@ -2898,6 +3001,63 @@ mod tests {
                 _ => panic!("Expected IndexScan, got {:?}", input),
             },
             _ => panic!("Expected Project, got {:?}", plan),
+        }
+    }
+
+    #[test]
+    fn test_plan_index_range_scan() {
+        use super::{plan, Literal, LogicalPlan};
+        use crate::test::TestDb;
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let sql_table = "CREATE TABLE data (id INTEGER, value INTEGER)";
+        let data_root = btree.create_tree();
+        btree.insert_schema_entry("table", "data", "data", data_root, sql_table);
+
+        let sql_index = "CREATE INDEX idx_value ON data(value)";
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry("index", "idx_value", "data", index_root, sql_index);
+
+        // Test greater than
+        let stmt = parse_sql("SELECT id FROM data WHERE value > 20");
+        let p = plan(stmt, &btree).expect("Planning failed");
+        match p {
+            LogicalPlan::Project { input, .. } => match *input {
+                LogicalPlan::IndexRangeScan {
+                    index_rootpage,
+                    lower_bound,
+                    upper_bound,
+                    table_rootpage,
+                    ..
+                } => {
+                    assert_eq!(index_rootpage, index_root);
+                    assert_eq!(lower_bound, Some((Literal::Integer(20), false)));
+                    assert_eq!(upper_bound, None);
+                    assert_eq!(table_rootpage, data_root);
+                }
+                _ => panic!("Expected IndexRangeScan, got {:?}", input),
+            },
+            _ => panic!("Expected Project, got {:?}", p),
+        }
+
+        // Test range with AND
+        let stmt = parse_sql("SELECT id FROM data WHERE value >= 10 AND value <= 40");
+        let p = plan(stmt, &btree).expect("Planning failed");
+        match p {
+            LogicalPlan::Project { input, .. } => match *input {
+                LogicalPlan::IndexRangeScan {
+                    lower_bound,
+                    upper_bound,
+                    ..
+                } => {
+                    assert_eq!(lower_bound, Some((Literal::Integer(10), true)));
+                    assert_eq!(upper_bound, Some((Literal::Integer(40), true)));
+                }
+                _ => panic!("Expected IndexRangeScan, got {:?}", input),
+            },
+            _ => panic!("Expected Project, got {:?}", p),
         }
     }
 
