@@ -68,7 +68,7 @@ impl std::fmt::Display for ExecuteError {
             ExecuteError::ColumnNotInteger { table, column } => {
                 write!(
                     f,
-                    "Column '{}' in table '{}' is not INTEGER (V1: only INTEGER columns supported)",
+                    "Column '{}' in table '{}' is not INTEGER (only INTEGER columns are supported for indexes)",
                     column, table
                 )
             }
@@ -151,7 +151,7 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                 }
             };
 
-            // 4. Find column and verify it's INTEGER (V1 restriction)
+            // 4. Find column and verify it's INTEGER (only INTEGER indexes are supported)
             let column_def = create_table
                 .columns
                 .iter()
