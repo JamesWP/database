@@ -87,13 +87,13 @@ impl Mode for SqlMode {
                             )
                         })
                         .collect();
-                    output += &header.join(&" | ".truecolor(50, 50, 50).to_string());
+                    output += &header.join(&" | ".truecolor(90, 90, 90).to_string());
                     output += "\n";
                     let sep: Vec<String> = col_widths
                         .iter()
-                        .map(|w| "─".repeat(*w).truecolor(50, 50, 50).to_string())
+                        .map(|w| "─".repeat(*w).truecolor(90, 90, 90).to_string())
                         .collect();
-                    output += &sep.join(&"─┼─".truecolor(50, 50, 50).to_string());
+                    output += &sep.join(&"─┼─".truecolor(90, 90, 90).to_string());
                     output += "\n";
                 }
 
@@ -109,7 +109,7 @@ impl Mode for SqlMode {
                         .enumerate()
                         .map(|(i, cell)| format!("{:width$}", cell.green(), width = col_widths[i]))
                         .collect();
-                    output += &padded_cells.join(&" │ ".truecolor(50, 50, 50).to_string());
+                    output += &padded_cells.join(&" │ ".truecolor(90, 90, 90).to_string());
                     output += "\n";
                 }
                 output += &format!("({} rows)", rows.len());
