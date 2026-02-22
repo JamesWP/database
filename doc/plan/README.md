@@ -48,6 +48,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **K** | Inline SQL Test Expected Output | 4 | [phase-k-inline-sql-tests.md](completed/phase-k-inline-sql-tests.md) | Completed |
 | **L** | EXPLAIN Query Plans | 4 | [phase-l-explain.md](completed/phase-l-explain.md) | Completed |
 | **M** | Register Consolidation | 3 | [phase-m-register-consolidation.md](completed/phase-m-register-consolidation.md) | Completed |
+| **N** | Index Maintenance & Sort Elision | 5 | [phase-n-index-maintenance.md](phase-n-index-maintenance.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 
