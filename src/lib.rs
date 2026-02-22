@@ -3,6 +3,7 @@
 pub mod compiler;
 pub mod db;
 pub mod engine;
+pub mod explain;
 pub mod frontend;
 pub mod planner;
 pub mod storage;
