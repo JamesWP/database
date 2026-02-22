@@ -442,22 +442,6 @@ pub fn codegen_filter(
     }
 }
 
-/// Generate bytecode for a Project node.
-///
-/// Project transforms input tuples by computing new expressions.
-/// Each output column is the result of evaluating a PlanExpr.
-///
-/// ```text
-/// // Child's on_tuple wired to PROJECT_COMPUTE
-/// // Child's on_done wired to parent's on_done (propagate)
-///
-/// BODY (body_emitter):
-///   PROJECT_COMPUTE: for each expr: compile_expr into output_regs[i]
-///                    GoTo(on_tuple)
-///
-/// next_label = child.next_label  // delegate to child
-/// output_regs = newly allocated registers
-/// ```
 /// Generate bytecode for an IndexScan node.
 ///
 /// Scans the index B-tree and yields one rowid per matching entry.
@@ -494,7 +478,10 @@ pub fn codegen_index_scan(
             MoveOperation::Find(lower_key_reg),
         ));
 
-        // If exclusive lower bound, skip entries where key prefix == lower bound
+        // If exclusive lower bound, skip entries where key starts with the lower bound prefix.
+        // TEXT values in encode_index_value are NUL-terminated ([0x03][bytes][0x00]), ensuring
+        // that 'a' encoded as [0x03,0x61,0x00] is NOT a prefix of 'apple' [0x03,0x61,0x70,...].
+        // So BlobStartsWith correctly identifies exact column-value matches.
         if !_lower_inclusive {
             let skip_check = ctx.body_emitter.create_label();
             ctx.body_emitter.bind_label(skip_check);
@@ -644,6 +631,22 @@ pub fn codegen_rowid_lookup(
     }
 }
 
+/// Generate bytecode for a Project node.
+///
+/// Project transforms input tuples by computing new expressions.
+/// Each output column is the result of evaluating a PlanExpr.
+///
+/// ```text
+/// // Child's on_tuple wired to PROJECT_COMPUTE
+/// // Child's on_done wired to parent's on_done (propagate)
+///
+/// BODY (body_emitter):
+///   PROJECT_COMPUTE: for each expr: compile_expr into output_regs[i]
+///                    GoTo(on_tuple)
+///
+/// next_label = child.next_label  // delegate to child
+/// output_regs = newly allocated registers
+/// ```
 pub fn codegen_project(
     columns: &[PlanExpr],
     input: &LogicalPlan,
