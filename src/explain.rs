@@ -5,9 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::planner::{
-    AggregateFunction, BinaryOp, Literal, LogicalPlan, PlanExpr, SortKey, UnaryOp,
-};
+use crate::planner::{BinaryOp, Literal, LogicalPlan, PlanExpr, SortKey, UnaryOp};
 
 // ============================================================================
 // Schema metadata (for name resolution)
