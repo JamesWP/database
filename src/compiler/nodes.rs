@@ -857,8 +857,9 @@ pub fn codegen_distinct(
 ///     GoTo(child.next)
 ///   sort_and_yield:
 ///     SortRowBuffer(buffer, sort_keys)
+///     RewindRowBuffer(buffer)
 ///   yield_loop:
-///     YieldFromRowBuffer(child_output_regs, buffer, on_done)
+///     NextFromRowBuffer(child_output_regs, buffer, on_done)
 ///     GoTo(on_tuple)
 ///   sort_next:
 ///     GoTo(yield_loop)
@@ -920,15 +921,17 @@ pub fn codegen_sort(
 
     ctx.body_emitter
         .emit(Operation::SortRowBuffer(buffer_reg, sort_key_specs));
+    ctx.body_emitter
+        .emit(Operation::RewindRowBuffer(buffer_reg));
 
-    // yield_loop: pop rows from buffer and yield
+    // yield_loop: advance cursor and yield rows
     ctx.body_emitter.bind_label(yield_loop);
-    ctx.body_emitter.emit(Operation::YieldFromRowBuffer(
+    ctx.body_emitter.emit(Operation::NextFromRowBuffer(
         child_output.output_regs.clone(),
         buffer_reg,
         JumpTarget::Unresolved(cont.on_done),
     ));
-    // If YieldFromRowBuffer succeeds (didn't jump to on_done), emit tuple
+    // If NextFromRowBuffer succeeds (didn't jump to on_done), emit tuple
     ctx.body_emitter.emit_goto(cont.on_tuple);
 
     // sort_next: after parent processes tuple, yield next row

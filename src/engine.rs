@@ -340,20 +340,6 @@ impl Engine {
                     }
                     std::cmp::Ordering::Equal
                 });
-                // Reverse so pop() yields in correct order (lowest to highest)
-                buffer.rows.reverse();
-            }
-            YieldFromRowBuffer(dest_regs, buffer_reg, target) => {
-                let buffer = self.registers.get_mut(buffer_reg).row_buffer_mut().unwrap();
-                if let Some(row) = buffer.rows.pop() {
-                    for (dest_reg, value) in dest_regs.iter().zip(row.into_iter()) {
-                        *self.registers.get_mut(*dest_reg) = RegisterValue::ScalarValue(value);
-                    }
-                } else {
-                    // Buffer is empty, jump to target
-                    self.program
-                        .set_next_operation_index(target.unwrap_resolved());
-                }
             }
             RewindRowBuffer(buf_reg) => {
                 let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
@@ -361,8 +347,7 @@ impl Engine {
             }
             NextFromRowBuffer(dest_regs, buf_reg, target) => {
                 // Borrow checker note: must extract data and drop the buffer borrow
-                // BEFORE writing to dest registers. Follow the pattern used by
-                // YieldFromRowBuffer (which pops a row, then writes to dest regs).
+                // BEFORE writing to dest registers.
                 let maybe_row = {
                     let buffer = self.registers.get_mut(buf_reg).row_buffer_mut().unwrap();
                     if buffer.cursor >= buffer.rows.len() {
@@ -1881,12 +1866,11 @@ mod test {
                     descending: false,
                 }],
             ),
-            // Yield rows from buffer (they come out in reverse order due to pop)
-            // Pop returns from end of vec, so after sort [1,10], [2,20], [3,30]
-            // pop gives us [3,30], [2,20], [1,10]
-            Operation::YieldFromRowBuffer(vec![r_val1, r_val2], r_buffer, JumpTarget::addr(14)),
+            // Iterate rows from buffer using cursor-based approach
+            Operation::RewindRowBuffer(r_buffer),
+            Operation::NextFromRowBuffer(vec![r_val1, r_val2], r_buffer, JumpTarget::addr(15)),
             Operation::Yield(vec![r_val1, r_val2]),
-            Operation::GoTo(JumpTarget::addr(11)), // Back to YieldFromRowBuffer
+            Operation::GoTo(JumpTarget::addr(12)), // Back to NextFromRowBuffer
             Operation::Halt,
         ];
 
@@ -2021,13 +2005,15 @@ mod test {
                     descending: false,
                 }],
             ),
-            // 10: yield_loop - pop and yield rows
-            Operation::YieldFromRowBuffer(vec![r_value], r_buffer, JumpTarget::addr(13)),
-            // 11: Yield the row
+            // 10: rewind before iteration
+            Operation::RewindRowBuffer(r_buffer),
+            // 11: yield_loop - advance cursor and yield rows
+            Operation::NextFromRowBuffer(vec![r_value], r_buffer, JumpTarget::addr(14)),
+            // 12: Yield the row
             Operation::Yield(vec![r_value]),
-            // 12: Back to yield_loop
-            Operation::GoTo(JumpTarget::addr(10)),
-            // 13: done
+            // 13: Back to yield_loop
+            Operation::GoTo(JumpTarget::addr(11)),
+            // 14: done
             Operation::Halt,
         ];
 
@@ -2082,7 +2068,7 @@ mod test {
             c.insert_u64(3, v3);
         }
 
-        // Exact bytecode from debug.txt
+        // Bytecode for SELECT * FROM users ORDER BY name
         let ops = vec![
             /* 0*/ Operation::InitRowBuffer(Reg::new(0)),
             /* 1*/ Operation::Open(Reg::new(1), root),
@@ -2109,18 +2095,16 @@ mod test {
                     descending: false,
                 }],
             ),
-            /*16*/
-            Operation::YieldFromRowBuffer(
+            /*16*/ Operation::RewindRowBuffer(Reg::new(0)),
+            /*17*/
+            Operation::NextFromRowBuffer(
                 vec![Reg::new(6), Reg::new(7), Reg::new(8)],
                 Reg::new(0),
-                JumpTarget::addr(19),
-            ), // BUG WAS: addr(15)!
-            /*17*/ Operation::GoTo(JumpTarget::addr(20)),
-            /*18*/ Operation::GoTo(JumpTarget::addr(16)),
-            /*19*/ Operation::GoTo(JumpTarget::addr(22)),
-            /*20*/ Operation::Yield(vec![Reg::new(6), Reg::new(7), Reg::new(8)]),
-            /*21*/ Operation::GoTo(JumpTarget::addr(18)),
-            /*22*/ Operation::Halt,
+                JumpTarget::addr(20),
+            ),
+            /*18*/ Operation::Yield(vec![Reg::new(6), Reg::new(7), Reg::new(8)]),
+            /*19*/ Operation::GoTo(JumpTarget::addr(17)),
+            /*20*/ Operation::Halt,
         ];
 
         let mut engine = Engine::with_program(&ops, 9, btree);
