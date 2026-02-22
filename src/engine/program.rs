@@ -123,11 +123,6 @@ pub enum Operation {
     AbsValue(Reg, Reg),       // Reg = ABS(Reg)
     LikeValue(Reg, Reg, Reg), // Reg = Reg LIKE Reg (dest, value, pattern)
 
-    // Key List (for collect-then-mutate pattern)
-    InitKeyList(Reg),             // Initialize empty key list
-    AppendKey(Reg, Reg),          // AppendKey(list, key): append key to list
-    PopKey(Reg, Reg, JumpTarget), // PopKey(dest, list, jump): pop key or jump if empty
-
     // Row Buffer (for sorting)
     InitRowBuffer(Reg),                   // Initialize empty row buffer
     AppendToRowBuffer(Reg, Vec<Reg>),     // Append row to buffer
@@ -292,20 +287,6 @@ impl std::fmt::Display for Operation {
             AbsValue(d, s) => write!(f, "{:10} {}, {}", "Abs".cyan().bold(), d, s),
             LikeValue(d, val, pat) => {
                 write!(f, "{:10} {}, {}, {}", "Like".cyan().bold(), d, val, pat)
-            }
-
-            // Key list operations
-            InitKeyList(r) => write!(f, "{:10} {}", "InitKList".cyan().bold(), r),
-            AppendKey(list, key) => write!(f, "{:10} {}, {}", "AppendKey".cyan().bold(), list, key),
-            PopKey(dest, list, target) => {
-                write!(
-                    f,
-                    "{:10} {}, {}, {}",
-                    "PopKey".cyan().bold(),
-                    dest,
-                    list,
-                    target
-                )
             }
 
             // Row buffer operations
