@@ -561,9 +561,9 @@ pub fn codegen_index_scan(
             .emit_goto_if_false(cont.on_done, not_exceeded_reg);
     }
 
-    // Read primary key from index value
+    // Extract primary key (rowid) from the last 8 bytes of the index key
     ctx.body_emitter
-        .emit(Operation::ReadCursor(vec![pk_reg], index_cursor_reg));
+        .emit(Operation::ReadIndexRowid(pk_reg, index_cursor_reg));
 
     // Look up row in table
     ctx.body_emitter.emit(Operation::MoveCursor(

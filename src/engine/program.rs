@@ -155,6 +155,10 @@ pub enum Operation {
     DeleteCursor(Reg),         // DeleteCursor(cursor): delete row at current cursor position
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
     EncodeIndexKey(Reg, Reg),  // EncodeIndexKey(dest, src): scalar to index blob
+    /// Extract the rowid from the last 8 bytes of the current index key.
+    /// The index key format is [encoded_col_value...][encoded_rowid: 8 bytes].
+    /// Stores the rowid as ScalarValue::Integer in dest.
+    ReadIndexRowid(Reg, Reg), // ReadIndexRowid(dest, cursor)
     KeyMatchesPrefix(Reg, Reg, Reg), // Reg = KeyMatchesPrefix(cursor, prefix_reg)
     /// Check if the current key's column-value prefix exceeds an upper bound.
     /// dest = true means the current entry is OUT of range (scan should stop).
@@ -429,6 +433,9 @@ impl std::fmt::Display for Operation {
             }
             EncodeIndexKey(dest, src) => {
                 write!(f, "{:10} {}, {}", "EncIdxKey".cyan().bold(), dest, src)
+            }
+            ReadIndexRowid(dest, cursor) => {
+                write!(f, "{:10} {}, {}", "RdIdxRwid".cyan().bold(), dest, cursor)
             }
             KeyMatchesPrefix(dest, cursor, prefix) => {
                 write!(

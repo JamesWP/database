@@ -617,6 +617,21 @@ impl Engine {
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Blob(encoded_key));
             }
+            ReadIndexRowid(dest, cursor_reg) => {
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let mut cursor = cursor.open_readonly();
+                let entry = cursor.get_entry().unwrap();
+                let key = entry.key();
+                assert!(
+                    key.len() >= 8,
+                    "ReadIndexRowid: index key too short ({}), expected at least 8 bytes",
+                    key.len()
+                );
+                let rowid = storage::decode_u64_key(&key[key.len() - 8..]);
+                drop(cursor);
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Integer(rowid as i64));
+            }
             KeyMatchesPrefix(dest, cursor_reg, prefix_reg) => {
                 let prefix_bytes = match self.registers.get(prefix_reg).scalar().unwrap() {
                     ScalarValue::Blob(b) => b.clone(),
@@ -724,15 +739,11 @@ impl Engine {
                 };
                 index_key.extend_from_slice(&storage::encode_u64_key(pk));
 
-                // Encode primary key as index value
-                let index_value_encoded = vec![pk_value.clone()];
-                let mut encoded = Vec::new();
-                ciborium::ser::into_writer(&index_value_encoded, &mut encoded).unwrap();
-
-                // Write to index B-tree
+                // Write to index B-tree — rowid is already encoded in key suffix,
+                // so the value is empty.
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut c = cursor.open_readwrite();
-                c.insert(&index_key, encoded);
+                c.insert(&index_key, vec![]);
             }
             DeleteCursor(cursor_reg) => {
                 // Delete at current cursor position

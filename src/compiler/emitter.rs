@@ -168,6 +168,7 @@ impl BytecodeEmitter {
                 | Operation::DeleteCursor(_)
                 | Operation::CanReadCursor(_, _)
                 | Operation::EncodeIndexKey(_, _)
+                | Operation::ReadIndexRowid(_, _)
                 | Operation::KeyMatchesPrefix(_, _, _)
                 | Operation::KeyExceedsBound(_, _, _, _)
                 // Control flow operations (without jump targets)
