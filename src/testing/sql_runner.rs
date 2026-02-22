@@ -22,56 +22,98 @@ fn format_row(row: &[ScalarValue]) -> String {
     row.iter().map(format_scalar).collect::<Vec<_>>().join("\t")
 }
 
-/// Execute SQL script and return output lines
-fn execute_sql_script(sql_path: &PathBuf) -> Vec<String> {
-    // Create a temporary database
+/// A single SQL statement and its expected output lines from the inline format
+pub struct SqlStatement {
+    pub sql: String,
+    pub expected: Vec<String>,
+}
+
+/// Parse a .sql file with inline expected output (-- > lines after each statement)
+pub fn parse_sql_test_file(content: &str) -> Vec<SqlStatement> {
+    let mut statements: Vec<SqlStatement> = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("-- >") {
+            // Expected output line — attach to last statement if present
+            if let Some(last) = statements.last_mut() {
+                last.expected.push(rest.trim_start().to_string());
+            }
+        } else if trimmed.starts_with("--") {
+            // Regular comment — ignore
+        } else {
+            // SQL statement
+            statements.push(SqlStatement {
+                sql: trimmed.to_string(),
+                expected: Vec::new(),
+            });
+        }
+    }
+
+    statements
+}
+
+/// Execute a single SQL statement against btree, return output lines
+fn execute_statement(sql: &str, btree: &mut BTree) -> Vec<String> {
+    match execute(sql, btree) {
+        Ok(result) => match result {
+            ExecuteResult::CreateTable { table_name } => {
+                vec![format!("Table '{}' created", table_name)]
+            }
+            ExecuteResult::CreateIndex { index_name } => {
+                vec![format!("Index '{}' created", index_name)]
+            }
+            ExecuteResult::DropTable { table_name } => {
+                vec![format!("Table '{}' dropped", table_name)]
+            }
+            ExecuteResult::Query(mut query) => {
+                let mut rows = Vec::new();
+                while let Some(row) = query.next() {
+                    rows.push(format_row(&row));
+                }
+                if rows.is_empty() {
+                    vec!["OK".to_string()]
+                } else {
+                    rows
+                }
+            }
+        },
+        Err(e) => vec![format!("ERROR: {}", e)],
+    }
+}
+
+/// Execute SQL script and return per-statement output
+fn execute_sql_script_parsed(statements: &[SqlStatement]) -> Vec<Vec<String>> {
     let temp_file = tempfile::NamedTempFile::new().unwrap();
     let temp_path = temp_file.path().to_str().unwrap();
     let mut btree = BTree::new(temp_path);
 
-    // Read SQL script
-    let sql_content = fs::read_to_string(sql_path).unwrap();
+    statements
+        .iter()
+        .map(|s| execute_statement(&s.sql, &mut btree))
+        .collect()
+}
 
-    // Execute each SQL statement and collect output
+/// Execute SQL script (legacy path) and return flat output lines
+fn execute_sql_script_legacy(sql_path: &PathBuf) -> Vec<String> {
+    let temp_file = tempfile::NamedTempFile::new().unwrap();
+    let temp_path = temp_file.path().to_str().unwrap();
+    let mut btree = BTree::new(temp_path);
+
+    let sql_content = fs::read_to_string(sql_path).unwrap();
     let mut actual_output = Vec::new();
 
-    for (_line_num, line) in sql_content.lines().enumerate() {
+    for line in sql_content.lines() {
         let line = line.trim();
-
-        // Skip empty lines and comments
         if line.is_empty() || line.starts_with("--") {
             continue;
         }
-
-        match execute(line, &mut btree) {
-            Ok(result) => match result {
-                ExecuteResult::CreateTable { table_name } => {
-                    actual_output.push(format!("Table '{}' created", table_name));
-                }
-                ExecuteResult::CreateIndex { index_name } => {
-                    actual_output.push(format!("Index '{}' created", index_name));
-                }
-                ExecuteResult::DropTable { table_name } => {
-                    actual_output.push(format!("Table '{}' dropped", table_name));
-                }
-                ExecuteResult::Query(mut query) => {
-                    // Collect all rows
-                    let mut row_count = 0;
-                    while let Some(row) = query.next() {
-                        actual_output.push(format_row(&row));
-                        row_count += 1;
-                    }
-                    // For queries that produce no output rows, just acknowledge
-                    if row_count == 0 {
-                        actual_output.push("OK".to_string());
-                    }
-                }
-            },
-            Err(e) => {
-                // Collect error for later validation
-                actual_output.push(format!("ERROR: {}", e));
-            }
-        }
+        actual_output.extend(execute_statement(line, &mut btree));
     }
 
     actual_output
@@ -83,7 +125,6 @@ fn compare_output(
     expected_lines: &[&str],
     test_name: &str,
 ) -> Result<(), String> {
-    // Check line count
     if actual_output.len() != expected_lines.len() {
         return Err(format!(
             "Output line count mismatch in {:?}:\nExpected {} lines, got {} lines\n\nExpected:\n{}\n\nActual:\n{}",
@@ -95,10 +136,8 @@ fn compare_output(
         ));
     }
 
-    // Check each line
     for (i, (actual, expected)) in actual_output.iter().zip(expected_lines.iter()).enumerate() {
         if expected.starts_with("ERROR:") {
-            // Error line - check that actual is also an error
             if !actual.starts_with("ERROR:") {
                 return Err(format!(
                     "Output mismatch at line {} in {:?}:\nExpected error but got: {}",
@@ -107,11 +146,8 @@ fn compare_output(
                     actual
                 ));
             }
-            // Extract pattern and actual error message
             let pattern = expected.strip_prefix("ERROR:").unwrap().trim();
             let actual_error = actual.strip_prefix("ERROR:").unwrap().trim();
-
-            // Check if actual error contains pattern (case-insensitive substring match)
             if !actual_error
                 .to_lowercase()
                 .contains(&pattern.to_lowercase())
@@ -121,54 +157,119 @@ fn compare_output(
                     i + 1, test_name, pattern, actual_error
                 ));
             }
-        } else {
-            // Normal line - require exact match
-            if actual != expected {
-                return Err(format!(
-                    "Output mismatch at line {} in {:?}:\nExpected: {}\nActual:   {}",
-                    i + 1,
-                    test_name,
-                    expected,
-                    actual
-                ));
-            }
+        } else if actual != expected {
+            return Err(format!(
+                "Output mismatch at line {} in {:?}:\nExpected: {}\nActual:   {}",
+                i + 1,
+                test_name,
+                expected,
+                actual
+            ));
         }
     }
 
     Ok(())
 }
 
-/// Update expected file with actual output
+/// Compare per-statement actual vs inline expected output
+fn compare_inline_output(
+    statements: &[SqlStatement],
+    actual_per_statement: &[Vec<String>],
+    test_name: &str,
+) -> Result<(), String> {
+    for (stmt, actual_lines) in statements.iter().zip(actual_per_statement.iter()) {
+        if stmt.expected.is_empty() {
+            continue;
+        }
+        let expected_refs: Vec<&str> = stmt.expected.iter().map(|s| s.as_str()).collect();
+        // Build a scoped name for better error messages
+        let scoped = format!("{} (statement: {})", test_name, stmt.sql);
+        compare_output(actual_lines, &expected_refs, &scoped)?;
+    }
+    Ok(())
+}
+
+/// Update expected file with actual output (legacy)
 fn update_expected_file(expected_path: &PathBuf, actual_output: &[String]) {
     fs::write(expected_path, actual_output.join("\n") + "\n").unwrap();
 }
 
+/// Rewrite a .sql file with updated inline expected output
+pub fn update_sql_file_inline(
+    sql_path: &PathBuf,
+    statements: &[SqlStatement],
+    actual_per_statement: &[Vec<String>],
+) {
+    let original = fs::read_to_string(sql_path).unwrap();
+    let mut output_lines: Vec<String> = Vec::new();
+    let mut stmt_iter = statements
+        .iter()
+        .zip(actual_per_statement.iter())
+        .peekable();
+
+    for line in original.lines() {
+        let trimmed = line.trim();
+
+        // Drop old -- > lines (they'll be rewritten)
+        if trimmed.starts_with("-- >") {
+            continue;
+        }
+
+        output_lines.push(line.to_string());
+
+        // After a SQL statement line, emit fresh expected output
+        if !trimmed.is_empty() && !trimmed.starts_with("--") {
+            if let Some((_, actual)) = stmt_iter.next() {
+                for out_line in actual {
+                    output_lines.push(format!("-- > {}", out_line));
+                }
+            }
+        }
+    }
+
+    fs::write(sql_path, output_lines.join("\n") + "\n").unwrap();
+}
+
 /// Run a single SQL test by name (e.g., "where_clauses")
-/// If update_mode is true, updates the .expected file instead of comparing
+/// If update_mode is true, updates expected output instead of comparing
 pub fn run_sql_test(test_name: &str, update_mode: bool) {
     let sql_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sql");
     let sql_path = sql_dir.join(format!("{}.sql", test_name));
     let expected_path = sql_dir.join(format!("{}.expected", test_name));
 
-    // Execute SQL script
-    let actual_output = execute_sql_script(&sql_path);
+    let sql_content = fs::read_to_string(&sql_path).unwrap();
+    let statements = parse_sql_test_file(&sql_content);
 
-    if update_mode {
-        // Update mode: write actual output to expected file (create if missing)
-        update_expected_file(&expected_path, &actual_output);
-        println!("Updated: {}.expected", test_name);
-    } else {
-        // Normal mode: compare and panic if mismatch
-        if !expected_path.exists() {
-            panic!(
-                "Missing .expected file for {}.sql\nRun: cargo run --bin update-sql-tests {}",
-                test_name, test_name
-            );
+    // Check if file has any inline expected output
+    let has_inline = statements.iter().any(|s| !s.expected.is_empty());
+
+    if has_inline {
+        // New inline format
+        let actual_per_statement = execute_sql_script_parsed(&statements);
+
+        if update_mode {
+            update_sql_file_inline(&sql_path, &statements, &actual_per_statement);
+            println!("Updated (inline): {}.sql", test_name);
+        } else {
+            compare_inline_output(&statements, &actual_per_statement, test_name).unwrap();
         }
-        let expected_content = fs::read_to_string(&expected_path).unwrap();
-        let expected_lines: Vec<&str> = expected_content.lines().collect();
+    } else if expected_path.exists() {
+        // Legacy .expected file fallback
+        let actual_output = execute_sql_script_legacy(&sql_path);
 
-        compare_output(&actual_output, &expected_lines, test_name).unwrap();
+        if update_mode {
+            update_expected_file(&expected_path, &actual_output);
+            println!("Updated: {}.expected", test_name);
+        } else {
+            let expected_content = fs::read_to_string(&expected_path).unwrap();
+            let expected_lines: Vec<&str> = expected_content.lines().collect();
+            compare_output(&actual_output, &expected_lines, test_name).unwrap();
+        }
+    } else {
+        panic!(
+            "No expected output for {}.sql — add inline '-- >' lines or run: cargo run --bin update-sql-tests {}",
+            test_name, test_name
+        );
     }
 }
 
@@ -192,4 +293,46 @@ pub fn get_all_sql_tests() -> Vec<String> {
 
     test_names.sort();
     test_names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_inline_expected() {
+        let input = "SELECT 1\n-- > 1\nSELECT 2\n-- > 2\n-- > extra\n";
+        let parsed = parse_sql_test_file(input);
+        assert_eq!(parsed[0].sql, "SELECT 1");
+        assert_eq!(parsed[0].expected, vec!["1"]);
+        assert_eq!(parsed[1].sql, "SELECT 2");
+        assert_eq!(parsed[1].expected, vec!["2", "extra"]);
+    }
+
+    #[test]
+    fn test_parse_inline_ignores_plain_comments() {
+        let input = "-- This is a regular comment\nSELECT 1\n-- > 1\n";
+        let parsed = parse_sql_test_file(input);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].sql, "SELECT 1");
+        assert_eq!(parsed[0].expected, vec!["1"]);
+    }
+
+    #[test]
+    fn test_parse_inline_no_expected() {
+        let input = "SELECT 1\nSELECT 2\n";
+        let parsed = parse_sql_test_file(input);
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].expected.is_empty());
+        assert!(parsed[1].expected.is_empty());
+    }
+
+    #[test]
+    fn test_parse_inline_blank_lines_ignored() {
+        let input = "\nSELECT 1\n\n-- > 1\n\nSELECT 2\n-- > 2\n";
+        let parsed = parse_sql_test_file(input);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].expected, vec!["1"]);
+        assert_eq!(parsed[1].expected, vec!["2"]);
+    }
 }
