@@ -151,7 +151,7 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                 }
             };
 
-            // 4. Find columns and verify each is INTEGER (only INTEGER indexes are supported)
+            // 4. Find columns and verify each is INTEGER or TEXT
             let mut column_idxs = Vec::new();
             for col_name in &ci.column_names {
                 let column_def = create_table
@@ -163,7 +163,10 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                         column: col_name.clone(),
                     })?;
 
-                if !matches!(column_def.type_name, Some(DataType::Integer)) {
+                if !matches!(
+                    column_def.type_name,
+                    Some(DataType::Integer) | Some(DataType::Text)
+                ) {
                     return Err(ExecuteError::ColumnNotInteger {
                         table: ci.table_name.clone(),
                         column: col_name.clone(),
