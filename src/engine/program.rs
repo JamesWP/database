@@ -164,6 +164,7 @@ pub enum Operation {
     BlobPrefixLe(Reg, Reg, Reg),   // BlobPrefixLe(dest, blob, bound): blob[..len(bound)] <= bound
     BlobSliceTail(Reg, Reg, usize), // BlobSliceTail(dest, blob, offset): blob[offset..]
     BlobSliceLast(Reg, Reg, usize), // BlobSliceLast(dest, blob, n): last n bytes of blob
+    BlobDropLast(Reg, Reg, usize), // BlobDropLast(dest, blob, n): blob without last n bytes
     DecodeU64Key(Reg, Reg),        // DecodeU64Key(dest, blob): 8-byte blob → u64 as Integer
 
     // Control Flow
@@ -483,6 +484,16 @@ impl std::fmt::Display for Operation {
                     f,
                     "{:10} {}, {}, {}",
                     "BlobLast".cyan().bold(),
+                    dest,
+                    blob,
+                    n
+                )
+            }
+            BlobDropLast(dest, blob, n) => {
+                write!(
+                    f,
+                    "{:10} {}, {}, {}",
+                    "BlobDrop".cyan().bold(),
                     dest,
                     blob,
                     n

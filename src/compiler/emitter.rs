@@ -174,6 +174,7 @@ impl BytecodeEmitter {
                 | Operation::BlobPrefixLe(_, _, _)
                 | Operation::BlobSliceTail(_, _, _)
                 | Operation::BlobSliceLast(_, _, _)
+                | Operation::BlobDropLast(_, _, _)
                 | Operation::DecodeU64Key(_, _)
                 // Control flow operations (without jump targets)
                 | Operation::Yield(_)

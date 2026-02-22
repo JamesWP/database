@@ -30,3 +30,17 @@ INSERT INTO products VALUES (5, 'apricot', 120)
 -- > 1
 SELECT id FROM products WHERE name = 'apricot'
 -- > 5
+-- Bug regression: 'a' is not a prefix of 'apple', so WHERE name > 'a' should include 'apple'
+SELECT id FROM products WHERE name > 'a' ORDER BY id
+-- > 1
+-- > 2
+-- > 3
+-- > 4
+-- > 5
+-- Similarly, WHERE name > 'ap' should include 'apple' and 'apricot' (and all others)
+SELECT id FROM products WHERE name > 'ap' ORDER BY id
+-- > 1
+-- > 2
+-- > 3
+-- > 4
+-- > 5
