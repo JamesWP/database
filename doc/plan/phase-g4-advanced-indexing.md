@@ -6,8 +6,11 @@ Builds on phase-g3-indexing.md to add multi-column indexes, TEXT support, range 
 
 | # | Track | Item | Depends on |
 |---|-------|------|------------|
-| 42 | 4.6 | Multi-column indexes | 41 |
-| 43 | 4.7 | TEXT column indexes | 41 |
+| 45 | 3.7 | Remove rowid from index entry value | 41 |
+| 46 | 5 | Engine: `ReadCurrentKey` + blob ops; simplify index instructions | 45 |
+| 47 | 4.9 | Split IndexScan into IndexScan + RowidLookup | 46 |
+| 42 | 4.6 | Multi-column indexes | 47 |
+| 43 | 4.7 | TEXT column indexes | 47 |
 | 44 | 4.8 | Type conversions and NULL handling | — |
 
 ---
@@ -209,6 +212,401 @@ Only INTEGER and NULL are encoded in `WriteIndex`; TEXT support is deferred to i
 - `src/storage/btree.rs` — `insert/find/delete(&[u8])`, `encode_integer_key`, `encode_u64_key`
 - `src/storage/cell_reader.rs` — `key() -> &[u8]`
 - `src/engine.rs` — `WriteIndex` encodes INTEGER/NULL keys
+
+---
+
+## 45. Remove Rowid from Index Entry Value (Track 3.7)
+
+### What Changes
+
+Index B-tree entries currently store the rowid in **both** the key and the value:
+
+```
+Key:   [encoded_col_value 8 bytes][encoded_rowid 8 bytes]   ← rowid here for uniqueness
+Value: [rowid]  (CBOR-encoded [ScalarValue::Integer(pk)])   ← duplicate
+```
+
+After this item, the value is empty (zero-length byte slice):
+
+```
+Key:   [encoded_col_value 8 bytes][encoded_rowid 8 bytes]
+Value: []
+```
+
+The rowid is recovered from the trailing 8 bytes of the key rather than by CBOR-decoding the value.
+
+### Why
+
+- Removes a CBOR encode on every `WriteIndex` and a CBOR decode on every index lookup.
+- Makes the key self-contained — the value field carries no semantic meaning for index B-trees.
+- Simplifies the format before multi-column keys (item 42) add more structure to the key.
+
+### Implementation Approach
+
+**`WriteIndex` in `src/engine.rs`:**
+
+```rust
+// Before:
+let index_value_encoded = vec![pk_value.clone()];
+let mut encoded = Vec::new();
+ciborium::ser::into_writer(&index_value_encoded, &mut encoded).unwrap();
+c.insert(&index_key, encoded);
+
+// After:
+c.insert(&index_key, vec![]);  // empty value
+```
+
+**IndexScan bytecode in `src/compiler/nodes.rs`:**
+
+Currently reads the rowid from the value field:
+```rust
+ReadCursor([pk_reg], index_cursor)        // CBOR-decode value → pk
+MoveCursor(table_cursor, Find(pk_reg))
+```
+
+After this change, the rowid is extracted from the key tail using a new `ReadIndexRowid` instruction (or folded into item 46's `ReadCurrentKey` + blob-slice approach):
+```rust
+ReadIndexRowid(pk_reg, index_cursor)      // extract last 8 bytes of key, decode u64
+MoveCursor(table_cursor, Find(pk_reg))
+```
+
+For now, introduce `ReadIndexRowid(dest, cursor)` as a small targeted instruction that reads the last 8 bytes of the current key and decodes them as a u64 rowid. Item 46 will subsume this into the general `ReadCurrentKey` approach.
+
+**`PopulateIndex` remains unchanged** — it already builds the key correctly; only the value payload changes.
+
+### Key Files
+
+- `src/engine.rs` — `WriteIndex`: write empty value; add `ReadIndexRowid` handler
+- `src/engine/program.rs` — add `ReadIndexRowid(Reg, Reg)` variant
+- `src/compiler/nodes.rs` — replace `ReadCursor([pk], idx_cur)` with `ReadIndexRowid`
+
+### Tests
+
+- Existing index scan tests should pass unchanged (observable behaviour is identical).
+- Add a unit test asserting that index entry values are empty after insert.
+- Verify range scans still return correct rowids.
+
+### Implementation Steps (2 commits)
+
+#### Step 45.1 — WriteIndex writes empty value
+
+Change `WriteIndex` in engine to `c.insert(&index_key, vec![])`. No change to compiler yet (index scans still attempt to `ReadCursor` the value, which will now yield an empty array and panic or misparse — temporarily broken).
+
+**Commit:** WriteIndex: store empty value in index B-tree entries
+
+#### Step 45.2 — Add ReadIndexRowid; update compiler
+
+Add `Operation::ReadIndexRowid(dest, cursor)` to the program. Implement in engine by reading the last 8 bytes of the current key and decoding as a u64 rowid. Update `codegen_index_scan` to emit `ReadIndexRowid` instead of `ReadCursor([pk])`. All index scan tests pass.
+
+**Commit:** Extract rowid from index key tail; drop ReadCursor on index entries
+
+---
+
+## 46. Engine: `ReadCurrentKey` + Blob Ops; Simplify Index Instructions (Track 5)
+
+### What Changes
+
+Add a general `ReadCurrentKey(dest, cursor)` instruction that reads the raw key bytes of the current cursor entry into a register as a `ScalarValue::Blob`. Then introduce blob comparison operations that let the compiler express index bound-checking as general value operations rather than specialised engine instructions.
+
+**Instructions removed:**
+- `KeyMatchesPrefix(dest, cursor, prefix)` — replaced by `ReadCurrentKey` + `BlobStartsWith`
+- `KeyExceedsBound(dest, cursor, bound, inclusive)` — replaced by `ReadCurrentKey` + `BlobPrefixCmp`
+- `ReadIndexRowid(dest, cursor)` (from item 45) — replaced by `ReadCurrentKey` + `BlobSliceTail`
+
+**Instructions added:**
+- `ReadCurrentKey(dest, cursor)` — reads raw key bytes as `Blob`
+- `BlobStartsWith(dest, blob, prefix)` — true if blob starts with prefix bytes
+- `BlobPrefixLt(dest, blob, bound)` — true if blob's first `len(bound)` bytes are `< bound`
+- `BlobPrefixLe(dest, blob, bound)` — true if blob's first `len(bound)` bytes are `<= bound`
+- `BlobSliceTail(dest, blob, offset)` — extract `blob[offset..]` as a new blob
+- `DecodeU64Key(dest, blob)` — decode 8-byte blob as big-endian u64 → `Integer`
+
+**Existing instruction `ReadKey` (table-only u64 decode)** is unified: it becomes a synonym for `ReadCurrentKey` + `DecodeU64Key`, or kept as a convenience.
+
+### Background: Current Instruction Inventory
+
+```
+Specialised index instructions (current):
+  EncodeIndexKey(dest, src)              — scalar → sortable blob
+  WriteIndex(cursor, val, pk)            — composite key write + CBOR value
+  KeyMatchesPrefix(dest, cursor, prefix) — key starts_with check
+  KeyExceedsBound(dest, cursor, b, incl) — key prefix comparison for bounds
+
+Table-specific:
+  ReadKey(dest, cursor)    — decode key as u64 integer
+  WriteCursor(cursor, key, values) — insert with u64 key + CBOR row
+
+General:
+  Open, MoveCursor, ReadCursor, CanReadCursor, DeleteCursor
+```
+
+After this item:
+
+```
+Specialised index instructions:
+  EncodeIndexKey(dest, src)              — keep; encoding is domain logic
+  WriteIndex removed / folded into WriteCursorBlob
+  KeyMatchesPrefix removed
+  KeyExceedsBound removed
+
+New general blob primitives:
+  ReadCurrentKey(dest, cursor)
+  BlobStartsWith(dest, blob, prefix)
+  BlobPrefixLt / BlobPrefixLe(dest, blob, bound)
+  BlobSliceTail(dest, blob, offset)
+  DecodeU64Key(dest, blob)
+
+Table-specific (unchanged):
+  ReadKey(dest, cursor)       — convenience alias or kept for clarity
+  WriteCursor(cursor, key, values)
+```
+
+### Rewritten IndexScan Bytecode
+
+**Before (equality scan, current):**
+```
+EncodeIndexKey(lower_blob, col_val_reg)
+MoveCursor(idx, Find(lower_blob))
+LOOP:
+  CanReadCursor(flag, idx)
+  GoToIfFalse(done, flag)
+  KeyMatchesPrefix(in_range, idx, lower_blob)
+  GoToIfFalse(done, in_range)          ← upper bound check via KeyMatchesPrefix
+  ReadCursor([pk_reg], idx)             ← CBOR-decode value
+  MoveCursor(tbl, Find(pk_reg))
+  ReadCursor(out_regs, tbl)
+  Yield(out_regs)
+  MoveCursor(idx, Next)
+  GoTo(LOOP)
+```
+
+**After (equality scan, refactored):**
+```
+EncodeIndexKey(lower_blob, col_val_reg)
+MoveCursor(idx, Find(lower_blob))
+LOOP:
+  CanReadCursor(flag, idx)
+  GoToIfFalse(done, flag)
+  ReadCurrentKey(key_blob, idx)
+  BlobStartsWith(in_range, key_blob, lower_blob)    ← replaces KeyMatchesPrefix
+  GoToIfFalse(done, in_range)
+  BlobSliceTail(pk_blob, key_blob, 8)               ← extract rowid from key tail
+  DecodeU64Key(pk_reg, pk_blob)                     ← replaces ReadIndexRowid
+  MoveCursor(tbl, Find(pk_reg))
+  ReadCursor(out_regs, tbl)
+  Yield(out_regs)
+  MoveCursor(idx, Next)
+  GoTo(LOOP)
+```
+
+More instructions per loop iteration, but each does one thing. The same `ReadCurrentKey` and blob ops work for range scans, multi-column key checking (item 42), and future needs.
+
+### Key Files
+
+- `src/engine/program.rs` — add new `Operation` variants
+- `src/engine.rs` — implement new operations; remove `KeyMatchesPrefix`, `KeyExceedsBound` handlers
+- `src/compiler/nodes.rs` — rewrite `codegen_index_scan` to use new primitives
+
+### Tests
+
+- All existing index scan tests should pass after refactor.
+- Unit tests for each new blob operation independently.
+- Bytecode snapshot tests (if any) will need updating.
+
+### Implementation Steps (3 commits)
+
+#### Step 46.1 — Add `ReadCurrentKey` and blob operations to engine
+
+Add `Operation::ReadCurrentKey`, `BlobStartsWith`, `BlobPrefixLt`, `BlobPrefixLe`, `BlobSliceTail`, `DecodeU64Key`. Implement handlers in `src/engine.rs`. Unit-test each. No compiler changes yet — existing index scans still use old instructions.
+
+**Commit:** Add ReadCurrentKey and blob value operations to engine
+
+#### Step 46.2 — Rewrite compiler to use new primitives
+
+Update `codegen_index_scan` to emit `ReadCurrentKey` + blob ops instead of `KeyMatchesPrefix`, `KeyExceedsBound`, `ReadIndexRowid`. Run all tests.
+
+**Commit:** Rewrite index scan codegen using ReadCurrentKey + blob ops
+
+#### Step 46.3 — Remove disused specialised instructions
+
+Delete `KeyMatchesPrefix`, `KeyExceedsBound`, and `ReadIndexRowid` from `program.rs` and `engine.rs`. Confirm no remaining uses. Update any documentation or REPL disassembly.
+
+**Commit:** Remove KeyMatchesPrefix, KeyExceedsBound, ReadIndexRowid
+
+---
+
+## 47. Split IndexScan into IndexScan + RowidLookup (Track 4.9)
+
+### What Changes
+
+The current `LogicalPlan::IndexScan` node knows about both the index B-tree and the table B-tree. It is split into two composable nodes:
+
+- **`IndexScan`** — scans the index B-tree and yields one rowid per matching entry. Knows nothing about the table.
+- **`RowidLookup`** — pulls rowids from its input, fetches the corresponding row from the table B-tree via `Find`, and yields the requested columns.
+
+**Before:**
+```rust
+LogicalPlan::IndexScan {
+    index_rootpage: u32,
+    lower_bound: Option<(Literal, bool)>,
+    upper_bound: Option<(Literal, bool)>,
+    table_rootpage: u32,    // ← table knowledge in index node
+    columns: Vec<usize>,    // ← column selection in index node
+}
+```
+
+**After:**
+```rust
+LogicalPlan::IndexScan {
+    index_rootpage: u32,
+    lower_bound: Option<(Literal, bool)>,
+    upper_bound: Option<(Literal, bool)>,
+    // no table_rootpage, no columns
+}
+
+LogicalPlan::RowidLookup {
+    input: Box<LogicalPlan>,  // typically IndexScan
+    table_rootpage: u32,
+    columns: Vec<usize>,
+}
+```
+
+**Plan tree before:**
+```
+Project [id, name]
+  IndexScan [idx_age, age = 30, table=users, cols: id, name]
+```
+
+**Plan tree after:**
+```
+Project [id, name]
+  RowidLookup [users, cols: id, name]
+    IndexScan [idx_age, age = 30]
+```
+
+### Covering Index Optimization
+
+When all projected columns are present in the index key itself (a covering index), the planner can omit `RowidLookup` entirely:
+
+```sql
+CREATE INDEX idx_age ON users(age)
+SELECT age FROM users WHERE age > 30
+
+-- Plan (covering):
+Project [age]
+  IndexScan [idx_age, > 30]
+  -- no RowidLookup; age is read directly from the index key
+
+-- Plan (non-covering):
+Project [id, age]
+  RowidLookup [users, cols: id, age]
+    IndexScan [idx_age, > 30]
+```
+
+V1 of this item does not need to implement covering index detection — the planner can always emit `RowidLookup`. The split makes the optimisation easy to add later.
+
+### Bytecode Shape
+
+**`IndexScan` codegen** (uses item 46's blob ops):
+```
+Open(idx_cursor, index_rootpage)
+[position to lower bound: EncodeIndexKey + MoveCursor(Find)]
+
+LOOP:
+  CanReadCursor(flag, idx_cursor)
+  GoToIfFalse(done, flag)
+  [upper bound check: ReadCurrentKey + BlobPrefixLt/Le]
+  ReadCurrentKey(key_blob, idx_cursor)
+  BlobSliceTail(pk_blob, key_blob, 8)   ← rowid is last 8 bytes
+  DecodeU64Key(pk_reg, pk_blob)
+  Yield([pk_reg])                        ← yield rowid to parent
+  MoveCursor(idx_cursor, Next)
+  GoTo(LOOP)
+```
+
+**`RowidLookup` codegen**:
+```
+Open(tbl_cursor, table_rootpage)
+
+[call child IndexScan to get pk_reg]
+
+LOOP:
+  MoveCursor(tbl_cursor, Find(pk_reg))
+  ReadCursor(out_regs, tbl_cursor)
+  Yield(out_regs)                        ← yield full row to parent
+  [advance child IndexScan]
+  GoTo(LOOP)
+```
+
+`RowidLookup` is a standard pipeline node: pull from child, look up, yield. No blob operations needed.
+
+### Why This Is the Right Split
+
+| Concern | IndexScan | RowidLookup |
+|---------|-----------|-------------|
+| Index B-tree cursor | ✓ | — |
+| Table B-tree cursor | — | ✓ |
+| Bound checking | ✓ | — |
+| Column projection | — | ✓ |
+| Blob key operations | ✓ | — |
+| Table row decoding | — | ✓ |
+| Reusable for future rowid sources | — | ✓ |
+
+Future rowid sources that can feed `RowidLookup`: rowid lists from `IN (1, 2, 3)`, bitmap intersections of multiple indexes, `ROWID BETWEEN x AND y`.
+
+### Planner Changes
+
+In `try_plan_index_scan()`, instead of returning:
+```rust
+Ok(LogicalPlan::IndexScan { ..., table_rootpage, columns })
+```
+
+Return:
+```rust
+Ok(LogicalPlan::RowidLookup {
+    input: Box::new(LogicalPlan::IndexScan { index_rootpage, lower_bound, upper_bound }),
+    table_rootpage,
+    columns,
+})
+```
+
+### Key Files
+
+- `src/planner.rs` — split `IndexScan` variant; update `try_plan_index_scan()`
+- `src/compiler/nodes.rs` — `codegen_index_scan()` → `codegen_index_scan()` + `codegen_rowid_lookup()`
+- `src/engine/program.rs` — no new operations needed (uses item 46's blob ops)
+- `tests/sql/` — all existing index scan tests should pass unchanged
+
+### Tests
+
+All existing index scan SQL tests must pass after the refactor — observable behaviour is identical. Add an `EXPLAIN` test (item L.57) asserting the two-node shape:
+
+```sql
+EXPLAIN SELECT id FROM users WHERE age = 30
+-- > ...
+-- > RowidLookup users [cols: id]
+-- >   IndexScan idx_age [= 30]
+```
+
+### Implementation Steps (3 commits)
+
+#### Step 47.1 — Split LogicalPlan variants
+
+Add `LogicalPlan::RowidLookup`. Update `LogicalPlan::IndexScan` to remove `table_rootpage` and `columns`. Update planner's `try_plan_index_scan()` to emit `RowidLookup { input: IndexScan }`. Update any exhaustive matches (compiler, EXPLAIN formatter) to handle the new variant — compiler can temporarily panic on `RowidLookup` until step 47.2.
+
+**Commit:** Split IndexScan into IndexScan + RowidLookup in logical plan
+
+#### Step 47.2 — Implement RowidLookup and IndexScan codegens
+
+Rewrite `codegen_index_scan()` to emit only the index-scanning loop, yielding rowids. Add `codegen_rowid_lookup()` that opens a table cursor, pulls rowids from its child, and emits full rows. All index scan tests pass.
+
+**Commit:** Codegen RowidLookup and simplified IndexScan
+
+#### Step 47.3 — Update EXPLAIN formatter
+
+Add `RowidLookup` and the simplified `IndexScan` to `format_node()` in `src/explain.rs`. Add SQL test asserting the two-node plan shape.
+
+**Commit:** EXPLAIN output for RowidLookup and IndexScan
 
 ---
 
