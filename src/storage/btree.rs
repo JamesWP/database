@@ -102,7 +102,6 @@ where
     PagerRef: DerefMut<Target = Pager>,
 {
     pub fn insert(&mut self, key: &[u8], value: Value) {
-        assert!(value.len() > 0);
 
         // Save current cursor key if positioned, for RequiresSeek after insert
         let saved_cursor_key = match &self.cursor_state.position {
