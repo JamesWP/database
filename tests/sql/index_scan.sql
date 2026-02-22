@@ -10,6 +10,11 @@ INSERT INTO users VALUES (4, 'Diana', 25)
 -- > 1
 CREATE INDEX idx_age ON users(age)
 -- > Index 'idx_age' created
+-- Verify the planner chooses an index scan for equality predicate
+EXPLAIN SELECT id, name FROM users WHERE age = 30
+-- > 0, "Project [id:0, name:1]"
+-- > 1, "  RowidLookup users [cols: id, name, age]"
+-- > 2, "    IndexScan via idx_age [= 30]"
 -- Should use index scan
 SELECT id, name FROM users WHERE age = 30 ORDER BY id
 -- > 1, "Alice"

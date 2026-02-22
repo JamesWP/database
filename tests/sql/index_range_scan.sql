@@ -12,7 +12,11 @@ INSERT INTO data VALUES (5, 50)
 -- > 1
 CREATE INDEX idx_value ON data(value)
 -- > Index 'idx_value' created
-
+-- Verify the planner chooses an index scan for a range predicate
+EXPLAIN SELECT id FROM data WHERE value > 20
+-- > 0, "Project [id:0]"
+-- > 1, "  RowidLookup data [cols: id, value]"
+-- > 2, "    IndexScan via idx_value [> 20]"
 -- Greater than
 SELECT id FROM data WHERE value > 20 ORDER BY id
 -- > 3
