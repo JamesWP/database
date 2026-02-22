@@ -50,6 +50,10 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **M** | Register Consolidation | 3 | [phase-m-register-consolidation.md](completed/phase-m-register-consolidation.md) | Completed |
 | **N** | Index Maintenance & Sort Elision | 5 | [phase-n-index-maintenance.md](phase-n-index-maintenance.md) | Planned |
 | **O** | HAVING Clause | 4 | [phase-o-having.md](phase-o-having.md) | Planned |
+| **P** | Column Names in Query Output | 3 | [phase-p-column-names.md](phase-p-column-names.md) | Planned |
+| **Q** | Macro-Based Bytecode Program Builder | 2 | [phase-q-program-macro.md](phase-q-program-macro.md) | Planned |
+| **R** | PRIMARY KEY & UNIQUE Constraints | 6 | [phase-r-unique-constraints.md](phase-r-unique-constraints.md) | Planned |
+| **S** | JavaScript / WebAssembly Bindings | 4 | [phase-s-javascript.md](phase-s-javascript.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 
