@@ -76,6 +76,7 @@ pub enum Type {
     Asc,
     Desc,
     Group,
+    Having,
     Like,
     Is,
     Not,
@@ -526,6 +527,7 @@ impl<'a> Lexer<'a> {
                 _ => Type::Identifier(ident.to_owned()),
             },
             'g' => match_reserved(ident, "group", Type::Group),
+            'h' => match_reserved(ident, "having", Type::Having),
             'j' => match_reserved(ident, "join", Type::Join),
             'i' => match ident.chars().nth(1) {
                 Some('n') => match ident.chars().nth(2) {

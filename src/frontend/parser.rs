@@ -573,6 +573,14 @@ impl Parser {
             _ => None,
         };
 
+        let having = match self.input.peek() {
+            lexer::Type::Having => {
+                self.input.advance();
+                Some(self.parse_filter_expression()?)
+            }
+            _ => None,
+        };
+
         let order_by = match self.input.peek() {
             lexer::Type::Order => {
                 self.input.advance();
@@ -599,6 +607,7 @@ impl Parser {
             limit,
             order_by,
             group_by,
+            having,
         })
     }
 
@@ -1316,6 +1325,29 @@ mod test {
         match stmt3 {
             ast::Statement::Select(select) => {
                 assert_eq!(select.joins.len(), 0);
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_having_clause() {
+        let stmt = parse("SELECT dept, COUNT(*) FROM t GROUP BY dept HAVING COUNT(*) > 3").unwrap();
+        match stmt {
+            ast::Statement::Select(sel) => {
+                assert!(sel.group_by.is_some());
+                assert!(sel.having.is_some());
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_without_having_is_none() {
+        let stmt = parse("SELECT dept FROM t GROUP BY dept").unwrap();
+        match stmt {
+            ast::Statement::Select(sel) => {
+                assert!(sel.having.is_none());
             }
             _ => panic!("Expected Select statement"),
         }

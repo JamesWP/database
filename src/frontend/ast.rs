@@ -79,6 +79,7 @@ pub struct SelectStatement {
     pub limit: Option<Expression>,
     pub order_by: Option<Vec<OrderByClause>>,
     pub group_by: Option<Vec<Expression>>,
+    pub having: Option<Expression>,
 }
 
 #[derive(Debug)]
