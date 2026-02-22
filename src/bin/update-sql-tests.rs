@@ -30,7 +30,10 @@ fn main() {
     }
 
     if migrate {
-        println!("Migrating {} SQL test(s) to inline format...\n", test_names.len());
+        println!(
+            "Migrating {} SQL test(s) to inline format...\n",
+            test_names.len()
+        );
         for test_name in &test_names {
             migrate_sql_test(test_name);
         }

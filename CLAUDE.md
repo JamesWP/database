@@ -30,19 +30,17 @@ Uses `build.rs` to auto-generate individual test functions for each `.sql` file.
 
 - Run all SQL tests: `cargo test test_sql_`
 - Run specific test: `cargo test test_sql_where_clauses`
-- Update .expected files: `cargo run --bin update-sql-tests [test_names...]`
-- Error testing: Use `ERROR: pattern` in `.expected` files for case-insensitive substring matching
+- Update inline expected output: `cargo run --bin update-sql-tests [test_names...]`
+- Error testing: Use `ERROR: pattern` in `-- >` lines for case-insensitive substring matching
 
-Example:
+Each SQL file contains inline expected output as `-- >` comment lines:
+
 ```sql
 -- tests/sql/error_cases.sql
-CREATE TABLE users (id INTEGER, name TEXT);
-CREATE TABLE users (id INTEGER, name TEXT);  -- Duplicate
-```
-```
-# tests/sql/error_cases.expected
-Table 'users' created
-ERROR: already exists
+CREATE TABLE users (id INTEGER, name TEXT)
+-- > Table 'users' created
+CREATE TABLE users (id INTEGER, name TEXT)
+-- > ERROR: already exists
 ```
 
 **Manual Tests:** See `manual_tests/README.md` for end-to-end scenarios and REPL tests.
