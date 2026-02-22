@@ -153,160 +153,62 @@ Add SQL integration tests for `>`, `<`, `>=`, `<=`, `BETWEEN`.
 
 ---
 
-## 41. Variable-Length B-tree Keys (Track 3.6)
+## 41. Variable-Length B-tree Keys (Track 3.6) ✓ Completed 2026-02-18
 
-### What Changes
+### What Was Built
 
-Change B-tree API from fixed `u64` keys to variable-length `Vec<u8>` keys.
+Changed B-tree API from fixed `u64` keys to variable-length `Vec<u8>` / `&[u8]` keys throughout the storage layer.
 
-**Current:**
-```rust
-pub fn insert(&mut self, key: u64, value: Vec<u8>)
-```
-
-**New:**
+**API:**
 ```rust
 pub fn insert(&mut self, key: &[u8], value: Vec<u8>)
+pub fn find(&mut self, key: &[u8]) -> bool
+pub fn delete(&mut self, key: &[u8])
 ```
 
-This enables:
-- TEXT indexes (UTF-8 bytes)
-- Multi-column indexes (concatenated encodings)
-- Future: composite keys, binary data
+Legacy `_u64` convenience wrappers remain for rowid-based table access:
+```rust
+pub fn insert_u64(&mut self, key: u64, value: Value)
+pub fn find_u64(&mut self, key: u64) -> bool
+pub fn delete_u64(&mut self, key: u64)
+```
 
-### Background
+### Actual Implementation (differs from original plan)
 
-SQLite and other databases use variable-length keys. The B-tree stores:
-- Interior nodes: `[key1, ptr1, key2, ptr2, ...]`
-- Leaf nodes: `[key1, value1, key2, value2, ...]`
+**Cell / Node serialization:**
+Keys are stored as `Vec<u8>` in `Cell`, `LeafNodePage`, and `InteriorNodePage`. Serialization uses **CBOR** (not the manual key_len prefix the plan described); CBOR handles variable-length fields naturally.
 
-Keys are compared lexicographically (byte-by-byte).
+**Byte comparison:**
+Both `LeafNodePage::search()` and `InteriorNodePage::search()` use Rust's `.cmp()` on `&[u8]` slices, giving lexicographic ordering.
 
-### Implementation Approach
+**Integer key encoding:**
+```rust
+pub fn encode_integer_key(i: i64) -> Vec<u8> {
+    let encoded = (i as u64) ^ 0x8000_0000_0000_0000; // flip sign bit
+    encoded.to_be_bytes().to_vec()
+}
+```
+The sign-bit flip ensures negative integers sort before positive ones under byte comparison (e.g. `-1 < 0 < 1`).
 
-This is a **major refactor** touching all B-tree code:
+**NULL key encoding:**
+Index entries for NULL values use `vec![0u8; 8]` (eight zero bytes), which sorts before any sign-bit-flipped integer. Type-tag prefix (0x00) described in the original plan was not implemented.
 
-**Storage layer changes:**
+**Engine (WriteIndex):**
+Only INTEGER and NULL are encoded in `WriteIndex`; TEXT support is deferred to item 43. The composite index key is:
+```
+[encode_integer_key(column_value)][encode_u64_key(primary_key)]
+```
 
-1. **Cell format** (`src/storage/cell.rs`):
-   - Change from `(u64 key, Vec<u8> value)` to `(Vec<u8> key, Vec<u8> value)`
-   - Add key length prefix: `[key_len: u32][key_bytes][value_bytes]`
-
-2. **Node format** (`src/storage/node.rs`):
-   - LeafNode: store variable-length keys
-   - InteriorNode: store variable-length keys
-   - Update binary search to use byte comparison
-
-3. **Cursor** (`src/storage/btree.rs`):
-   - Change `find(u64)` to `find(&[u8])`
-   - Update comparison logic to lexicographic
-
-4. **Cell reader** (`src/storage/cell_reader.rs`):
-   - Read key length prefix
-   - Return `&[u8]` instead of `u64`
-
-**Engine changes:**
-
-Update all `MoveCursor(Find(key))` operations to encode keys as bytes.
-
-**Backward compatibility:**
-
-Option 1: **Breaking change** - require rebuilding databases
-Option 2: **Version migration** - detect old format, convert on read (complex)
-
-Recommend Option 1 for simplicity (V1 database format not stable yet).
+**CellReader:**
+`key()` returns `&[u8]` directly from the stored `Vec<u8>`.
 
 ### Key Files
 
-- `src/storage/cell.rs` — variable-length key encoding
-- `src/storage/node.rs` — node layout with variable keys
-- `src/storage/btree.rs` — API change, cursor operations
-- `src/storage/cell_reader.rs` — read variable-length keys
-- `src/engine.rs` — encode keys as bytes
-
-### Tests
-
-**Critical tests:**
-- Insert/read with keys of varying lengths (1 byte, 100 bytes, 1000 bytes)
-- Lexicographic ordering: `"a" < "ab" < "b" < "ba"`
-- Empty keys (if allowed)
-- B-tree splits with variable-length keys
-- Verify integrity after splits
-
-### Implementation Steps (7 commits)
-
-#### Step 41.1 — Cell: variable-length key format
-
-Update Cell struct and serialization:
-```rust
-pub struct Cell {
-    pub key: Vec<u8>,  // was: u64
-    pub value: Vec<u8>,
-    pub continuation: Option<u32>,
-}
-```
-
-Add CBOR encoding with key_len prefix.
-
-**Commit:** Change Cell to support variable-length keys
-
-#### Step 41.2 — Node: variable-length keys in LeafNode
-
-Update LeafNode to store variable-length keys, maintain sorted order.
-
-**Commit:** LeafNode with variable-length keys
-
-#### Step 41.3 — Node: variable-length keys in InteriorNode
-
-Update InteriorNode to store variable-length keys as separators.
-
-**Commit:** InteriorNode with variable-length keys
-
-#### Step 41.4 — Cursor: lexicographic comparison
-
-Change find() to accept `&[u8]`, use memcmp-style comparison.
-
-**Commit:** Cursor find with byte slice keys
-
-#### Step 41.5 — BTree API: change signature
-
-Update public API:
-```rust
-impl Cursor {
-    pub fn insert(&mut self, key: &[u8], value: Vec<u8>)
-    pub fn find(&mut self, key: &[u8])
-    pub fn get_entry(&mut self) -> Option<CellReader>  // returns &[u8] key
-}
-```
-
-**Commit:** Change BTree API to variable-length keys
-
-#### Step 41.6 — Engine: encode keys as bytes
-
-Update engine to encode register values as `Vec<u8>` before inserting.
-
-For integers:
-```rust
-fn encode_key_bytes(value: &ScalarValue) -> Vec<u8> {
-    match value {
-        ScalarValue::Integer(i) => encode_integer_key(*i).to_be_bytes().to_vec(),
-        ScalarValue::String(s) => s.as_bytes().to_vec(),
-        // ...
-    }
-}
-```
-
-**Commit:** Engine encodes keys as byte arrays
-
-#### Step 41.7 — Tests: variable-length key integrity
-
-Add comprehensive tests:
-- Ordering: `["a", "ab", "abc", "b"]`
-- Long keys (1KB)
-- Mixed lengths
-- Splits with variable-length keys
-
-**Commit:** Integration tests for variable-length keys
+- `src/storage/cell.rs` — `Cell { key: Vec<u8>, value: Vec<u8>, continuation }`
+- `src/storage/node.rs` — `LeafNodePage` and `InteriorNodePage` with byte-slice search
+- `src/storage/btree.rs` — `insert/find/delete(&[u8])`, `encode_integer_key`, `encode_u64_key`
+- `src/storage/cell_reader.rs` — `key() -> &[u8]`
+- `src/engine.rs` — `WriteIndex` encodes INTEGER/NULL keys
 
 ---
 
