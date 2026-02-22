@@ -28,7 +28,6 @@ pub enum RegisterValue {
     None,
     ScalarValue(ScalarValue),
     CursorHandle(CursorHandle),
-    KeyList(Vec<u64>),
     RowBuffer(RowBuffer),
     GroupTable(GroupTable),
 }
@@ -115,14 +114,6 @@ impl RegisterValue {
     pub(crate) fn cursor_mut(&mut self) -> Option<&mut CursorHandle> {
         if let RegisterValue::CursorHandle(ref mut c) = self {
             Some(c)
-        } else {
-            None
-        }
-    }
-
-    pub(crate) fn key_list_mut(&mut self) -> Option<&mut Vec<u64>> {
-        if let RegisterValue::KeyList(ref mut list) = self {
-            Some(list)
         } else {
             None
         }

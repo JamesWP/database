@@ -1258,11 +1258,12 @@ pub fn codegen_update(
     // Allocate registers for reading all table columns
     let read_regs = ctx.registers.alloc_block(table_columns.len());
 
-    // INIT: open cursor, position to first, init key list and counter
+    // INIT: open cursor, position to first, init key buffer and counter
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
     ctx.init_emitter
         .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
-    ctx.init_emitter.emit(Operation::InitKeyList(key_list_reg));
+    ctx.init_emitter
+        .emit(Operation::InitRowBuffer(key_list_reg));
     ctx.init_emitter
         .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
 
@@ -1295,7 +1296,7 @@ pub fn codegen_update(
         ctx.body_emitter
             .emit(Operation::ReadKey(key_reg, cursor_reg));
         ctx.body_emitter
-            .emit(Operation::AppendKey(key_list_reg, key_reg));
+            .emit(Operation::AppendToRowBuffer(key_list_reg, vec![key_reg]));
         ctx.body_emitter
             .emit(Operation::IncrementValue(counter_reg));
 
@@ -1305,7 +1306,7 @@ pub fn codegen_update(
         ctx.body_emitter
             .emit(Operation::ReadKey(key_reg, cursor_reg));
         ctx.body_emitter
-            .emit(Operation::AppendKey(key_list_reg, key_reg));
+            .emit(Operation::AppendToRowBuffer(key_list_reg, vec![key_reg]));
         ctx.body_emitter
             .emit(Operation::IncrementValue(counter_reg));
     }
@@ -1320,11 +1321,16 @@ pub fn codegen_update(
     let update_done = ctx.body_emitter.create_label();
 
     ctx.body_emitter.bind_label(phase2_start);
+    ctx.body_emitter
+        .emit(Operation::RewindRowBuffer(key_list_reg));
     ctx.body_emitter.bind_label(update_loop);
 
-    // Pop next key, or jump to done if list is empty
-    ctx.body_emitter
-        .emit_pop_key(key_reg, key_list_reg, update_done);
+    // Advance to next key, or jump to done if buffer is exhausted
+    ctx.body_emitter.emit(Operation::NextFromRowBuffer(
+        vec![key_reg],
+        key_list_reg,
+        JumpTarget::Unresolved(update_done),
+    ));
 
     // Seek to this key and re-read row values
     ctx.body_emitter.emit(Operation::MoveCursor(
@@ -1537,11 +1543,12 @@ pub fn codegen_delete(
     // Allocate registers for reading all table columns (needed for filter evaluation)
     let read_regs = ctx.registers.alloc_block(table_columns.len());
 
-    // INIT: open cursor, position to first, init key list and counter
+    // INIT: open cursor, position to first, init key buffer and counter
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
     ctx.init_emitter
         .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
-    ctx.init_emitter.emit(Operation::InitKeyList(key_list_reg));
+    ctx.init_emitter
+        .emit(Operation::InitRowBuffer(key_list_reg));
     ctx.init_emitter
         .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
 
@@ -1574,7 +1581,7 @@ pub fn codegen_delete(
         ctx.body_emitter
             .emit(Operation::ReadKey(key_reg, cursor_reg));
         ctx.body_emitter
-            .emit(Operation::AppendKey(key_list_reg, key_reg));
+            .emit(Operation::AppendToRowBuffer(key_list_reg, vec![key_reg]));
         ctx.body_emitter
             .emit(Operation::IncrementValue(counter_reg));
 
@@ -1584,7 +1591,7 @@ pub fn codegen_delete(
         ctx.body_emitter
             .emit(Operation::ReadKey(key_reg, cursor_reg));
         ctx.body_emitter
-            .emit(Operation::AppendKey(key_list_reg, key_reg));
+            .emit(Operation::AppendToRowBuffer(key_list_reg, vec![key_reg]));
         ctx.body_emitter
             .emit(Operation::IncrementValue(counter_reg));
     }
@@ -1599,11 +1606,16 @@ pub fn codegen_delete(
     let delete_done = ctx.body_emitter.create_label();
 
     ctx.body_emitter.bind_label(phase2_start);
+    ctx.body_emitter
+        .emit(Operation::RewindRowBuffer(key_list_reg));
     ctx.body_emitter.bind_label(delete_loop);
 
-    // Pop next key, or jump to done if list is empty
-    ctx.body_emitter
-        .emit_pop_key(key_reg, key_list_reg, delete_done);
+    // Advance to next key, or jump to done if buffer is exhausted
+    ctx.body_emitter.emit(Operation::NextFromRowBuffer(
+        vec![key_reg],
+        key_list_reg,
+        JumpTarget::Unresolved(delete_done),
+    ));
 
     // Seek to this key and delete
     ctx.body_emitter.emit(Operation::MoveCursor(

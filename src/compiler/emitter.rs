@@ -73,11 +73,6 @@ impl BytecodeEmitter {
 
     /// Emit a PopKey instruction: pop key from list into dest, or jump if empty.
     /// Label resolution is deferred until finalize().
-    pub fn emit_pop_key(&mut self, dest: Reg, list: Reg, label: Label) {
-        self.operations
-            .push(Operation::PopKey(dest, list, JumpTarget::Unresolved(label)));
-    }
-
     /// Finalize the bytecode by resolving all jump targets with an offset added.
     /// Returns the final list of operations.
     /// Panics if any label was never bound.
@@ -103,9 +98,6 @@ impl BytecodeEmitter {
                     *target = resolve_target_with_offset(target, label_positions, offset);
                 }
                 Operation::GoToIfEqualValue(ref mut target, _, _) => {
-                    *target = resolve_target_with_offset(target, label_positions, offset);
-                }
-                Operation::PopKey(_, _, ref mut target) => {
                     *target = resolve_target_with_offset(target, label_positions, offset);
                 }
                 Operation::NextFromRowBuffer(_, _, ref mut target) => {
@@ -144,9 +136,6 @@ impl BytecodeEmitter {
                 | Operation::LowerValue(_, _)
                 | Operation::AbsValue(_, _)
                 | Operation::LikeValue(_, _, _)
-                // Key list operations
-                | Operation::InitKeyList(_)
-                | Operation::AppendKey(_, _)
                 // Row buffer operations
                 | Operation::InitRowBuffer(_)
                 | Operation::AppendToRowBuffer(_, _)

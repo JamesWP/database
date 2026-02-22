@@ -287,28 +287,6 @@ impl Engine {
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Boolean(result));
             }
-            InitKeyList(reg) => {
-                *self.registers.get_mut(reg) = RegisterValue::KeyList(Vec::new());
-            }
-            AppendKey(list_reg, key_reg) => {
-                let key = match self.registers.get(key_reg).scalar().unwrap() {
-                    ScalarValue::Integer(k) => *k as u64,
-                    other => panic!("AppendKey requires Integer key, got {:?}", other),
-                };
-                let list = self.registers.get_mut(list_reg).key_list_mut().unwrap();
-                list.push(key);
-            }
-            PopKey(dest_reg, list_reg, target) => {
-                let list = self.registers.get_mut(list_reg).key_list_mut().unwrap();
-                if let Some(key) = list.pop() {
-                    let value = ScalarValue::Integer(key as i64);
-                    *self.registers.get_mut(dest_reg) = RegisterValue::ScalarValue(value);
-                } else {
-                    // List is empty, jump to target
-                    self.program
-                        .set_next_operation_index(target.unwrap_resolved());
-                }
-            }
             InitRowBuffer(reg) => {
                 *self.registers.get_mut(reg) = RegisterValue::RowBuffer(registers::RowBuffer {
                     rows: Vec::new(),
@@ -1678,46 +1656,6 @@ mod test {
     }
 
     #[test]
-    fn test_key_list_append_and_pop() {
-        let test = TestDb::default();
-        let btree = test.btree;
-
-        let r_list = Reg::new(0);
-        let r_key = Reg::new(1);
-        let r_val1 = Reg::new(2);
-        let r_val2 = Reg::new(3);
-        let r_val3 = Reg::new(4);
-
-        let ops = [
-            // Initialize list and append 3 keys
-            Operation::InitKeyList(r_list),
-            Operation::StoreValue(r_key, ScalarValue::Integer(10)),
-            Operation::AppendKey(r_list, r_key),
-            Operation::StoreValue(r_key, ScalarValue::Integer(20)),
-            Operation::AppendKey(r_list, r_key),
-            Operation::StoreValue(r_key, ScalarValue::Integer(30)),
-            Operation::AppendKey(r_list, r_key),
-            // Pop and yield all 3 keys (in reverse order: 30, 20, 10)
-            Operation::PopKey(r_val1, r_list, JumpTarget::addr(10)),
-            Operation::PopKey(r_val2, r_list, JumpTarget::addr(10)),
-            Operation::PopKey(r_val3, r_list, JumpTarget::addr(10)),
-            Operation::Yield(vec![r_val1, r_val2, r_val3]),
-            // Try to pop from empty list - should jump to halt
-            Operation::PopKey(r_key, r_list, JumpTarget::addr(13)), // jump to Halt
-            Operation::Yield(vec![r_key]),                          // Should not reach here
-            Operation::Halt,
-        ];
-
-        let mut engine = Engine::with_program(&ops, 5, btree);
-        let yields = engine.run();
-
-        assert_eq!(yields.len(), 1);
-        assert_eq!(yields[0][0], ScalarValue::Integer(30)); // LIFO: last in, first out
-        assert_eq!(yields[0][1], ScalarValue::Integer(20));
-        assert_eq!(yields[0][2], ScalarValue::Integer(10));
-    }
-
-    #[test]
     fn test_move_cursor_find() {
         let test = TestDb::default();
         let mut btree = test.btree;
@@ -1761,77 +1699,6 @@ mod test {
 
         assert_eq!(yields.len(), 1);
         assert_eq!(yields[0][0], ScalarValue::Integer(200));
-    }
-
-    #[test]
-    fn test_collect_then_delete_pattern() {
-        let test = TestDb::default();
-        let mut btree = test.btree;
-        let root = btree.create_tree();
-
-        // Insert 3 rows
-        {
-            let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
-            let mut v1 = Vec::new();
-            let values = vec![ScalarValue::Integer(10)];
-            ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert_u64(1, v1);
-            let mut v2 = Vec::new();
-            let values = vec![ScalarValue::Integer(20)];
-            ciborium::ser::into_writer(&values, &mut v2).unwrap();
-            c.insert_u64(2, v2);
-            let mut v3 = Vec::new();
-            let values = vec![ScalarValue::Integer(30)];
-            ciborium::ser::into_writer(&values, &mut v3).unwrap();
-            c.insert_u64(3, v3);
-        }
-
-        let r_cursor = Reg::new(0);
-        let r_key_list = Reg::new(1);
-        let r_key = Reg::new(2);
-        let r_can_read = Reg::new(3);
-        let r_count = Reg::new(4);
-
-        let ops = [
-            // Init
-            Operation::Open(r_cursor, root),
-            Operation::MoveCursor(r_cursor, MoveOperation::First),
-            Operation::InitKeyList(r_key_list),
-            Operation::StoreValue(r_count, ScalarValue::Integer(0)),
-            // Phase 1: Collect all keys
-            // collect_loop (addr 4):
-            Operation::CanReadCursor(r_can_read, r_cursor), // 4
-            Operation::GoToIfFalse(JumpTarget::addr(11), r_can_read), // jump to phase2
-            Operation::ReadKey(r_key, r_cursor),
-            Operation::AppendKey(r_key_list, r_key),
-            Operation::IncrementValue(r_count),
-            Operation::MoveCursor(r_cursor, MoveOperation::Next),
-            Operation::GoTo(JumpTarget::addr(4)), // loop back
-            // Phase 2: Delete all collected keys
-            // delete_loop (addr 11):
-            Operation::PopKey(r_key, r_key_list, JumpTarget::addr(15)), // 11, jump to done
-            Operation::MoveCursor(r_cursor, MoveOperation::Find(r_key)),
-            Operation::DeleteCursor(r_cursor),
-            Operation::GoTo(JumpTarget::addr(11)), // loop back
-            // done (addr 15):
-            Operation::Yield(vec![r_count]), // 15
-            Operation::Halt,
-        ];
-
-        let mut engine = Engine::with_program(&ops, 5, btree);
-        let yields = engine.run();
-
-        // Should have deleted 3 rows
-        assert_eq!(yields.len(), 1);
-        assert_eq!(yields[0][0], ScalarValue::Integer(3));
-
-        // Verify table is empty
-        let btree = engine.take_btree().unwrap();
-        let mut cursor = btree.open(root);
-        let mut c = cursor.open_readwrite();
-        c.first();
-        assert!(c.get_entry().is_none());
     }
 
     #[test]
