@@ -13,38 +13,38 @@ INSERT INTO users VALUES (4, 'alice smith', 'asmith@company.org');
 
 -- Exact match
 SELECT name FROM users WHERE name LIKE 'alice';
--- > alice
+-- > "alice"
 
 -- Prefix match with %
 SELECT name FROM users WHERE name LIKE 'ali%';
--- > alice
--- > alice smith
+-- > "alice"
+-- > "alice smith"
 
 -- Suffix match with %
 SELECT name FROM users WHERE email LIKE '%example.com';
--- > alice
--- > charlie
+-- > "alice"
+-- > "charlie"
 
 -- Contains with %
 SELECT name FROM users WHERE name LIKE '%li%';
--- > alice
--- > charlie
--- > alice smith
+-- > "alice"
+-- > "charlie"
+-- > "alice smith"
 
 -- Single character match with _
 SELECT name FROM users WHERE name LIKE 'bo_';
--- > bob
+-- > "bob"
 
 -- Multiple wildcards
 SELECT name FROM users WHERE name LIKE 'a%e';
--- > alice
+-- > "alice"
 
 -- % matches everything
 SELECT name FROM users WHERE name LIKE '%';
--- > alice
--- > bob
--- > charlie
--- > alice smith
+-- > "alice"
+-- > "bob"
+-- > "charlie"
+-- > "alice smith"
 
 -- No matches
 SELECT name FROM users WHERE name LIKE 'xyz%';

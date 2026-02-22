@@ -7,19 +7,11 @@ use crate::storage::BTree;
 use std::fs;
 use std::path::PathBuf;
 
-fn format_scalar(val: &ScalarValue) -> String {
-    match val {
-        ScalarValue::Integer(i) => i.to_string(),
-        ScalarValue::Floating(f) => f.to_string(),
-        ScalarValue::String(s) => s.clone(),
-        ScalarValue::Boolean(b) => b.to_string(),
-        ScalarValue::Blob(b) => format!("Blob({})", b.len()),
-        ScalarValue::Null => "NULL".to_string(),
-    }
-}
-
 fn format_row(row: &[ScalarValue]) -> String {
-    row.iter().map(format_scalar).collect::<Vec<_>>().join("\t")
+    row.iter()
+        .map(|v| v.plain_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A single SQL statement and its expected output lines from the inline format

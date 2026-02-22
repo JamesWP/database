@@ -11,6 +11,6 @@ INSERT INTO sprocket VALUES (3, 5, 'pentaboi', 8.0);
 
 -- This should return 2 columns (the two max() results), not 3
 SELECT max(shape_id), max(matt_score_tm) FROM sprocket GROUP BY name;
--- > 3	8
--- > 2	4
--- > 1	9
+-- > 3, 8
+-- > 2, 4
+-- > 1, 9

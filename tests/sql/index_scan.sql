@@ -12,11 +12,11 @@ CREATE INDEX idx_age ON users(age)
 -- > Index 'idx_age' created
 -- Should use index scan
 SELECT id, name FROM users WHERE age = 30 ORDER BY id
--- > 1	Alice
--- > 3	Charlie
+-- > 1, "Alice"
+-- > 3, "Charlie"
 SELECT id, name FROM users WHERE age = 25 ORDER BY id
--- > 2	Bob
--- > 4	Diana
+-- > 2, "Bob"
+-- > 4, "Diana"
 -- No matches
 SELECT id, name FROM users WHERE age = 40
 -- > OK
@@ -24,6 +24,6 @@ SELECT id, name FROM users WHERE age = 40
 INSERT INTO users VALUES (5, 'Eve', 25)
 -- > 1
 SELECT id, name FROM users WHERE age = 25 ORDER BY id
--- > 2	Bob
--- > 4	Diana
--- > 5	Eve
+-- > 2, "Bob"
+-- > 4, "Diana"
+-- > 5, "Eve"

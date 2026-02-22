@@ -4,8 +4,8 @@ CREATE TABLE users (id INTEGER, name TEXT);
 INSERT INTO users VALUES (1, 'alice'), (2, 'bob');
 -- > 2
 SELECT * FROM users;
--- > 1	alice
--- > 2	bob
+-- > 1, "alice"
+-- > 2, "bob"
 DROP TABLE users;
 -- > Table 'users' dropped
 -- After DROP, SELECT should fail
@@ -28,4 +28,4 @@ CREATE TABLE items (id INTEGER, name TEXT);
 INSERT INTO items VALUES (2, 'item2');
 -- > 1
 SELECT * FROM items;
--- > 2	item2
+-- > 2, "item2"

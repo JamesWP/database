@@ -11,39 +11,39 @@ INSERT INTO numbers VALUES (4, 300, 'four')
 INSERT INTO numbers VALUES (5, 150, 'five')
 -- > 1
 SELECT id, value FROM numbers WHERE value=100
--- > 1	100
--- > 3	100
+-- > 1, 100
+-- > 3, 100
 SELECT id, value FROM numbers WHERE value!=100
--- > 2	200
--- > 4	300
--- > 5	150
+-- > 2, 200
+-- > 4, 300
+-- > 5, 150
 SELECT id, value FROM numbers WHERE value<200
--- > 1	100
--- > 3	100
--- > 5	150
+-- > 1, 100
+-- > 3, 100
+-- > 5, 150
 SELECT id, value FROM numbers WHERE value>100
--- > 2	200
--- > 4	300
--- > 5	150
+-- > 2, 200
+-- > 4, 300
+-- > 5, 150
 SELECT id, value FROM numbers WHERE value<=100
--- > 1	100
--- > 3	100
+-- > 1, 100
+-- > 3, 100
 SELECT id, value FROM numbers WHERE value>=200
--- > 2	200
--- > 4	300
+-- > 2, 200
+-- > 4, 300
 SELECT id, name FROM numbers WHERE value>100 AND value<300
--- > 2	two
--- > 5	five
+-- > 2, "two"
+-- > 5, "five"
 SELECT id, name FROM numbers WHERE value=100 OR value=300
--- > 1	one
--- > 3	three
--- > 4	four
+-- > 1, "one"
+-- > 3, "three"
+-- > 4, "four"
 SELECT id, name FROM numbers WHERE value<150 OR value>250
--- > 1	one
--- > 3	three
--- > 4	four
+-- > 1, "one"
+-- > 3, "three"
+-- > 4, "four"
 SELECT id, name FROM numbers WHERE value>=100 AND value<=200
--- > 1	one
--- > 2	two
--- > 3	three
--- > 5	five
+-- > 1, "one"
+-- > 2, "two"
+-- > 3, "three"
+-- > 5, "five"
