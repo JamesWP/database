@@ -1113,7 +1113,7 @@ pub fn decode_u64_key(bytes: &[u8]) -> u64 {
 
 /// Encode a single index column value as sortable bytes with a type tag prefix.
 ///
-/// Type tags ensure cross-type ordering: NULL(0x00) < INTEGER(0x01) < TEXT(0x03).
+/// Type tags ensure cross-type ordering: NULL(0x00) < INTEGER(0x01) < REAL(0x02) < TEXT(0x03).
 /// The returned bytes are concatenated with other column encodings to form the full index key.
 pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Vec<u8> {
     use crate::engine::scalarvalue::ScalarValue;
@@ -1122,6 +1122,18 @@ pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Ve
         ScalarValue::Integer(i) => {
             let mut key = vec![0x01];
             key.extend_from_slice(&encode_integer_key(*i));
+            key
+        }
+        ScalarValue::Floating(f) => {
+            // IEEE 754 sortable encoding: flip sign bit (and all bits if negative)
+            let bits = f.to_bits();
+            let sortable = if bits >> 63 == 0 {
+                bits ^ 0x8000_0000_0000_0000
+            } else {
+                bits ^ 0xFFFF_FFFF_FFFF_FFFF
+            };
+            let mut key = vec![0x02];
+            key.extend_from_slice(&sortable.to_be_bytes());
             key
         }
         ScalarValue::String(s) => {

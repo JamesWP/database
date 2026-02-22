@@ -916,6 +916,13 @@ fn try_plan_index_scan(
         if let Some((col, lit)) = extract_equality_filter(filter) {
             // Equality: col = X → [X, X] inclusive on both sides
             (col, Some((lit.clone(), true)), Some((lit, true)))
+        } else if let Some(col) = extract_is_null_filter(filter) {
+            // IS NULL: use Null literal as both bounds
+            (
+                col,
+                Some((Literal::Null, true)),
+                Some((Literal::Null, true)),
+            )
         } else {
             extract_range_filter(filter)?
         };
@@ -997,6 +1004,16 @@ fn extract_single_range(
             let lit = extract_literal(rhs)?;
             Some((col, None, Some((lit, true))))
         }
+        _ => None,
+    }
+}
+
+fn extract_is_null_filter(expr: &ast::Expression) -> Option<String> {
+    match expr {
+        ast::Expression::UnaryOp {
+            op: ast::UnaryOp::IsNull,
+            expression,
+        } => extract_column_name(expression),
         _ => None,
     }
 }
