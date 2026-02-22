@@ -157,16 +157,13 @@ pub enum Operation {
     EncodeIndexKey(Reg, Reg),  // EncodeIndexKey(dest, src): scalar to sortable index blob
     /// Read the raw key bytes of the current cursor entry as a Blob scalar.
     ReadCurrentKey(Reg, Reg), // ReadCurrentKey(dest, cursor)
-    /// True if blob starts with the given prefix bytes.
-    BlobStartsWith(Reg, Reg, Reg), // BlobStartsWith(dest, blob, prefix)
-    /// True if the first len(bound) bytes of blob are strictly less than bound.
-    BlobPrefixLt(Reg, Reg, Reg), // BlobPrefixLt(dest, blob, bound)
-    /// True if the first len(bound) bytes of blob are less than or equal to bound.
-    BlobPrefixLe(Reg, Reg, Reg), // BlobPrefixLe(dest, blob, bound)
-    /// Extract blob[offset..] as a new Blob scalar.
-    BlobSliceTail(Reg, Reg, usize), // BlobSliceTail(dest, blob, offset)
-    /// Decode an 8-byte big-endian blob as a u64 rowid → Integer scalar.
-    DecodeU64Key(Reg, Reg), // DecodeU64Key(dest, blob)
+
+    // Blob operations (for composing index key comparisons)
+    BlobStartsWith(Reg, Reg, Reg), // BlobStartsWith(dest, blob, prefix): blob starts_with prefix
+    BlobPrefixLt(Reg, Reg, Reg),  // BlobPrefixLt(dest, blob, bound): blob[..len(bound)] < bound
+    BlobPrefixLe(Reg, Reg, Reg),  // BlobPrefixLe(dest, blob, bound): blob[..len(bound)] <= bound
+    BlobSliceTail(Reg, Reg, usize), // BlobSliceTail(dest, blob, offset): blob[offset..]
+    DecodeU64Key(Reg, Reg),         // DecodeU64Key(dest, blob): 8-byte blob → u64 as Integer
 
     // Control Flow
     Yield(Vec<Reg>),
