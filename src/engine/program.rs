@@ -154,7 +154,7 @@ pub enum Operation {
     WriteIndex(Reg, Reg, Reg), // WriteIndex(cursor, value, pk): insert into index
     DeleteCursor(Reg),         // DeleteCursor(cursor): delete row at current cursor position
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
-    EncodeIndexKey(Reg, Reg), // EncodeIndexKey(dest, src): scalar to sortable index blob
+    EncodeIndexKey(Reg, Reg),  // EncodeIndexKey(dest, src): scalar to sortable index blob
     /// Read the raw key bytes of the current cursor entry as a Blob scalar.
     ReadCurrentKey(Reg, Reg), // ReadCurrentKey(dest, cursor)
     /// True if blob starts with the given prefix bytes.
