@@ -134,10 +134,18 @@ pub enum LogicalPlan {
     /// Scan via an index — handles both equality and range predicates.
     /// Equality (col = X): lower_bound = Some((X, true)), upper_bound = Some((X, true))
     /// Range (col > X): lower_bound = Some((X, false)), upper_bound = None
+    /// Scan an index B-tree and yield one rowid per matching entry.
+    /// Knows nothing about the table; a RowidLookup node above fetches columns.
     IndexScan {
         index_rootpage: u32,
         lower_bound: Option<(Literal, bool)>, // (value, inclusive)
         upper_bound: Option<(Literal, bool)>, // (value, inclusive)
+    },
+
+    /// For each rowid produced by its input, fetch the requested columns from
+    /// the table B-tree and yield a full row.
+    RowidLookup {
+        input: Box<LogicalPlan>,
         table_rootpage: u32,
         columns: Vec<usize>,
     },
@@ -909,10 +917,12 @@ fn try_plan_index_scan(
     let indexes = btree.lookup_indexes_for_table(table_name);
     let index = indexes.iter().find(|idx| idx.column_name == col_name)?;
 
-    Some(LogicalPlan::IndexScan {
-        index_rootpage: index.rootpage,
-        lower_bound,
-        upper_bound,
+    Some(LogicalPlan::RowidLookup {
+        input: Box::new(LogicalPlan::IndexScan {
+            index_rootpage: index.rootpage,
+            lower_bound,
+            upper_bound,
+        }),
         table_rootpage,
         columns: scan_columns.to_vec(),
     })
@@ -2958,19 +2968,24 @@ mod tests {
 
         match plan {
             LogicalPlan::Project { input, .. } => match *input {
-                LogicalPlan::IndexScan {
-                    index_rootpage,
-                    lower_bound,
-                    upper_bound,
+                LogicalPlan::RowidLookup {
+                    input,
                     table_rootpage,
                     ..
-                } => {
-                    assert_eq!(index_rootpage, index_root);
-                    assert_eq!(lower_bound, Some((Literal::Integer(30), true)));
-                    assert_eq!(upper_bound, Some((Literal::Integer(30), true)));
-                    assert_eq!(table_rootpage, users_root);
-                }
-                _ => panic!("Expected IndexScan, got {:?}", input),
+                } => match *input {
+                    LogicalPlan::IndexScan {
+                        index_rootpage,
+                        lower_bound,
+                        upper_bound,
+                    } => {
+                        assert_eq!(index_rootpage, index_root);
+                        assert_eq!(lower_bound, Some((Literal::Integer(30), true)));
+                        assert_eq!(upper_bound, Some((Literal::Integer(30), true)));
+                        assert_eq!(table_rootpage, users_root);
+                    }
+                    _ => panic!("Expected IndexScan inside RowidLookup, got {:?}", input),
+                },
+                _ => panic!("Expected RowidLookup, got {:?}", input),
             },
             _ => panic!("Expected Project, got {:?}", plan),
         }
@@ -2997,19 +3012,24 @@ mod tests {
         let p = plan(stmt, &btree).expect("Planning failed");
         match p {
             LogicalPlan::Project { input, .. } => match *input {
-                LogicalPlan::IndexScan {
-                    index_rootpage,
-                    lower_bound,
-                    upper_bound,
+                LogicalPlan::RowidLookup {
+                    input,
                     table_rootpage,
                     ..
-                } => {
-                    assert_eq!(index_rootpage, index_root);
-                    assert_eq!(lower_bound, Some((Literal::Integer(20), false)));
-                    assert_eq!(upper_bound, None);
-                    assert_eq!(table_rootpage, data_root);
-                }
-                _ => panic!("Expected IndexScan, got {:?}", input),
+                } => match *input {
+                    LogicalPlan::IndexScan {
+                        index_rootpage,
+                        lower_bound,
+                        upper_bound,
+                    } => {
+                        assert_eq!(index_rootpage, index_root);
+                        assert_eq!(lower_bound, Some((Literal::Integer(20), false)));
+                        assert_eq!(upper_bound, None);
+                        assert_eq!(table_rootpage, data_root);
+                    }
+                    _ => panic!("Expected IndexScan, got {:?}", input),
+                },
+                _ => panic!("Expected RowidLookup, got {:?}", input),
             },
             _ => panic!("Expected Project, got {:?}", p),
         }
@@ -3019,15 +3039,18 @@ mod tests {
         let p = plan(stmt, &btree).expect("Planning failed");
         match p {
             LogicalPlan::Project { input, .. } => match *input {
-                LogicalPlan::IndexScan {
-                    lower_bound,
-                    upper_bound,
-                    ..
-                } => {
-                    assert_eq!(lower_bound, Some((Literal::Integer(10), true)));
-                    assert_eq!(upper_bound, Some((Literal::Integer(40), true)));
-                }
-                _ => panic!("Expected IndexScan, got {:?}", input),
+                LogicalPlan::RowidLookup { input, .. } => match *input {
+                    LogicalPlan::IndexScan {
+                        lower_bound,
+                        upper_bound,
+                        ..
+                    } => {
+                        assert_eq!(lower_bound, Some((Literal::Integer(10), true)));
+                        assert_eq!(upper_bound, Some((Literal::Integer(40), true)));
+                    }
+                    _ => panic!("Expected IndexScan, got {:?}", input),
+                },
+                _ => panic!("Expected RowidLookup, got {:?}", input),
             },
             _ => panic!("Expected Project, got {:?}", p),
         }
