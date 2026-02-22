@@ -10,6 +10,11 @@ INSERT INTO products VALUES (4, 'date', 250)
 -- > 1
 CREATE INDEX idx_name ON products(name)
 -- > Index 'idx_name' created
+-- Verify the planner chooses an index scan for a TEXT equality predicate
+EXPLAIN SELECT id FROM products WHERE name = 'banana'
+-- > 0, "Project [id:0]"
+-- > 1, "  RowidLookup products [cols: id, name]"
+-- > 2, "    IndexScan via idx_name [= 'banana']"
 -- Equality scan on TEXT index
 SELECT id FROM products WHERE name = 'banana'
 -- > 2
