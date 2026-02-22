@@ -971,7 +971,7 @@ pub fn codegen_sort(
 pub fn codegen_aggregate(
     group_keys: &[crate::planner::PlanExpr],
     aggregates: &[crate::planner::AggregateExpr],
-    _having: Option<&crate::planner::PlanExpr>,
+    having: Option<&crate::planner::PlanExpr>,
     input: &LogicalPlan,
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
@@ -1057,7 +1057,21 @@ pub fn codegen_aggregate(
         table_reg,
         JumpTarget::Unresolved(cont.on_done),
     ));
-    // If YieldFromGroupTable succeeds, emit tuple
+
+    // If HAVING predicate is present, evaluate it and skip groups that don't pass
+    if let Some(pred) = having {
+        let mut expr_ctx = ExprContext {
+            emitter: &mut ctx.body_emitter,
+            registers: &mut ctx.registers,
+        };
+        let cond_reg = compile_expr(pred, &output_regs, &mut expr_ctx);
+        ctx.body_emitter.emit(Operation::GoToIfFalse(
+            JumpTarget::Unresolved(yield_from_groups),
+            cond_reg,
+        ));
+    }
+
+    // If YieldFromGroupTable succeeds (and HAVING passes), emit tuple
     ctx.body_emitter.emit_goto(cont.on_tuple);
 
     // agg_next: after parent processes tuple, yield next group
