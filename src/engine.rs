@@ -676,6 +676,15 @@ impl Engine {
                 let tail = blob[start..].to_vec();
                 *self.registers.get_mut(dest) = RegisterValue::ScalarValue(ScalarValue::Blob(tail));
             }
+            BlobDropLast(dest, blob_reg, n) => {
+                let blob = match self.registers.get(blob_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("BlobDropLast: blob register must be Blob"),
+                };
+                let end = blob.len().saturating_sub(n);
+                let head = blob[..end].to_vec();
+                *self.registers.get_mut(dest) = RegisterValue::ScalarValue(ScalarValue::Blob(head));
+            }
             DecodeU64Key(dest, blob_reg) => {
                 let blob = match self.registers.get(blob_reg).scalar().unwrap() {
                     ScalarValue::Blob(b) => b.clone(),

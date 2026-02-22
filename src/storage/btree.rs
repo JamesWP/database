@@ -1114,6 +1114,9 @@ pub fn decode_u64_key(bytes: &[u8]) -> u64 {
 /// Encode a single index column value as sortable bytes with a type tag prefix.
 ///
 /// Type tags ensure cross-type ordering: NULL(0x00) < INTEGER(0x01) < REAL(0x02) < TEXT(0x03).
+/// TEXT values are NUL-terminated ([0x03][utf8_bytes][0x00]) so that shorter strings are not
+/// byte-level prefixes of longer strings. This ensures BlobStartsWith can reliably detect
+/// exact column-value equality (e.g. 'a' is not a prefix of 'apple' after NUL termination).
 /// The returned bytes are concatenated with other column encodings to form the full index key.
 pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Vec<u8> {
     use crate::engine::scalarvalue::ScalarValue;
@@ -1137,8 +1140,10 @@ pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Ve
             key
         }
         ScalarValue::String(s) => {
+            // NUL-terminated: ensures 'a' ([0x03,0x61,0x00]) is not a prefix of 'apple'
             let mut key = vec![0x03];
             key.extend_from_slice(s.as_bytes());
+            key.push(0x00); // NUL terminator
             key
         }
         _ => panic!("encode_index_value: unsupported type {:?}", value),
