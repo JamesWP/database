@@ -45,6 +45,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **I** | Bug Fixes | 4 | [phase-i-bug-fixes.md](completed/phase-i-bug-fixes.md) | Completed |
 | **J** | Cleanup and Refactor | 3 | [phase-j-cleanup-and-refactor.md](completed/phase-j-cleanup-and-refactor.md) | Completed |
 | **K** | Inline SQL Test Expected Output | 4 | [phase-k-inline-sql-tests.md](completed/phase-k-inline-sql-tests.md) | Completed |
+| **L** | EXPLAIN Query Plans | 4 | [phase-l-explain.md](phase-l-explain.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 
