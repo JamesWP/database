@@ -623,8 +623,7 @@ impl Engine {
                 let entry = cursor.get_entry().unwrap();
                 let key = entry.key().to_vec();
                 drop(cursor);
-                *self.registers.get_mut(dest) =
-                    RegisterValue::ScalarValue(ScalarValue::Blob(key));
+                *self.registers.get_mut(dest) = RegisterValue::ScalarValue(ScalarValue::Blob(key));
             }
             BlobStartsWith(dest, blob_reg, prefix_reg) => {
                 let blob = match self.registers.get(blob_reg).scalar().unwrap() {
@@ -670,8 +669,7 @@ impl Engine {
                     _ => panic!("BlobSliceTail: blob register must be Blob"),
                 };
                 let tail = blob[offset..].to_vec();
-                *self.registers.get_mut(dest) =
-                    RegisterValue::ScalarValue(ScalarValue::Blob(tail));
+                *self.registers.get_mut(dest) = RegisterValue::ScalarValue(ScalarValue::Blob(tail));
             }
             DecodeU64Key(dest, blob_reg) => {
                 let blob = match self.registers.get(blob_reg).scalar().unwrap() {
