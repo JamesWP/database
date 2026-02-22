@@ -318,6 +318,7 @@ pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanErro
         Statement::Insert(insert) => plan_insert(insert, btree),
         Statement::Update(update) => plan_update(update, btree),
         Statement::Delete(delete) => plan_delete(delete, btree),
+        Statement::Explain(inner) => plan(*inner, btree),
     }
 }
 
