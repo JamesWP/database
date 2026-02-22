@@ -84,6 +84,7 @@ pub enum Type {
     Inner,
     Index,
     Distinct,
+    Explain,
 
     #[allow(dead_code)]
     Error(Error),
@@ -518,6 +519,7 @@ impl<'a> Lexer<'a> {
                 Some('r') => match_reserved(ident, "drop", Type::Drop),
                 _ => Type::Identifier(ident.to_owned()),
             },
+            'e' => match_reserved(ident, "explain", Type::Explain),
             'f' => match ident.chars().nth(1) {
                 Some('r') => match_reserved(ident, "from", Type::From),
                 Some('a') => match_reserved(ident, "false", Type::False),

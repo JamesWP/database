@@ -13,6 +13,13 @@ pub fn parse(sql: &str) -> Result<ast::Statement, ParseError> {
 pub enum ParseError {
     #[allow(dead_code)]
     UnexpectedToken(Expect, lexer::Type),
+    SyntaxError(String),
+}
+
+impl ParseError {
+    fn syntax(msg: &str) -> Self {
+        ParseError::SyntaxError(msg.to_string())
+    }
 }
 
 struct ParserInput {
@@ -206,6 +213,14 @@ impl lexer::Type {
 /// Parser for statement types
 impl Parser {
     pub(crate) fn parse_statement(&mut self) -> ParseResult<ast::Statement> {
+        if let lexer::Type::Explain = self.input.peek() {
+            self.input.advance(); // consume EXPLAIN
+            let inner = self.parse_statement()?;
+            if matches!(inner, ast::Statement::Explain(_)) {
+                return Err(ParseError::syntax("cannot nest EXPLAIN"));
+            }
+            return Ok(ast::Statement::Explain(Box::new(inner)));
+        }
         match self.input.peek() {
             lexer::Type::Select => Ok(ast::Statement::Select(self.parse_select_statement()?)),
             lexer::Type::Create => {
@@ -1373,5 +1388,25 @@ mod test {
             let sql = format!("CREATE INDEX {idx} ON {table} ({col})");
             proptest::prop_assert!(parse(&sql).is_ok(), "Failed to parse: {sql}");
         }
+    }
+
+    #[test]
+    fn test_parse_explain_select() {
+        let stmt = parse("EXPLAIN SELECT id FROM users WHERE age = 30").unwrap();
+        assert!(matches!(stmt, ast::Statement::Explain(_)));
+        if let ast::Statement::Explain(inner) = stmt {
+            assert!(matches!(*inner, ast::Statement::Select(_)));
+        }
+    }
+
+    #[test]
+    fn test_parse_explain_insert() {
+        let stmt = parse("EXPLAIN INSERT INTO users VALUES (1, 'alice', 30)").unwrap();
+        assert!(matches!(stmt, ast::Statement::Explain(_)));
+    }
+
+    #[test]
+    fn test_parse_explain_nested_error() {
+        assert!(parse("EXPLAIN EXPLAIN SELECT 1").is_err());
     }
 }

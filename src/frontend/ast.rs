@@ -7,6 +7,7 @@ pub enum Statement {
     Update(UpdateStatement),
     Delete(DeleteStatement),
     Drop(DropTableStatement),
+    Explain(Box<Statement>),
 }
 
 #[derive(Debug)]

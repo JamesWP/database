@@ -212,7 +212,8 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
         Statement::Select(_)
         | Statement::Insert(_)
         | Statement::Update(_)
-        | Statement::Delete(_) => {
+        | Statement::Delete(_)
+        | Statement::Explain(_) => {
             let plan = planner::plan(stmt, btree).map_err(ExecuteError::Plan)?;
             let compiled = compiler::compile(&plan);
             let engine = Engine::with_program(
