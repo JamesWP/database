@@ -18,18 +18,27 @@ pub enum ExecuteResult {
 
 #[derive(Debug)]
 pub struct QueryExecution {
+    pub column_names: Vec<String>,
     rows: Vec<Vec<ScalarValue>>,
     pos: usize,
 }
 
 impl QueryExecution {
-    fn new(mut engine: Engine) -> Self {
+    fn new(mut engine: Engine, column_names: Vec<String>) -> Self {
         let rows = engine.run();
-        QueryExecution { rows, pos: 0 }
+        QueryExecution {
+            column_names,
+            rows,
+            pos: 0,
+        }
     }
 
     fn from_rows(rows: Vec<Vec<ScalarValue>>) -> Self {
-        QueryExecution { rows, pos: 0 }
+        QueryExecution {
+            column_names: vec![],
+            rows,
+            pos: 0,
+        }
     }
 
     pub fn next(&mut self) -> Option<Vec<ScalarValue>> {
@@ -219,14 +228,23 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
         | Statement::Insert(_)
         | Statement::Update(_)
         | Statement::Delete(_) => {
+            let column_names = if let Statement::Select(ref select) = stmt {
+                planner::extract_select_column_names(select, btree)
+            } else {
+                vec![]
+            };
             let plan = planner::plan(stmt, btree).map_err(ExecuteError::Plan)?;
-            let compiled = compiler::compile(&plan);
+            let mut compiled = compiler::compile(&plan);
+            compiled.column_names = column_names;
             let engine = Engine::with_program(
                 compiled.operations(),
                 compiled.num_registers(),
                 btree.clone(),
             );
-            Ok(ExecuteResult::Query(QueryExecution::new(engine)))
+            Ok(ExecuteResult::Query(QueryExecution::new(
+                engine,
+                compiled.column_names,
+            )))
         }
         Statement::Explain(_) => {
             let inner = match stmt {
@@ -815,6 +833,32 @@ mod tests {
                 "Expected ColumnCountMismatch error for too many values, got: {:?}",
                 result
             ),
+        }
+    }
+
+    #[test]
+    fn test_query_execution_exposes_column_names() {
+        let mut test = TestDb::default();
+        execute("CREATE TABLE t (id INTEGER, val TEXT)", &mut test.btree).unwrap();
+        let result = execute("SELECT id, val FROM t", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(q) => {
+                assert_eq!(q.column_names, vec!["id", "val"]);
+            }
+            _ => panic!("Expected Query result"),
+        }
+    }
+
+    #[test]
+    fn test_insert_has_no_column_names() {
+        let mut test = TestDb::default();
+        execute("CREATE TABLE t (id INTEGER, val TEXT)", &mut test.btree).unwrap();
+        let result = execute("INSERT INTO t VALUES (1, 'a')", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(q) => {
+                assert!(q.column_names.is_empty());
+            }
+            _ => panic!("Expected Query result"),
         }
     }
 }

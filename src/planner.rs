@@ -303,6 +303,70 @@ pub mod schema {
 // Planning
 // ============================================================================
 
+/// Derive a display name from an AST expression for use as a column header.
+fn ast_expr_name(expr: &ast::Expression) -> String {
+    match expr {
+        ast::Expression::Value(ast::ScalarValue::Identifier(name)) => name.clone(),
+        ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(_, name)) => name.clone(),
+        ast::Expression::FunctionCall { name, args } => {
+            if args.is_empty() {
+                format!("{}(*)", name.to_uppercase())
+            } else {
+                let arg_str = args
+                    .iter()
+                    .map(ast_expr_name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}({})", name.to_uppercase(), arg_str)
+            }
+        }
+        _ => "?".to_string(),
+    }
+}
+
+/// Extract output column names from a SELECT statement's column list.
+///
+/// Returns the names in SELECT column order. Wildcards are expanded using the
+/// btree catalog to look up the table's column names.
+pub fn extract_select_column_names(select: &ast::SelectStatement, btree: &BTree) -> Vec<String> {
+    let mut names = Vec::new();
+    for col_expr in &select.columns {
+        match col_expr {
+            ast::ColumnExpression::Named { name, .. } => {
+                names.push(name.clone());
+            }
+            ast::ColumnExpression::Anonyomous(expr) => {
+                names.push(ast_expr_name(expr));
+            }
+            ast::ColumnExpression::Wildcard => {
+                // Expand wildcard using catalog
+                let table_name = match &select.from {
+                    ast::NamedTupleSource::Named { source, .. } => {
+                        if let ast::TupleSource::Table(name) = source {
+                            name.clone()
+                        } else {
+                            continue;
+                        }
+                    }
+                    ast::NamedTupleSource::Anonyomous(source) => {
+                        if let ast::TupleSource::Table(name) = source {
+                            name.clone()
+                        } else {
+                            continue;
+                        }
+                    }
+                };
+                if let Ok(table) = resolve_table(&table_name, btree) {
+                    for col in &table.columns {
+                        names.push(col.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
 /// Convert an AST Statement to a LogicalPlan by querying the db_schema catalog.
 pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
     match statement {
