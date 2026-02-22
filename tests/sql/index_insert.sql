@@ -11,7 +11,7 @@ INSERT INTO users VALUES (3, 'Charlie', 30)
 INSERT INTO users VALUES (1, 'Alice', 30)
 -- > 1
 SELECT id, name, age FROM users ORDER BY id
--- > 1	Alice	30
--- > 2	Bob	25
--- > 3	Charlie	30
--- > 4	Diana	25
+-- > 1, "Alice", 30
+-- > 2, "Bob", 25
+-- > 3, "Charlie", 30
+-- > 4, "Diana", 25

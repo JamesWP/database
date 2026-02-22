@@ -11,6 +11,6 @@ INSERT INTO sprocket VALUES (3, 5, 'pentaboi', 8.0);
 
 -- This should work: ORDER BY column that's not in SELECT list
 SELECT shape_id, side_count, upper(name) FROM sprocket ORDER BY matt_score_tm;
--- > 2	4	SQUARE
--- > 3	5	PENTABOI
--- > 1	3	TRIANGLE
+-- > 2, 4, "SQUARE"
+-- > 3, 5, "PENTABOI"
+-- > 1, 3, "TRIANGLE"

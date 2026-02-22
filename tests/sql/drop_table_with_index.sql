@@ -18,4 +18,4 @@ CREATE INDEX idx_id ON users(id)
 INSERT INTO users VALUES (2, 'Bob')
 -- > 1
 SELECT * FROM users
--- > 2	Bob
+-- > 2, "Bob"

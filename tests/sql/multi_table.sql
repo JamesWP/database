@@ -19,16 +19,16 @@ INSERT INTO projects VALUES (1, 'Database')
 INSERT INTO projects VALUES (2, 'Frontend')
 -- > 1
 SELECT id, name FROM departments
--- > 1	Engineering
--- > 2	Sales
+-- > 1, "Engineering"
+-- > 2, "Sales"
 SELECT id, name, salary FROM employees WHERE dept_id=1
--- > 100	Alice	90000
--- > 102	Charlie	95000
+-- > 100, "Alice", 90000
+-- > 102, "Charlie", 95000
 SELECT title FROM projects
--- > Database
--- > Frontend
+-- > "Database"
+-- > "Frontend"
 SELECT name FROM employees WHERE salary>85000
--- > Alice
--- > Charlie
+-- > "Alice"
+-- > "Charlie"
 SELECT id, name FROM departments WHERE id=2
--- > 2	Sales
+-- > 2, "Sales"

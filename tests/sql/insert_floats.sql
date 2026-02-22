@@ -28,10 +28,10 @@ INSERT INTO test_floats VALUES (6, 3.14159, 'pi'), (7, 2.71828, 'e');
 
 -- Verify all insertions
 SELECT * FROM test_floats ORDER BY id;
--- > 1	4.5	regular
--- > 2	0.5	leading_dot
--- > 3	5	trailing_dot
--- > 4	0.001	scientific
--- > 5	250	sci_plus
--- > 6	3.14159	pi
--- > 7	2.71828	e
+-- > 1, 4.5, "regular"
+-- > 2, 0.5, "leading_dot"
+-- > 3, 5, "trailing_dot"
+-- > 4, 0.001, "scientific"
+-- > 5, 250, "sci_plus"
+-- > 6, 3.14159, "pi"
+-- > 7, 2.71828, "e"

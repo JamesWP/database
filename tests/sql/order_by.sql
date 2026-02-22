@@ -15,53 +15,53 @@ INSERT INTO scores VALUES (5, 'eve', 88);
 
 -- ORDER BY ASC (default)
 SELECT name, score FROM scores ORDER BY score;
--- > charlie	78
--- > alice	85
--- > eve	88
--- > bob	92
--- > diana	92
+-- > "charlie", 78
+-- > "alice", 85
+-- > "eve", 88
+-- > "bob", 92
+-- > "diana", 92
 
 -- ORDER BY ASC (explicit)
 SELECT name, score FROM scores ORDER BY score ASC;
--- > charlie	78
--- > alice	85
--- > eve	88
--- > bob	92
--- > diana	92
+-- > "charlie", 78
+-- > "alice", 85
+-- > "eve", 88
+-- > "bob", 92
+-- > "diana", 92
 
 -- ORDER BY DESC
 SELECT name, score FROM scores ORDER BY score DESC;
--- > bob	92
--- > diana	92
--- > eve	88
--- > alice	85
--- > charlie	78
+-- > "bob", 92
+-- > "diana", 92
+-- > "eve", 88
+-- > "alice", 85
+-- > "charlie", 78
 
 -- ORDER BY with WHERE
 SELECT name, score FROM scores WHERE score > 80 ORDER BY score DESC;
--- > bob	92
--- > diana	92
--- > eve	88
--- > alice	85
+-- > "bob", 92
+-- > "diana", 92
+-- > "eve", 88
+-- > "alice", 85
 
 -- ORDER BY with LIMIT
 SELECT name, score FROM scores ORDER BY score DESC LIMIT 3;
--- > bob	92
--- > diana	92
--- > eve	88
+-- > "bob", 92
+-- > "diana", 92
+-- > "eve", 88
 
 -- ORDER BY multiple columns (tie-breaking)
 SELECT name, score FROM scores ORDER BY score DESC, name ASC;
--- > bob	92
--- > diana	92
--- > eve	88
--- > alice	85
--- > charlie	78
+-- > "bob", 92
+-- > "diana", 92
+-- > "eve", 88
+-- > "alice", 85
+-- > "charlie", 78
 
 -- ORDER BY first column
 SELECT id, name FROM scores ORDER BY id;
--- > 1	alice
--- > 2	bob
--- > 3	charlie
--- > 4	diana
--- > 5	eve
+-- > 1, "alice"
+-- > 2, "bob"
+-- > 3, "charlie"
+-- > 4, "diana"
+-- > 5, "eve"
