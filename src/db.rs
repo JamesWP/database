@@ -151,28 +151,32 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                 }
             };
 
-            // 4. Find column and verify it's INTEGER (only INTEGER indexes are supported)
-            let column_def = create_table
-                .columns
-                .iter()
-                .find(|col| col.name == ci.column_name)
-                .ok_or_else(|| ExecuteError::ColumnNotFound {
-                    table: ci.table_name.clone(),
-                    column: ci.column_name.clone(),
-                })?;
+            // 4. Find columns and verify each is INTEGER (only INTEGER indexes are supported)
+            let mut column_idxs = Vec::new();
+            for col_name in &ci.column_names {
+                let column_def = create_table
+                    .columns
+                    .iter()
+                    .find(|col| &col.name == col_name)
+                    .ok_or_else(|| ExecuteError::ColumnNotFound {
+                        table: ci.table_name.clone(),
+                        column: col_name.clone(),
+                    })?;
 
-            if !matches!(column_def.type_name, Some(DataType::Integer)) {
-                return Err(ExecuteError::ColumnNotInteger {
-                    table: ci.table_name.clone(),
-                    column: ci.column_name.clone(),
-                });
+                if !matches!(column_def.type_name, Some(DataType::Integer)) {
+                    return Err(ExecuteError::ColumnNotInteger {
+                        table: ci.table_name.clone(),
+                        column: col_name.clone(),
+                    });
+                }
+
+                let col_idx = create_table
+                    .columns
+                    .iter()
+                    .position(|col| &col.name == col_name)
+                    .unwrap();
+                column_idxs.push(col_idx);
             }
-
-            let column_idx = create_table
-                .columns
-                .iter()
-                .position(|col| col.name == ci.column_name)
-                .unwrap();
 
             // 5. Create the index B-tree
             let index_rootpage = btree.create_tree();
@@ -185,7 +189,7 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
                     with_key: true,
                 }),
                 index_rootpage,
-                column_idx,
+                column_idxs,
             };
             let compiled = compiler::compile(&plan);
             Engine::with_program(

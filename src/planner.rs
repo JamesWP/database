@@ -77,7 +77,7 @@ pub struct SortKey {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndexMaintenanceInfo {
     pub rootpage: u32,
-    pub column_idx: usize,
+    pub column_idxs: Vec<usize>,
 }
 
 /// Aggregate function types
@@ -250,13 +250,13 @@ pub enum LogicalPlan {
     Distinct { input: Box<LogicalPlan> },
 
     /// Populate an index B-tree from an existing table.
-    /// Scans all rows in the table, encoding each row's indexed column and
+    /// Scans all rows in the table, encoding each row's indexed columns and
     /// primary key as a composite index key, then writes to the index B-tree.
     /// Output: no rows (yields immediately to on_done).
     PopulateIndex {
         input: Box<LogicalPlan>,
         index_rootpage: u32,
-        column_idx: usize,
+        column_idxs: Vec<usize>,
     },
 }
 // ============================================================================
@@ -877,16 +877,22 @@ fn plan_insert(insert: ast::InsertStatement, btree: &BTree) -> Result<LogicalPla
     let index_infos = btree.lookup_indexes_for_table(&insert.table_name);
     let mut indexes = Vec::new();
     for index_info in index_infos {
-        // Find column index
-        let col_idx = table
-            .columns
+        // Find column indexes
+        let column_idxs = index_info
+            .column_names
             .iter()
-            .position(|col| col.name == index_info.column_name)
-            .expect("Index column not found in table");
+            .map(|name| {
+                table
+                    .columns
+                    .iter()
+                    .position(|col| &col.name == name)
+                    .expect("Index column not found in table")
+            })
+            .collect();
 
         indexes.push(IndexMaintenanceInfo {
             rootpage: index_info.rootpage,
-            column_idx: col_idx,
+            column_idxs,
         });
     }
 
@@ -915,7 +921,10 @@ fn try_plan_index_scan(
         };
 
     let indexes = btree.lookup_indexes_for_table(table_name);
-    let index = indexes.iter().find(|idx| idx.column_name == col_name)?;
+    // Find an index whose first column matches col_name (prefix matching)
+    let index = indexes
+        .iter()
+        .find(|idx| idx.column_names.first().map(|s| s.as_str()) == Some(col_name.as_str()))?;
 
     Some(LogicalPlan::RowidLookup {
         input: Box::new(LogicalPlan::IndexScan {
@@ -3054,6 +3063,85 @@ mod tests {
             },
             _ => panic!("Expected Project, got {:?}", p),
         }
+    }
+
+    #[test]
+    fn test_plan_multi_column_index_uses_first_column() {
+        use super::{plan, Literal, LogicalPlan};
+        use crate::test::TestDb;
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let sql_table = "CREATE TABLE events (id INTEGER, year INTEGER, month INTEGER)";
+        let root = btree.create_tree();
+        btree.insert_schema_entry("table", "events", "events", root, sql_table);
+
+        // Multi-column index on (year, month)
+        let sql_index = "CREATE INDEX idx_year_month ON events(year, month)";
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry("index", "idx_year_month", "events", index_root, sql_index);
+
+        // Query on first column should use the index
+        let stmt = parse_sql("SELECT id FROM events WHERE year = 2024");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+
+        match plan {
+            LogicalPlan::Project { input, .. } => match *input {
+                LogicalPlan::RowidLookup { input, .. } => match *input {
+                    LogicalPlan::IndexScan {
+                        index_rootpage,
+                        lower_bound,
+                        upper_bound,
+                    } => {
+                        assert_eq!(index_rootpage, index_root);
+                        assert_eq!(lower_bound, Some((Literal::Integer(2024), true)));
+                        assert_eq!(upper_bound, Some((Literal::Integer(2024), true)));
+                    }
+                    _ => panic!("Expected IndexScan, got {:?}", input),
+                },
+                _ => panic!("Expected RowidLookup, got {:?}", input),
+            },
+            _ => panic!("Expected Project, got {:?}", plan),
+        }
+    }
+
+    #[test]
+    fn test_plan_multi_column_index_not_used_for_non_first_column() {
+        use super::{plan, LogicalPlan};
+        use crate::test::TestDb;
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let sql_table = "CREATE TABLE events (id INTEGER, year INTEGER, month INTEGER)";
+        let root = btree.create_tree();
+        btree.insert_schema_entry("table", "events", "events", root, sql_table);
+
+        // Multi-column index on (year, month) - only second column referenced
+        let sql_index = "CREATE INDEX idx_year_month ON events(year, month)";
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry("index", "idx_year_month", "events", index_root, sql_index);
+
+        // Query on second column should NOT use the index (falls back to table scan)
+        let stmt = parse_sql("SELECT id FROM events WHERE month = 6");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+
+        // Should NOT contain IndexScan (uses table scan + filter instead)
+        fn contains_index_scan(p: &LogicalPlan) -> bool {
+            matches!(p, LogicalPlan::IndexScan { .. })
+                || match p {
+                    LogicalPlan::Project { input, .. } => contains_index_scan(input),
+                    LogicalPlan::Filter { input, .. } => contains_index_scan(input),
+                    LogicalPlan::RowidLookup { input, .. } => contains_index_scan(input),
+                    _ => false,
+                }
+        }
+        assert!(
+            !contains_index_scan(&plan),
+            "Should not use index for non-first column: {:?}",
+            plan
+        );
     }
 
     #[test]

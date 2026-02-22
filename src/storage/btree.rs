@@ -49,7 +49,7 @@ impl CursorState {}
 #[derive(Debug, Clone)]
 pub struct IndexInfo {
     pub index_name: String,
-    pub column_name: String,
+    pub column_names: Vec<String>,
     pub rootpage: u32,
 }
 
@@ -861,11 +861,11 @@ impl BTree {
                             let name = values[1].as_str().unwrap_or("").to_string();
                             let rootpage = values[3].as_u64().unwrap() as u32;
                             let sql = values[4].as_str().unwrap_or("");
-                            let column_name = extract_column_from_index_sql(sql);
+                            let column_names = extract_columns_from_index_sql(sql);
 
                             indexes.push(IndexInfo {
                                 index_name: name,
-                                column_name,
+                                column_names,
                                 rootpage,
                             });
                         }
@@ -1111,15 +1111,42 @@ pub fn decode_u64_key(bytes: &[u8]) -> u64 {
     u64::from_be_bytes(bytes.try_into().unwrap())
 }
 
+/// Encode a single index column value as sortable bytes with a type tag prefix.
+///
+/// Type tags ensure cross-type ordering: NULL(0x00) < INTEGER(0x01) < TEXT(0x03).
+/// The returned bytes are concatenated with other column encodings to form the full index key.
+pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Vec<u8> {
+    use crate::engine::scalarvalue::ScalarValue;
+    match value {
+        ScalarValue::Null => vec![0x00],
+        ScalarValue::Integer(i) => {
+            let mut key = vec![0x01];
+            key.extend_from_slice(&encode_integer_key(*i));
+            key
+        }
+        ScalarValue::String(s) => {
+            let mut key = vec![0x03];
+            key.extend_from_slice(s.as_bytes());
+            key
+        }
+        _ => panic!("encode_index_value: unsupported type {:?}", value),
+    }
+}
+
 /// Extract column name from a CREATE INDEX SQL string.
 /// "CREATE INDEX idx ON table(col)" → "col"
-fn extract_column_from_index_sql(sql: &str) -> String {
+fn extract_columns_from_index_sql(sql: &str) -> Vec<String> {
     if let Some(start) = sql.find('(') {
         if let Some(end) = sql[start..].find(')') {
-            return sql[start + 1..start + end].trim().to_string();
+            let inside = &sql[start + 1..start + end];
+            return inside
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
     }
-    String::new()
+    vec![]
 }
 
 #[cfg(test)]
@@ -1537,7 +1564,7 @@ mod test {
         let indexes = btree.lookup_indexes_for_table("users");
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].index_name, "idx_age");
-        assert_eq!(indexes[0].column_name, "age");
+        assert_eq!(indexes[0].column_names, vec!["age"]);
         assert_eq!(indexes[0].rootpage, index_root);
     }
 

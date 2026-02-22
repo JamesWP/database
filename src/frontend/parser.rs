@@ -369,19 +369,23 @@ impl Parser {
     }
 
     fn parse_create_index_statement(&mut self) -> ParseResult<ast::CreateIndexStatement> {
-        // CREATE INDEX idx_name ON table_name(column_name)
+        // CREATE INDEX idx_name ON table_name(col1, col2, ...)
         // (CREATE already consumed by caller)
         self.input.expect(Expect::Index)?;
         let index_name = self.parse_identifier()?;
         self.input.expect(Expect::On)?;
         let table_name = self.parse_identifier()?;
         self.input.expect(Expect::LeftParen)?;
-        let column_name = self.parse_identifier()?;
+        let mut column_names = vec![self.parse_identifier()?];
+        while let lexer::Type::Comma = self.input.peek() {
+            self.input.advance();
+            column_names.push(self.parse_identifier()?);
+        }
         self.input.expect(Expect::RightParen)?;
         Ok(ast::CreateIndexStatement {
             index_name,
             table_name,
-            column_name,
+            column_names,
         })
     }
 
@@ -1232,7 +1236,21 @@ mod test {
             ast::Statement::CreateIndex(ci) => {
                 assert_eq!(ci.index_name, "idx_age");
                 assert_eq!(ci.table_name, "users");
-                assert_eq!(ci.column_name, "age");
+                assert_eq!(ci.column_names, vec!["age"]);
+            }
+            _ => panic!("Expected CreateIndex statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_index_multi_column() {
+        let sql = "CREATE INDEX idx_name_age ON users(last_name, first_name, age)";
+        let stmt = parse(sql).unwrap();
+        match stmt {
+            ast::Statement::CreateIndex(ci) => {
+                assert_eq!(ci.index_name, "idx_name_age");
+                assert_eq!(ci.table_name, "users");
+                assert_eq!(ci.column_names, vec!["last_name", "first_name", "age"]);
             }
             _ => panic!("Expected CreateIndex statement"),
         }
