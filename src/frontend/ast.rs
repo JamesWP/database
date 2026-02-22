@@ -13,7 +13,7 @@ pub enum Statement {
 pub struct CreateIndexStatement {
     pub index_name: String,
     pub table_name: String,
-    pub column_name: String,
+    pub column_names: Vec<String>,
 }
 
 #[derive(Debug)]

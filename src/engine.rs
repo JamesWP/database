@@ -609,11 +609,7 @@ impl Engine {
             }
             EncodeIndexKey(dest, src) => {
                 let value = self.registers.get(src).scalar().unwrap();
-                let encoded_key = match value {
-                    ScalarValue::Integer(i) => storage::encode_integer_key(*i),
-                    ScalarValue::Null => vec![0; 8], // NULL sorts first
-                    _ => panic!("EncodeIndexKey: only INTEGER and NULL are supported"),
-                };
+                let encoded_key = storage::encode_index_value(value);
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Blob(encoded_key));
             }
@@ -671,6 +667,15 @@ impl Engine {
                 let tail = blob[offset..].to_vec();
                 *self.registers.get_mut(dest) = RegisterValue::ScalarValue(ScalarValue::Blob(tail));
             }
+            BlobSliceLast(dest, blob_reg, n) => {
+                let blob = match self.registers.get(blob_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("BlobSliceLast: blob register must be Blob"),
+                };
+                let start = blob.len().saturating_sub(n);
+                let tail = blob[start..].to_vec();
+                *self.registers.get_mut(dest) = RegisterValue::ScalarValue(ScalarValue::Blob(tail));
+            }
             DecodeU64Key(dest, blob_reg) => {
                 let blob = match self.registers.get(blob_reg).scalar().unwrap() {
                     ScalarValue::Blob(b) => b.clone(),
@@ -722,14 +727,13 @@ impl Engine {
                 let mut cursor = cursor.open_readwrite();
                 cursor.insert_u64(key, bytes);
             }
-            WriteIndex(cursor_reg, value_reg, pk_reg) => {
-                // Encode the indexed value
-                let indexed_value = self.registers.get(value_reg).scalar().unwrap();
-                let mut index_key = match indexed_value {
-                    ScalarValue::Integer(i) => storage::encode_integer_key(*i),
-                    ScalarValue::Null => vec![0; 8], // NULL sorts first
-                    _ => panic!("WriteIndex: only INTEGER and NULL column values are supported"),
-                };
+            WriteIndex(cursor_reg, value_regs, pk_reg) => {
+                // Encode each indexed column value, concatenated in order
+                let mut index_key = Vec::new();
+                for value_reg in value_regs {
+                    let indexed_value = self.registers.get(value_reg).scalar().unwrap();
+                    index_key.extend_from_slice(&storage::encode_index_value(indexed_value));
+                }
 
                 // Append primary key to make the entry unique in the index B-tree
                 let pk_value = self.registers.get(pk_reg).scalar().unwrap();

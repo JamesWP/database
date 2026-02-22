@@ -151,7 +151,7 @@ pub enum Operation {
     ReadCursor(Vec<Reg>, Reg), // ReadCursor(dest_regs, cursor): read row values
     ReadKey(Reg, Reg),         // ReadKey(dest, cursor): read btree key as integer
     WriteCursor(Reg, Reg, Vec<Reg>), // WriteCursor(cursor, key, values): insert row
-    WriteIndex(Reg, Reg, Reg), // WriteIndex(cursor, value, pk): insert into index
+    WriteIndex(Reg, Vec<Reg>, Reg), // WriteIndex(cursor, col_values, pk): insert into index
     DeleteCursor(Reg),         // DeleteCursor(cursor): delete row at current cursor position
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
     EncodeIndexKey(Reg, Reg),  // EncodeIndexKey(dest, src): scalar to sortable index blob
@@ -160,10 +160,11 @@ pub enum Operation {
 
     // Blob operations (for composing index key comparisons)
     BlobStartsWith(Reg, Reg, Reg), // BlobStartsWith(dest, blob, prefix): blob starts_with prefix
-    BlobPrefixLt(Reg, Reg, Reg),  // BlobPrefixLt(dest, blob, bound): blob[..len(bound)] < bound
-    BlobPrefixLe(Reg, Reg, Reg),  // BlobPrefixLe(dest, blob, bound): blob[..len(bound)] <= bound
+    BlobPrefixLt(Reg, Reg, Reg),   // BlobPrefixLt(dest, blob, bound): blob[..len(bound)] < bound
+    BlobPrefixLe(Reg, Reg, Reg),   // BlobPrefixLe(dest, blob, bound): blob[..len(bound)] <= bound
     BlobSliceTail(Reg, Reg, usize), // BlobSliceTail(dest, blob, offset): blob[offset..]
-    DecodeU64Key(Reg, Reg),         // DecodeU64Key(dest, blob): 8-byte blob → u64 as Integer
+    BlobSliceLast(Reg, Reg, usize), // BlobSliceLast(dest, blob, n): last n bytes of blob
+    DecodeU64Key(Reg, Reg),        // DecodeU64Key(dest, blob): 8-byte blob → u64 as Integer
 
     // Control Flow
     Yield(Vec<Reg>),
@@ -414,13 +415,14 @@ impl std::fmt::Display for Operation {
                     regs_str.join(", ")
                 )
             }
-            WriteIndex(cursor, val, pk) => {
+            WriteIndex(cursor, vals, pk) => {
+                let vals_str: Vec<String> = vals.iter().map(|r| format!("{}", r)).collect();
                 write!(
                     f,
-                    "{:10} {}, {}, {}",
+                    "{:10} {}, [{}], {}",
                     "WriteIdx".cyan().bold(),
                     cursor,
-                    val,
+                    vals_str.join(", "),
                     pk
                 )
             }
@@ -474,6 +476,16 @@ impl std::fmt::Display for Operation {
                     dest,
                     blob,
                     offset
+                )
+            }
+            BlobSliceLast(dest, blob, n) => {
+                write!(
+                    f,
+                    "{:10} {}, {}, {}",
+                    "BlobLast".cyan().bold(),
+                    dest,
+                    blob,
+                    n
                 )
             }
             DecodeU64Key(dest, blob) => {

@@ -576,10 +576,10 @@ pub fn codegen_index_scan(
             .emit_goto_if_false(cont.on_done, in_range_reg);
     }
 
-    // Extract rowid from last 8 bytes of the index key
+    // Extract rowid from last 8 bytes of the index key (rowid is always the last 8 bytes)
     let pk_blob_reg = ctx.registers.alloc();
     ctx.body_emitter
-        .emit(Operation::BlobSliceTail(pk_blob_reg, key_blob_reg, 8));
+        .emit(Operation::BlobSliceLast(pk_blob_reg, key_blob_reg, 8));
     ctx.body_emitter
         .emit(Operation::DecodeU64Key(pk_reg, pk_blob_reg));
 
@@ -1188,12 +1188,16 @@ pub fn codegen_insert(
     // Write to each index
     for (i, index) in indexes.iter().enumerate() {
         let index_cursor = index_cursor_regs[i];
-        let indexed_column_reg = reordered_regs[index.column_idx];
+        let col_value_regs: Vec<_> = index
+            .column_idxs
+            .iter()
+            .map(|&col_idx| reordered_regs[col_idx])
+            .collect();
 
         ctx.body_emitter.emit(Operation::WriteIndex(
             index_cursor,
-            indexed_column_reg, // Column value to index
-            key_reg,            // Primary key (table key)
+            col_value_regs, // Column values to index (multi-column)
+            key_reg,        // Primary key (table key)
         ));
     }
 
@@ -1644,7 +1648,7 @@ pub fn codegen_delete(
 pub fn codegen_populate_index(
     input: &LogicalPlan,
     index_rootpage: u32,
-    column_idx: usize,
+    column_idxs: &[usize],
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
@@ -1664,13 +1668,16 @@ pub fn codegen_populate_index(
     // Compile the child (expected: Scan with with_key=true).
     // output_regs = [col_0, ..., col_N-1, pk_key]
     let scan_out = codegen(input, &child_cont, ctx);
-    let col_reg = scan_out.output_regs[column_idx];
+    let col_regs: Vec<_> = column_idxs
+        .iter()
+        .map(|&idx| scan_out.output_regs[idx])
+        .collect();
     let pk_reg = *scan_out.output_regs.last().expect("key reg");
 
     // child_on_tuple: write one index entry, then advance to next row
     ctx.body_emitter.bind_label(child_on_tuple);
     ctx.body_emitter
-        .emit(Operation::WriteIndex(index_cursor, col_reg, pk_reg));
+        .emit(Operation::WriteIndex(index_cursor, col_regs, pk_reg));
     ctx.body_emitter.emit_goto(scan_out.next);
 
     // child_on_done: all rows consumed, jump to cont.on_done (no rows yielded)
@@ -1745,8 +1752,8 @@ pub fn codegen(
         LogicalPlan::PopulateIndex {
             input,
             index_rootpage,
-            column_idx,
-        } => codegen_populate_index(input, *index_rootpage, *column_idx, cont, ctx),
+            column_idxs,
+        } => codegen_populate_index(input, *index_rootpage, column_idxs, cont, ctx),
     }
 }
 

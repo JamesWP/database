@@ -13,6 +13,7 @@ mod btree_verify;
 
 pub use btree::decode_integer_key;
 pub use btree::decode_u64_key;
+pub use btree::encode_index_value;
 pub use btree::encode_integer_key;
 pub use btree::encode_u64_key;
 pub use btree::BTree;
