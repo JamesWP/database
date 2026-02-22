@@ -971,6 +971,7 @@ pub fn codegen_sort(
 pub fn codegen_aggregate(
     group_keys: &[crate::planner::PlanExpr],
     aggregates: &[crate::planner::AggregateExpr],
+    _having: Option<&crate::planner::PlanExpr>,
     input: &LogicalPlan,
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
@@ -1742,7 +1743,8 @@ pub fn codegen(
             input,
             group_keys,
             aggregates,
-        } => codegen_aggregate(group_keys, aggregates, input, cont, ctx),
+            having,
+        } => codegen_aggregate(group_keys, aggregates, having.as_ref(), input, cont, ctx),
         LogicalPlan::Insert {
             rootpage,
             table_columns,

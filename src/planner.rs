@@ -191,6 +191,7 @@ pub enum LogicalPlan {
         input: Box<LogicalPlan>,
         group_keys: Vec<PlanExpr>,
         aggregates: Vec<AggregateExpr>,
+        having: Option<PlanExpr>,
     },
 
     /// Emit fixed rows (leaf node, no inputs)
@@ -446,6 +447,13 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
     };
 
     // Add aggregation, count, or projection
+    // Validate: HAVING without GROUP BY or aggregates is an error
+    if select.having.is_some() && !use_aggregation && !is_count_star {
+        return Err(PlanError::InvalidHaving(
+            "HAVING requires GROUP BY or aggregate functions".into(),
+        ));
+    }
+
     if is_count_star {
         // SELECT COUNT(*) without GROUP BY - use simple Count node
         plan = LogicalPlan::Count {
@@ -491,10 +499,28 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
             }
         }
 
+        // Convert HAVING expression (after building group_keys and aggregates)
+        let having = if let Some(having_expr) = select.having {
+            if !use_aggregation {
+                return Err(PlanError::InvalidHaving(
+                    "HAVING requires GROUP BY or aggregate functions".into(),
+                ));
+            }
+            Some(convert_having_expr(
+                &having_expr,
+                &group_keys,
+                &mut aggregates,
+                &resolver,
+            )?)
+        } else {
+            None
+        };
+
         plan = LogicalPlan::Aggregate {
             input: Box::new(plan),
             group_keys,
             aggregates,
+            having,
         };
 
         // Add projection to select only the SELECT columns in the correct order
@@ -1397,6 +1423,7 @@ pub enum PlanError {
         expected: usize,
         got: usize,
     },
+    InvalidHaving(String),
 }
 
 // ============================================================================
@@ -1423,6 +1450,83 @@ use std::collections::HashMap;
 //   }
 //
 // Build by iterating all tables: add to qualified map, track ambiguity in unqualified map.
+
+/// Convert a HAVING expression to a PlanExpr in aggregate-output space.
+///
+/// Column references are resolved to their position in the aggregate output:
+///   [group_key_0, group_key_1, ..., agg_0, agg_1, ...]
+///
+/// Aggregate function calls are mapped to their index in `aggregates`
+/// (appending if not already present).
+fn convert_having_expr(
+    expr: &ast::Expression,
+    group_keys: &[PlanExpr],
+    aggregates: &mut Vec<AggregateExpr>,
+    resolver: &impl ColumnResolver,
+) -> Result<PlanExpr, PlanError> {
+    if is_aggregate_function(expr) {
+        let agg = convert_aggregate(expr, resolver)?;
+        let agg_idx = if let Some(idx) = aggregates.iter().position(|a| a == &agg) {
+            idx
+        } else {
+            let idx = aggregates.len();
+            aggregates.push(agg);
+            idx
+        };
+        return Ok(PlanExpr::ColumnRef(group_keys.len() + agg_idx));
+    }
+
+    match expr {
+        ast::Expression::BinaryOp { op, lhs, rhs } => Ok(PlanExpr::BinaryOp {
+            op: convert_binary_op(op),
+            left: Box::new(convert_having_expr(lhs, group_keys, aggregates, resolver)?),
+            right: Box::new(convert_having_expr(rhs, group_keys, aggregates, resolver)?),
+        }),
+        ast::Expression::UnaryOp { op, expression } => Ok(PlanExpr::UnaryOp {
+            op: convert_unary_op(op),
+            operand: Box::new(convert_having_expr(
+                expression, group_keys, aggregates, resolver,
+            )?),
+        }),
+        ast::Expression::Value(scalar) => match scalar {
+            ast::ScalarValue::Identifier(name) => {
+                // Resolve to scan position, then find which group key it maps to
+                let scan_idx = resolver.resolve_identifier(name)?;
+                let col_ref = PlanExpr::ColumnRef(scan_idx);
+                let group_idx =
+                    group_keys
+                        .iter()
+                        .position(|gk| gk == &col_ref)
+                        .ok_or_else(|| {
+                            PlanError::InvalidHaving(format!(
+                                "Column '{}' must appear in GROUP BY or be used in an aggregate",
+                                name
+                            ))
+                        })?;
+                Ok(PlanExpr::ColumnRef(group_idx))
+            }
+            ast::ScalarValue::MultiPartIdentifier(table_expr, column_name) => {
+                let ref_table = extract_identifier(table_expr)?;
+                let scan_idx = resolver.resolve_qualified(&ref_table, column_name)?;
+                let col_ref = PlanExpr::ColumnRef(scan_idx);
+                let group_idx =
+                    group_keys
+                        .iter()
+                        .position(|gk| gk == &col_ref)
+                        .ok_or_else(|| {
+                            PlanError::InvalidHaving(format!(
+                                "Column '{}.{}' must appear in GROUP BY or be used in an aggregate",
+                                ref_table, column_name
+                            ))
+                        })?;
+                Ok(PlanExpr::ColumnRef(group_idx))
+            }
+            // Literals pass through
+            _ => convert_scalar(scalar, resolver),
+        },
+        ast::Expression::FunctionCall { name, .. } => Err(PlanError::UnknownFunction(name.clone())),
+    }
+}
 
 /// Convert an AST Expression to a PlanExpr using a column resolution strategy
 fn convert_expr(
@@ -2424,6 +2528,42 @@ mod tests {
         };
 
         assert_eq!(plan, expected);
+    }
+
+    // ========================================================================
+    // HAVING Plan Tests
+    // ========================================================================
+
+    #[test]
+    fn test_plan_having_count_star() {
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("SELECT name, COUNT(*) FROM users GROUP BY name HAVING COUNT(*) > 3");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+        // Walk to find the Aggregate node
+        fn find_aggregate(plan: &LogicalPlan) -> Option<&LogicalPlan> {
+            match plan {
+                p @ LogicalPlan::Aggregate { .. } => Some(p),
+                LogicalPlan::Project { input, .. } => find_aggregate(input),
+                LogicalPlan::Sort { input, .. } => find_aggregate(input),
+                LogicalPlan::Limit { input, .. } => find_aggregate(input),
+                _ => None,
+            }
+        }
+        let agg = find_aggregate(&result).expect("Expected Aggregate node");
+        match agg {
+            LogicalPlan::Aggregate { having, .. } => {
+                assert!(having.is_some(), "expected HAVING predicate in plan");
+            }
+            _ => panic!("Expected Aggregate node"),
+        }
+    }
+
+    #[test]
+    fn test_plan_having_without_group_by_errors() {
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("SELECT id FROM users HAVING COUNT(*) > 1");
+        let err = plan(stmt, &test.btree).expect_err("Expected planning error");
+        assert!(matches!(err, PlanError::InvalidHaving(_)));
     }
 
     // ========================================================================
