@@ -274,6 +274,20 @@ mod tests {
     use super::*;
     use crate::test::TestDb;
 
+    /// Execute a SQL query and collect all rows.
+    fn collect_rows(sql: &str, btree: &mut BTree) -> Vec<Vec<ScalarValue>> {
+        match execute(sql, btree).expect("execute failed") {
+            ExecuteResult::Query(mut q) => {
+                let mut rows = Vec::new();
+                while let Some(row) = q.next() {
+                    rows.push(row.to_vec());
+                }
+                rows
+            }
+            _ => panic!("Expected query result"),
+        }
+    }
+
     fn explain_rows(result: ExecuteResult) -> Vec<String> {
         match result {
             ExecuteResult::Explain(mut q) => {
@@ -696,6 +710,62 @@ mod tests {
             }
             _ => panic!("Expected Query result"),
         }
+    }
+
+    #[test]
+    fn test_having_filters_groups() {
+        let mut test = TestDb::default();
+        execute(
+            "CREATE TABLE sales (dept TEXT, amount INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+        for (dept, amount) in &[("eng", 100), ("eng", 200), ("hr", 50)] {
+            let mut q = match execute(
+                &format!("INSERT INTO sales VALUES ('{}', {})", dept, amount),
+                &mut test.btree,
+            )
+            .unwrap()
+            {
+                ExecuteResult::Query(q) => q,
+                _ => panic!(),
+            };
+            while q.next().is_some() {}
+        }
+
+        let rows = collect_rows(
+            "SELECT dept, SUM(amount) FROM sales GROUP BY dept HAVING SUM(amount) > 100",
+            &mut test.btree,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], ScalarValue::String("eng".to_string()));
+        assert_eq!(rows[0][1], ScalarValue::Integer(300));
+    }
+
+    #[test]
+    fn test_having_count_star() {
+        let mut test = TestDb::default();
+        execute("CREATE TABLE t (cat TEXT)", &mut test.btree).unwrap();
+        for cat in &["a", "a", "a", "b"] {
+            let mut q = match execute(
+                &format!("INSERT INTO t VALUES ('{}')", cat),
+                &mut test.btree,
+            )
+            .unwrap()
+            {
+                ExecuteResult::Query(q) => q,
+                _ => panic!(),
+            };
+            while q.next().is_some() {}
+        }
+
+        let rows = collect_rows(
+            "SELECT cat, COUNT(*) FROM t GROUP BY cat HAVING COUNT(*) >= 3",
+            &mut test.btree,
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0], ScalarValue::String("a".to_string()));
+        assert_eq!(rows[0][1], ScalarValue::Integer(3));
     }
 
     #[test]
