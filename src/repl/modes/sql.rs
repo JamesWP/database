@@ -87,7 +87,7 @@ impl Mode for SqlMode {
                             )
                         })
                         .collect();
-                    output += &header.join(&" | ".truecolor(90, 90, 90).to_string());
+                    output += &header.join(&" │ ".truecolor(90, 90, 90).to_string());
                     output += "\n";
                     let sep: Vec<String> = col_widths
                         .iter()
