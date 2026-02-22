@@ -16,7 +16,12 @@ pub enum Accumulator {
 /// Group table: maps group keys to their accumulators
 pub type GroupTable = BTreeMap<Vec<ScalarValue>, Vec<Accumulator>>;
 
-/// Row buffer with cursor for iteration
+/// Row buffer for materializing rows and iterating over them.
+///
+/// Used by Sort (ORDER BY), Join (hash-loop materialisation), and the
+/// collect-then-mutate pattern in DELETE/UPDATE.  The `cursor` field is
+/// always the read position; `RewindRowBuffer` resets it to 0 and
+/// `NextFromRowBuffer` advances it on each call.
 #[derive(Clone, Debug)]
 pub struct RowBuffer {
     pub rows: Vec<Vec<ScalarValue>>,
