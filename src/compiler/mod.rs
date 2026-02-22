@@ -18,6 +18,8 @@ pub struct CompiledProgram {
     pub operations: Vec<Operation>,
     /// Number of registers needed to execute the program
     pub num_registers: usize,
+    /// Output column names (empty for non-query statements)
+    pub column_names: Vec<String>,
 }
 
 impl CompiledProgram {
@@ -40,5 +42,6 @@ pub fn compile(plan: &LogicalPlan) -> CompiledProgram {
     CompiledProgram {
         operations,
         num_registers,
+        column_names: vec![],
     }
 }
