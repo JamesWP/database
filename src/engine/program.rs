@@ -129,10 +129,9 @@ pub enum Operation {
     PopKey(Reg, Reg, JumpTarget), // PopKey(dest, list, jump): pop key or jump if empty
 
     // Row Buffer (for sorting)
-    InitRowBuffer(Reg),                            // Initialize empty row buffer
-    AppendToRowBuffer(Reg, Vec<Reg>),              // Append row to buffer
-    SortRowBuffer(Reg, Vec<SortKeySpec>),          // Sort rows in buffer
-    YieldFromRowBuffer(Vec<Reg>, Reg, JumpTarget), // Pop row from buffer or jump if empty
+    InitRowBuffer(Reg),                   // Initialize empty row buffer
+    AppendToRowBuffer(Reg, Vec<Reg>),     // Append row to buffer
+    SortRowBuffer(Reg, Vec<SortKeySpec>), // Sort rows in buffer
     /// Reset the row buffer's read cursor to the beginning (for re-iteration)
     RewindRowBuffer(Reg),
     /// Read the next row from the buffer without removing it.
@@ -328,17 +327,6 @@ impl std::fmt::Display for Operation {
                     "SortRows".cyan().bold(),
                     buf,
                     keys.len()
-                )
-            }
-            YieldFromRowBuffer(regs, buf, target) => {
-                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
-                write!(
-                    f,
-                    "{:10} [{}], {}, {}",
-                    "YieldRow".cyan().bold(),
-                    regs_str.join(", "),
-                    buf,
-                    target
                 )
             }
             RewindRowBuffer(buf) => {
