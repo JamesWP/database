@@ -1,9 +1,0 @@
-Table 'users' created
-Index 'idx_id' created
-1
-Table 'users' dropped
-ERROR: Planning error: TableNotFound("users")
-Table 'users' created
-Index 'idx_id' created
-1
-2	Bob

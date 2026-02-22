@@ -100,26 +100,6 @@ fn execute_sql_script_parsed(statements: &[SqlStatement]) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// Execute SQL script (legacy path) and return flat output lines
-fn execute_sql_script_legacy(sql_path: &PathBuf) -> Vec<String> {
-    let temp_file = tempfile::NamedTempFile::new().unwrap();
-    let temp_path = temp_file.path().to_str().unwrap();
-    let mut btree = BTree::new(temp_path);
-
-    let sql_content = fs::read_to_string(sql_path).unwrap();
-    let mut actual_output = Vec::new();
-
-    for line in sql_content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("--") {
-            continue;
-        }
-        actual_output.extend(execute_statement(line, &mut btree));
-    }
-
-    actual_output
-}
-
 /// Compare actual output with expected output, return error message if mismatch
 fn compare_output(
     actual_output: &[String],
@@ -190,11 +170,6 @@ fn compare_inline_output(
     Ok(())
 }
 
-/// Update expected file with actual output (legacy)
-fn update_expected_file(expected_path: &PathBuf, actual_output: &[String]) {
-    fs::write(expected_path, actual_output.join("\n") + "\n").unwrap();
-}
-
 /// Rewrite a .sql file with updated inline expected output
 pub fn update_sql_file_inline(
     sql_path: &PathBuf,
@@ -232,45 +207,20 @@ pub fn update_sql_file_inline(
 }
 
 /// Run a single SQL test by name (e.g., "where_clauses")
-/// If update_mode is true, updates expected output instead of comparing
+/// If update_mode is true, rewrites inline expected output instead of comparing
 pub fn run_sql_test(test_name: &str, update_mode: bool) {
     let sql_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sql");
     let sql_path = sql_dir.join(format!("{}.sql", test_name));
-    let expected_path = sql_dir.join(format!("{}.expected", test_name));
 
     let sql_content = fs::read_to_string(&sql_path).unwrap();
     let statements = parse_sql_test_file(&sql_content);
+    let actual_per_statement = execute_sql_script_parsed(&statements);
 
-    // Check if file has any inline expected output
-    let has_inline = statements.iter().any(|s| !s.expected.is_empty());
-
-    if has_inline {
-        // New inline format
-        let actual_per_statement = execute_sql_script_parsed(&statements);
-
-        if update_mode {
-            update_sql_file_inline(&sql_path, &statements, &actual_per_statement);
-            println!("Updated (inline): {}.sql", test_name);
-        } else {
-            compare_inline_output(&statements, &actual_per_statement, test_name).unwrap();
-        }
-    } else if expected_path.exists() {
-        // Legacy .expected file fallback
-        let actual_output = execute_sql_script_legacy(&sql_path);
-
-        if update_mode {
-            update_expected_file(&expected_path, &actual_output);
-            println!("Updated: {}.expected", test_name);
-        } else {
-            let expected_content = fs::read_to_string(&expected_path).unwrap();
-            let expected_lines: Vec<&str> = expected_content.lines().collect();
-            compare_output(&actual_output, &expected_lines, test_name).unwrap();
-        }
+    if update_mode {
+        update_sql_file_inline(&sql_path, &statements, &actual_per_statement);
+        println!("Updated: {}.sql", test_name);
     } else {
-        panic!(
-            "No expected output for {}.sql — add inline '-- >' lines or run: cargo run --bin update-sql-tests {}",
-            test_name, test_name
-        );
+        compare_inline_output(&statements, &actual_per_statement, test_name).unwrap();
     }
 }
 
