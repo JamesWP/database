@@ -6,9 +6,6 @@ Builds on phase-g3-indexing.md to add multi-column indexes, TEXT support, range 
 
 | # | Track | Item | Depends on |
 |---|-------|------|------------|
-| 45 | 3.7 | Remove rowid from index entry value | 41 |
-| 46 | 5 | Engine: `ReadCurrentKey` + blob ops; simplify index instructions | 45 |
-| 47 | 4.9 | Split IndexScan into IndexScan + RowidLookup | 46 |
 | 42 | 4.6 | Multi-column indexes | 47 |
 | 43 | 4.7 | TEXT column indexes | 47 |
 | 44 | 4.8 | Type conversions and NULL handling | — |
@@ -24,6 +21,9 @@ Important: Each item should be committed separately, follow 'Git Workflow' in CL
 |---|-------|------|-----------|
 | 41 | 3.6 | Variable-length B-tree keys | 2026-02-18 |
 | 40 | 4.5 | Range scan optimization (>, >=, <, <=) | 2026-02-21 |
+| 45 | 3.7 | Remove rowid from index entry value | 2026-02-22 |
+| 46 | 5 | Engine: ReadCurrentKey + blob ops | 2026-02-22 |
+| 47 | 4.9 | Split IndexScan into IndexScan + RowidLookup | 2026-02-22 |
 
 ---
 
