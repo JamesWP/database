@@ -460,7 +460,8 @@ pub fn codegen_filter(
 /// ```
 pub fn codegen_index_scan(
     index_rootpage: u32,
-    search_value: &Literal,
+    lower_bound: &Option<(Literal, bool)>,
+    upper_bound: &Option<(Literal, bool)>,
     table_rootpage: u32,
     columns: &[usize],
     cont: &NodeContinuation,
@@ -468,32 +469,75 @@ pub fn codegen_index_scan(
 ) -> NodeOutput {
     let index_cursor_reg = ctx.registers.alloc();
     let table_cursor_reg = ctx.registers.alloc();
-    let search_key_reg = ctx.registers.alloc();
     let flag_reg = ctx.registers.alloc();
     let pk_reg = ctx.registers.alloc();
-
     let output_regs = ctx.registers.alloc_block(columns.len());
 
-    // INIT: Open cursors and encode search key
+    // INIT: Open cursors
     ctx.init_emitter
         .emit(Operation::Open(index_cursor_reg, index_rootpage));
     ctx.init_emitter
         .emit(Operation::Open(table_cursor_reg, table_rootpage));
 
-    // Store search value and encode to index key prefix
-    let search_scalar = literal_to_scalar(search_value);
-    ctx.init_emitter
-        .emit(Operation::StoreValue(search_key_reg, search_scalar));
-    ctx.init_emitter
-        .emit(Operation::EncodeIndexKey(search_key_reg, search_key_reg));
+    // Encode lower bound and position cursor
+    if let Some((lower_lit, _lower_inclusive)) = lower_bound {
+        let lower_key_reg = ctx.registers.alloc();
+        let lower_scalar = literal_to_scalar(lower_lit);
+        ctx.init_emitter
+            .emit(Operation::StoreValue(lower_key_reg, lower_scalar));
+        ctx.init_emitter
+            .emit(Operation::EncodeIndexKey(lower_key_reg, lower_key_reg));
+        // Find first entry >= lower bound
+        ctx.init_emitter.emit(Operation::MoveCursor(
+            index_cursor_reg,
+            MoveOperation::Find(lower_key_reg),
+        ));
 
-    // Find first entry in index >= search key
-    ctx.init_emitter.emit(Operation::MoveCursor(
-        index_cursor_reg,
-        MoveOperation::Find(search_key_reg),
-    ));
+        // If exclusive lower bound, skip entries where key prefix == lower bound
+        if !_lower_inclusive {
+            let skip_check = ctx.body_emitter.create_label();
+            ctx.body_emitter.bind_label(skip_check);
+            let can_read_reg = ctx.registers.alloc();
+            ctx.body_emitter
+                .emit(Operation::CanReadCursor(can_read_reg, index_cursor_reg));
+            ctx.body_emitter
+                .emit_goto_if_false(cont.on_done, can_read_reg);
+            let matches_lower = ctx.registers.alloc();
+            ctx.body_emitter.emit(Operation::KeyMatchesPrefix(
+                matches_lower,
+                index_cursor_reg,
+                lower_key_reg,
+            ));
+            // If key matches lower prefix, advance past it
+            let after_skip = ctx.body_emitter.create_label();
+            ctx.body_emitter
+                .emit_goto_if_false(after_skip, matches_lower);
+            ctx.body_emitter
+                .emit(Operation::MoveCursor(index_cursor_reg, MoveOperation::Next));
+            ctx.body_emitter.emit_goto(skip_check);
+            ctx.body_emitter.bind_label(after_skip);
+        }
+    } else {
+        // No lower bound: start from the beginning
+        ctx.init_emitter.emit(Operation::MoveCursor(
+            index_cursor_reg,
+            MoveOperation::First,
+        ));
+    }
 
-    // BODY: Check if positioned on matching key prefix
+    // Encode upper bound register if present
+    let upper_key_reg = if let Some((upper_lit, _)) = upper_bound {
+        let reg = ctx.registers.alloc();
+        let upper_scalar = literal_to_scalar(upper_lit);
+        ctx.init_emitter
+            .emit(Operation::StoreValue(reg, upper_scalar));
+        ctx.init_emitter.emit(Operation::EncodeIndexKey(reg, reg));
+        Some((reg, upper_bound.as_ref().unwrap().1))
+    } else {
+        None
+    };
+
+    // BODY: Check bounds and yield rows
     let index_check = ctx.body_emitter.create_label();
     ctx.body_emitter.bind_label(index_check);
 
@@ -501,32 +545,40 @@ pub fn codegen_index_scan(
         .emit(Operation::CanReadCursor(flag_reg, index_cursor_reg));
     ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
 
-    // Verify current key matches our prefix
-    ctx.body_emitter.emit(Operation::KeyMatchesPrefix(
-        flag_reg,
-        index_cursor_reg,
-        search_key_reg,
-    ));
-    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
+    // Check upper bound: if key exceeds bound, stop
+    if let Some((upper_reg, inclusive)) = upper_key_reg {
+        let not_exceeded_reg = ctx.registers.alloc();
+        ctx.body_emitter.emit(Operation::KeyExceedsBound(
+            flag_reg,
+            index_cursor_reg,
+            upper_reg,
+            inclusive,
+        ));
+        // flag_reg = true means exceeded → done. Negate and jump if false.
+        ctx.body_emitter
+            .emit(Operation::NotValue(not_exceeded_reg, flag_reg));
+        ctx.body_emitter
+            .emit_goto_if_false(cont.on_done, not_exceeded_reg);
+    }
 
-    // Read primary key from index value (V1 stores it in the value too)
+    // Read primary key from index value
     ctx.body_emitter
         .emit(Operation::ReadCursor(vec![pk_reg], index_cursor_reg));
 
-    // Look up row in table by primary key
+    // Look up row in table
     ctx.body_emitter.emit(Operation::MoveCursor(
         table_cursor_reg,
         MoveOperation::Find(pk_reg),
     ));
 
-    // Read full row from table
+    // Read columns from table
     ctx.body_emitter
         .emit(Operation::ReadCursor(output_regs.clone(), table_cursor_reg));
 
     // Yield this row
     ctx.body_emitter.emit_goto(cont.on_tuple);
 
-    // INDEX_NEXT: advance to next entry in index
+    // INDEX_NEXT: advance
     let index_next = ctx.body_emitter.create_label();
     ctx.body_emitter.bind_label(index_next);
     ctx.body_emitter
@@ -1593,12 +1645,14 @@ pub fn codegen(
         } => codegen_scan(*rootpage, columns, cont, ctx, *with_key),
         LogicalPlan::IndexScan {
             index_rootpage,
-            search_value,
+            lower_bound,
+            upper_bound,
             table_rootpage,
             columns,
         } => codegen_index_scan(
             *index_rootpage,
-            search_value,
+            lower_bound,
+            upper_bound,
             *table_rootpage,
             columns,
             cont,

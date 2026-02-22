@@ -637,6 +637,34 @@ impl Engine {
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Boolean(matches));
             }
+            KeyExceedsBound(dest, cursor_reg, bound_reg, inclusive) => {
+                let bound_bytes = match self.registers.get(bound_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("KeyExceedsBound requires Blob bound"),
+                };
+
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let mut cursor = cursor.open_readonly();
+                let entry = cursor.get_entry();
+                let exceeded = match entry {
+                    Some(reader) => {
+                        let key = reader.key();
+                        // Compare the column-value prefix (first bound.len() bytes)
+                        let prefix = &key[..bound_bytes.len().min(key.len())];
+                        if inclusive {
+                            // For <=: stop when prefix > bound
+                            prefix > bound_bytes.as_slice()
+                        } else {
+                            // For <: stop when prefix >= bound
+                            prefix >= bound_bytes.as_slice()
+                        }
+                    }
+                    None => true, // No entry = exceeded
+                };
+                drop(cursor);
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Boolean(exceeded));
+            }
             ReadCursor(regs, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readwrite();
@@ -726,7 +754,7 @@ mod test {
             scalarvalue::ScalarValue,
             StepSuccess,
         },
-        storage::BTree,
+        storage::{self, BTree},
         test::TestDb,
     };
 
@@ -2082,5 +2110,168 @@ mod test {
         // Each row should be [id, name, age]
         // The actual values depend on JSON parsing, but we should get 3 distinct rows
         assert_eq!(yields.len(), 3);
+    }
+
+    #[test]
+    fn test_key_exceeds_bound_inclusive() {
+        // inclusive=true means upper bound is <=: stop when key > bound
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            // Insert keys at encoded values 10, 20, 30
+            let key10 = storage::encode_integer_key(10);
+            let key20 = storage::encode_integer_key(20);
+            let key30 = storage::encode_integer_key(30);
+            c.insert(&key10, vec![1]);
+            c.insert(&key20, vec![2]);
+            c.insert(&key30, vec![3]);
+        }
+
+        let cursor_reg = Reg::new(0);
+        let bound_reg = Reg::new(1);
+        let result_reg = Reg::new(2);
+
+        // Test: cursor at 20, bound=20, inclusive=true → key NOT exceeded (20 <= 20)
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                Operation::Open(cursor_reg, root),
+                Operation::StoreValue(
+                    bound_reg,
+                    ScalarValue::Blob(storage::encode_integer_key(20)),
+                ),
+                Operation::MoveCursor(cursor_reg, MoveOperation::Find(bound_reg)),
+                // Now positioned at key=20; check if exceeds bound=20 (inclusive)
+                Operation::KeyExceedsBound(result_reg, cursor_reg, bound_reg, true),
+                Operation::Yield(vec![result_reg]),
+                Operation::Halt,
+            ],
+            3,
+            btree,
+        );
+        harness.run();
+        assert_eq!(harness.num_yields(), 1);
+        // key == bound, inclusive → NOT exceeded
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(false));
+    }
+
+    #[test]
+    fn test_key_exceeds_bound_inclusive_exceeded() {
+        // inclusive=true: stop when key > bound → cursor at 30 with bound=20 → exceeded
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            let key20 = storage::encode_integer_key(20);
+            let key30 = storage::encode_integer_key(30);
+            c.insert(&key20, vec![2]);
+            c.insert(&key30, vec![3]);
+        }
+
+        let cursor_reg = Reg::new(0);
+        let seek_reg = Reg::new(1);
+        let bound_reg = Reg::new(2);
+        let result_reg = Reg::new(3);
+
+        // Position at 30, check bound=20 inclusive
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                Operation::Open(cursor_reg, root),
+                Operation::StoreValue(seek_reg, ScalarValue::Blob(storage::encode_integer_key(30))),
+                Operation::StoreValue(
+                    bound_reg,
+                    ScalarValue::Blob(storage::encode_integer_key(20)),
+                ),
+                Operation::MoveCursor(cursor_reg, MoveOperation::Find(seek_reg)),
+                Operation::KeyExceedsBound(result_reg, cursor_reg, bound_reg, true),
+                Operation::Yield(vec![result_reg]),
+                Operation::Halt,
+            ],
+            4,
+            btree,
+        );
+        harness.run();
+        assert_eq!(harness.num_yields(), 1);
+        // key=30 > bound=20, inclusive → exceeded
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));
+    }
+
+    #[test]
+    fn test_key_exceeds_bound_exclusive() {
+        // inclusive=false means upper bound is <: stop when key >= bound
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            let key20 = storage::encode_integer_key(20);
+            c.insert(&key20, vec![2]);
+        }
+
+        let cursor_reg = Reg::new(0);
+        let bound_reg = Reg::new(1);
+        let result_reg = Reg::new(2);
+
+        // cursor at 20, bound=20, inclusive=false → key == bound → exceeded (not strictly less)
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                Operation::Open(cursor_reg, root),
+                Operation::StoreValue(
+                    bound_reg,
+                    ScalarValue::Blob(storage::encode_integer_key(20)),
+                ),
+                Operation::MoveCursor(cursor_reg, MoveOperation::Find(bound_reg)),
+                Operation::KeyExceedsBound(result_reg, cursor_reg, bound_reg, false),
+                Operation::Yield(vec![result_reg]),
+                Operation::Halt,
+            ],
+            3,
+            btree,
+        );
+        harness.run();
+        assert_eq!(harness.num_yields(), 1);
+        // key == bound, exclusive → exceeded (we want strictly less than)
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));
+    }
+
+    #[test]
+    fn test_key_exceeds_bound_no_entry() {
+        // When cursor has no entry (past end), should return exceeded=true
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Empty tree
+        let cursor_reg = Reg::new(0);
+        let bound_reg = Reg::new(1);
+        let result_reg = Reg::new(2);
+
+        let mut harness = TestHarness::new_with_btree(
+            &[
+                Operation::Open(cursor_reg, root),
+                Operation::StoreValue(
+                    bound_reg,
+                    ScalarValue::Blob(storage::encode_integer_key(10)),
+                ),
+                Operation::MoveCursor(cursor_reg, MoveOperation::First),
+                Operation::KeyExceedsBound(result_reg, cursor_reg, bound_reg, true),
+                Operation::Yield(vec![result_reg]),
+                Operation::Halt,
+            ],
+            3,
+            btree,
+        );
+        harness.run();
+        assert_eq!(harness.num_yields(), 1);
+        // No entry → exceeded
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));
     }
 }
