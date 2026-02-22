@@ -458,26 +458,27 @@ pub fn codegen_filter(
 /// next_label = child.next_label  // delegate to child
 /// output_regs = newly allocated registers
 /// ```
+/// Generate bytecode for an IndexScan node.
+///
+/// Scans the index B-tree and yields one rowid per matching entry.
+/// Knows nothing about the table; a RowidLookup node above fetches columns.
+///
+/// Output: a single register containing the rowid as an Integer.
 pub fn codegen_index_scan(
     index_rootpage: u32,
     lower_bound: &Option<(Literal, bool)>,
     upper_bound: &Option<(Literal, bool)>,
-    table_rootpage: u32,
-    columns: &[usize],
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
     let index_cursor_reg = ctx.registers.alloc();
-    let table_cursor_reg = ctx.registers.alloc();
     let flag_reg = ctx.registers.alloc();
     let pk_reg = ctx.registers.alloc();
-    let output_regs = ctx.registers.alloc_block(columns.len());
+    let output_regs = vec![pk_reg];
 
-    // INIT: Open cursors
+    // INIT: Open index cursor
     ctx.init_emitter
         .emit(Operation::Open(index_cursor_reg, index_rootpage));
-    ctx.init_emitter
-        .emit(Operation::Open(table_cursor_reg, table_rootpage));
 
     // Encode lower bound and position cursor
     if let Some((lower_lit, _lower_inclusive)) = lower_bound {
@@ -558,12 +559,18 @@ pub fn codegen_index_scan(
         let in_range_reg = ctx.registers.alloc();
         if inclusive {
             // key_prefix <= bound → continue; key_prefix > bound → stop
-            ctx.body_emitter
-                .emit(Operation::BlobPrefixLe(in_range_reg, key_blob_reg, upper_reg));
+            ctx.body_emitter.emit(Operation::BlobPrefixLe(
+                in_range_reg,
+                key_blob_reg,
+                upper_reg,
+            ));
         } else {
             // key_prefix < bound → continue; key_prefix >= bound → stop
-            ctx.body_emitter
-                .emit(Operation::BlobPrefixLt(in_range_reg, key_blob_reg, upper_reg));
+            ctx.body_emitter.emit(Operation::BlobPrefixLt(
+                in_range_reg,
+                key_blob_reg,
+                upper_reg,
+            ));
         }
         ctx.body_emitter
             .emit_goto_if_false(cont.on_done, in_range_reg);
@@ -576,17 +583,7 @@ pub fn codegen_index_scan(
     ctx.body_emitter
         .emit(Operation::DecodeU64Key(pk_reg, pk_blob_reg));
 
-    // Look up row in table
-    ctx.body_emitter.emit(Operation::MoveCursor(
-        table_cursor_reg,
-        MoveOperation::Find(pk_reg),
-    ));
-
-    // Read columns from table
-    ctx.body_emitter
-        .emit(Operation::ReadCursor(output_regs.clone(), table_cursor_reg));
-
-    // Yield this row
+    // Yield the rowid to the parent RowidLookup node
     ctx.body_emitter.emit_goto(cont.on_tuple);
 
     // INDEX_NEXT: advance
@@ -598,6 +595,51 @@ pub fn codegen_index_scan(
 
     NodeOutput {
         next: index_next,
+        output_regs,
+    }
+}
+
+/// Generate bytecode for a RowidLookup node.
+///
+/// Pulls rowids from its child (typically IndexScan), uses each to seek
+/// the table B-tree, and yields the requested columns as a full row.
+pub fn codegen_rowid_lookup(
+    input: &LogicalPlan,
+    table_rootpage: u32,
+    columns: &[usize],
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    let table_cursor_reg = ctx.registers.alloc();
+    let output_regs = ctx.registers.alloc_block(columns.len());
+
+    // INIT: Open the table cursor
+    ctx.init_emitter
+        .emit(Operation::Open(table_cursor_reg, table_rootpage));
+
+    // Wire: child's on_tuple → our lookup logic
+    let lookup = ctx.body_emitter.create_label();
+    let child_cont = NodeContinuation {
+        on_tuple: lookup,
+        on_done: cont.on_done,
+    };
+
+    let child_output = codegen(input, &child_cont, ctx);
+
+    // LOOKUP: child yielded a rowid in child_output.output_regs[0]
+    ctx.body_emitter.bind_label(lookup);
+    let pk_reg = child_output.output_regs[0];
+
+    ctx.body_emitter.emit(Operation::MoveCursor(
+        table_cursor_reg,
+        MoveOperation::Find(pk_reg),
+    ));
+    ctx.body_emitter
+        .emit(Operation::ReadCursor(output_regs.clone(), table_cursor_reg));
+    ctx.body_emitter.emit_goto(cont.on_tuple);
+
+    NodeOutput {
+        next: child_output.next,
         output_regs,
     }
 }
@@ -1658,17 +1700,12 @@ pub fn codegen(
             index_rootpage,
             lower_bound,
             upper_bound,
+        } => codegen_index_scan(*index_rootpage, lower_bound, upper_bound, cont, ctx),
+        LogicalPlan::RowidLookup {
+            input,
             table_rootpage,
             columns,
-        } => codegen_index_scan(
-            *index_rootpage,
-            lower_bound,
-            upper_bound,
-            *table_rootpage,
-            columns,
-            cont,
-            ctx,
-        ),
+        } => codegen_rowid_lookup(input, *table_rootpage, columns, cont, ctx),
         LogicalPlan::Count { input } => codegen_count(input, cont, ctx),
         LogicalPlan::Values { rows } => codegen_values(rows, cont, ctx),
         LogicalPlan::Filter { predicate, input } => codegen_filter(predicate, input, cont, ctx),
