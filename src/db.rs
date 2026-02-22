@@ -1,6 +1,7 @@
 use crate::compiler;
 use crate::engine::scalarvalue::ScalarValue;
 use crate::engine::Engine;
+use crate::explain::{ExplainSchema, IndexMeta, TableMeta};
 use crate::frontend::ast::{DataType, Statement};
 use crate::frontend::{parse, ParseError};
 use crate::planner::{self, LogicalPlan, PlanError};
@@ -12,6 +13,7 @@ pub enum ExecuteResult {
     CreateIndex { index_name: String },
     DropTable { table_name: String },
     Query(QueryExecution),
+    Explain(QueryExecution),
 }
 
 #[derive(Debug)]
@@ -23,6 +25,10 @@ pub struct QueryExecution {
 impl QueryExecution {
     fn new(mut engine: Engine) -> Self {
         let rows = engine.run();
+        QueryExecution { rows, pos: 0 }
+    }
+
+    fn from_rows(rows: Vec<Vec<ScalarValue>>) -> Self {
         QueryExecution { rows, pos: 0 }
     }
 
@@ -212,8 +218,7 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
         Statement::Select(_)
         | Statement::Insert(_)
         | Statement::Update(_)
-        | Statement::Delete(_)
-        | Statement::Explain(_) => {
+        | Statement::Delete(_) => {
             let plan = planner::plan(stmt, btree).map_err(ExecuteError::Plan)?;
             let compiled = compiler::compile(&plan);
             let engine = Engine::with_program(
@@ -223,13 +228,130 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
             );
             Ok(ExecuteResult::Query(QueryExecution::new(engine)))
         }
+        Statement::Explain(_) => {
+            let inner = match stmt {
+                Statement::Explain(inner) => *inner,
+                _ => unreachable!(),
+            };
+            let plan = planner::plan(inner, btree).map_err(ExecuteError::Plan)?;
+            let schema = build_explain_schema(btree);
+            let rows = crate::explain::format_plan(&plan, &schema)
+                .into_iter()
+                .map(|(id, text)| vec![ScalarValue::Integer(id as i64), ScalarValue::String(text)])
+                .collect();
+            Ok(ExecuteResult::Explain(QueryExecution::from_rows(rows)))
+        }
     }
+}
+
+fn build_explain_schema(btree: &BTree) -> ExplainSchema {
+    let mut schema = ExplainSchema::default();
+    for (obj_type, name, tbl_name, rootpage, sql) in btree.scan_schema_entries() {
+        match obj_type.as_str() {
+            "table" => {
+                if let Ok(Statement::CreateTable(ct)) = parse(&sql) {
+                    let columns = ct.columns.iter().map(|c| c.name.clone()).collect();
+                    schema.tables.insert(rootpage, TableMeta { name, columns });
+                }
+            }
+            "index" => {
+                schema.indexes.insert(
+                    rootpage,
+                    IndexMeta {
+                        name,
+                        table_name: tbl_name,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    schema
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test::TestDb;
+
+    fn explain_rows(result: ExecuteResult) -> Vec<String> {
+        match result {
+            ExecuteResult::Explain(mut q) => {
+                let mut out = Vec::new();
+                while let Some(row) = q.next() {
+                    // row[1] is the plan text column
+                    out.push(row[1].plain_string());
+                }
+                out
+            }
+            other => panic!("Expected Explain result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_explain_produces_table_scan() {
+        let mut test = TestDb::default();
+        execute(
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+        let rows = explain_rows(
+            execute(
+                "EXPLAIN SELECT id, name FROM users WHERE age = 30",
+                &mut test.btree,
+            )
+            .unwrap(),
+        );
+        let joined = rows.join("\n");
+        assert!(
+            joined.contains("Scan users"),
+            "expected table scan, got:\n{joined}"
+        );
+        assert!(
+            !joined.contains("IndexScan"),
+            "expected no index scan, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn test_explain_produces_index_scan() {
+        let mut test = TestDb::default();
+        execute(
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+        execute("CREATE INDEX idx_age ON users(age)", &mut test.btree).unwrap();
+        let rows = explain_rows(
+            execute(
+                "EXPLAIN SELECT id FROM users WHERE age = 30",
+                &mut test.btree,
+            )
+            .unwrap(),
+        );
+        let joined = rows.join("\n");
+        assert!(
+            joined.contains("IndexScan via idx_age"),
+            "expected index scan, got:\n{joined}"
+        );
+        assert!(
+            joined.contains("= 30"),
+            "expected equality predicate, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn test_explain_does_not_execute() {
+        let mut test = TestDb::default();
+        execute("CREATE TABLE t (id INTEGER)", &mut test.btree).unwrap();
+        execute("EXPLAIN INSERT INTO t VALUES (1)", &mut test.btree).unwrap();
+        let mut q = match execute("SELECT id FROM t", &mut test.btree).unwrap() {
+            ExecuteResult::Query(q) => q,
+            other => panic!("Expected Query, got {:?}", other),
+        };
+        assert!(q.next().is_none(), "EXPLAIN should not have inserted rows");
+    }
 
     #[test]
     fn test_execute_create_table() {

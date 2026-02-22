@@ -31,7 +31,7 @@ impl Mode for SqlMode {
             Ok(ExecuteResult::DropTable { table_name }) => {
                 CommandResult::Message(format!("Table '{}' dropped", table_name))
             }
-            Ok(ExecuteResult::Query(mut query)) => {
+            Ok(ExecuteResult::Query(mut query) | ExecuteResult::Explain(mut query)) => {
                 use colored::Colorize;
 
                 // Collect all rows first

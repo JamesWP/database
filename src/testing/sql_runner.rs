@@ -64,7 +64,7 @@ fn execute_statement(sql: &str, btree: &mut BTree) -> Vec<String> {
             ExecuteResult::DropTable { table_name } => {
                 vec![format!("Table '{}' dropped", table_name)]
             }
-            ExecuteResult::Query(mut query) => {
+            ExecuteResult::Query(mut query) | ExecuteResult::Explain(mut query) => {
                 let mut rows = Vec::new();
                 while let Some(row) = query.next() {
                     rows.push(format_row(&row));
