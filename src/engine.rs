@@ -617,68 +617,70 @@ impl Engine {
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Blob(encoded_key));
             }
-            ReadIndexRowid(dest, cursor_reg) => {
+            ReadCurrentKey(dest, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readonly();
                 let entry = cursor.get_entry().unwrap();
-                let key = entry.key();
-                assert!(
-                    key.len() >= 8,
-                    "ReadIndexRowid: index key too short ({}), expected at least 8 bytes",
-                    key.len()
-                );
-                let rowid = storage::decode_u64_key(&key[key.len() - 8..]);
+                let key = entry.key().to_vec();
                 drop(cursor);
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Blob(key));
+            }
+            BlobStartsWith(dest, blob_reg, prefix_reg) => {
+                let blob = match self.registers.get(blob_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("BlobStartsWith: blob register must be Blob"),
+                };
+                let prefix = match self.registers.get(prefix_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("BlobStartsWith: prefix register must be Blob"),
+                };
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Boolean(blob.starts_with(&prefix)));
+            }
+            BlobPrefixLt(dest, blob_reg, bound_reg) => {
+                let blob = match self.registers.get(blob_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("BlobPrefixLt: blob register must be Blob"),
+                };
+                let bound = match self.registers.get(bound_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("BlobPrefixLt: bound register must be Blob"),
+                };
+                let prefix = &blob[..bound.len().min(blob.len())];
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Boolean(prefix < bound.as_slice()));
+            }
+            BlobPrefixLe(dest, blob_reg, bound_reg) => {
+                let blob = match self.registers.get(blob_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("BlobPrefixLe: blob register must be Blob"),
+                };
+                let bound = match self.registers.get(bound_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("BlobPrefixLe: bound register must be Blob"),
+                };
+                let prefix = &blob[..bound.len().min(blob.len())];
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Boolean(prefix <= bound.as_slice()));
+            }
+            BlobSliceTail(dest, blob_reg, offset) => {
+                let blob = match self.registers.get(blob_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("BlobSliceTail: blob register must be Blob"),
+                };
+                let tail = blob[offset..].to_vec();
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Blob(tail));
+            }
+            DecodeU64Key(dest, blob_reg) => {
+                let blob = match self.registers.get(blob_reg).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("DecodeU64Key: blob register must be Blob"),
+                };
+                let rowid = storage::decode_u64_key(&blob);
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Integer(rowid as i64));
-            }
-            KeyMatchesPrefix(dest, cursor_reg, prefix_reg) => {
-                let prefix_bytes = match self.registers.get(prefix_reg).scalar().unwrap() {
-                    ScalarValue::Blob(b) => b.clone(),
-                    _ => panic!("KeyMatchesPrefix requires Blob prefix"),
-                };
-
-                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut cursor = cursor.open_readonly();
-                let entry = cursor.get_entry();
-                let matches = match entry {
-                    Some(reader) => {
-                        let key = reader.key();
-                        key.starts_with(&prefix_bytes)
-                    }
-                    None => false,
-                };
-                drop(cursor);
-                *self.registers.get_mut(dest) =
-                    RegisterValue::ScalarValue(ScalarValue::Boolean(matches));
-            }
-            KeyExceedsBound(dest, cursor_reg, bound_reg, inclusive) => {
-                let bound_bytes = match self.registers.get(bound_reg).scalar().unwrap() {
-                    ScalarValue::Blob(b) => b.clone(),
-                    _ => panic!("KeyExceedsBound requires Blob bound"),
-                };
-
-                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut cursor = cursor.open_readonly();
-                let entry = cursor.get_entry();
-                let exceeded = match entry {
-                    Some(reader) => {
-                        let key = reader.key();
-                        // Compare the column-value prefix (first bound.len() bytes)
-                        let prefix = &key[..bound_bytes.len().min(key.len())];
-                        if inclusive {
-                            // For <=: stop when prefix > bound
-                            prefix > bound_bytes.as_slice()
-                        } else {
-                            // For <: stop when prefix >= bound
-                            prefix >= bound_bytes.as_slice()
-                        }
-                    }
-                    None => true, // No entry = exceeded
-                };
-                drop(cursor);
-                *self.registers.get_mut(dest) =
-                    RegisterValue::ScalarValue(ScalarValue::Boolean(exceeded));
             }
             ReadCursor(regs, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
@@ -2124,8 +2126,8 @@ mod test {
     }
 
     #[test]
-    fn test_key_exceeds_bound_inclusive() {
-        // inclusive=true means upper bound is <=: stop when key > bound
+    fn test_blob_prefix_le_at_bound() {
+        // BlobPrefixLe: key == bound → in range (true), i.e. <= is satisfied
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
@@ -2133,20 +2135,18 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_readwrite();
-            // Insert keys at encoded values 10, 20, 30
-            let key10 = storage::encode_integer_key(10);
             let key20 = storage::encode_integer_key(20);
             let key30 = storage::encode_integer_key(30);
-            c.insert(&key10, vec![1]);
             c.insert(&key20, vec![2]);
             c.insert(&key30, vec![3]);
         }
 
         let cursor_reg = Reg::new(0);
         let bound_reg = Reg::new(1);
-        let result_reg = Reg::new(2);
+        let key_blob_reg = Reg::new(2);
+        let result_reg = Reg::new(3);
 
-        // Test: cursor at 20, bound=20, inclusive=true → key NOT exceeded (20 <= 20)
+        // cursor at 20, bound=20 → prefix(20) <= 20 → true (in range)
         let mut harness = TestHarness::new_with_btree(
             &[
                 Operation::Open(cursor_reg, root),
@@ -2155,23 +2155,22 @@ mod test {
                     ScalarValue::Blob(storage::encode_integer_key(20)),
                 ),
                 Operation::MoveCursor(cursor_reg, MoveOperation::Find(bound_reg)),
-                // Now positioned at key=20; check if exceeds bound=20 (inclusive)
-                Operation::KeyExceedsBound(result_reg, cursor_reg, bound_reg, true),
+                Operation::ReadCurrentKey(key_blob_reg, cursor_reg),
+                Operation::BlobPrefixLe(result_reg, key_blob_reg, bound_reg),
                 Operation::Yield(vec![result_reg]),
                 Operation::Halt,
             ],
-            3,
+            4,
             btree,
         );
         harness.run();
         assert_eq!(harness.num_yields(), 1);
-        // key == bound, inclusive → NOT exceeded
-        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(false));
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));
     }
 
     #[test]
-    fn test_key_exceeds_bound_inclusive_exceeded() {
-        // inclusive=true: stop when key > bound → cursor at 30 with bound=20 → exceeded
+    fn test_blob_prefix_le_exceeded() {
+        // BlobPrefixLe: key > bound → out of range (false)
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
@@ -2188,9 +2187,10 @@ mod test {
         let cursor_reg = Reg::new(0);
         let seek_reg = Reg::new(1);
         let bound_reg = Reg::new(2);
-        let result_reg = Reg::new(3);
+        let key_blob_reg = Reg::new(3);
+        let result_reg = Reg::new(4);
 
-        // Position at 30, check bound=20 inclusive
+        // cursor at 30, bound=20 → prefix(30) > 20 → false (out of range)
         let mut harness = TestHarness::new_with_btree(
             &[
                 Operation::Open(cursor_reg, root),
@@ -2200,22 +2200,22 @@ mod test {
                     ScalarValue::Blob(storage::encode_integer_key(20)),
                 ),
                 Operation::MoveCursor(cursor_reg, MoveOperation::Find(seek_reg)),
-                Operation::KeyExceedsBound(result_reg, cursor_reg, bound_reg, true),
+                Operation::ReadCurrentKey(key_blob_reg, cursor_reg),
+                Operation::BlobPrefixLe(result_reg, key_blob_reg, bound_reg),
                 Operation::Yield(vec![result_reg]),
                 Operation::Halt,
             ],
-            4,
+            5,
             btree,
         );
         harness.run();
         assert_eq!(harness.num_yields(), 1);
-        // key=30 > bound=20, inclusive → exceeded
-        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(false));
     }
 
     #[test]
-    fn test_key_exceeds_bound_exclusive() {
-        // inclusive=false means upper bound is <: stop when key >= bound
+    fn test_blob_prefix_lt_at_bound() {
+        // BlobPrefixLt: key == bound → out of range (false), strict less-than not satisfied
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
@@ -2229,9 +2229,10 @@ mod test {
 
         let cursor_reg = Reg::new(0);
         let bound_reg = Reg::new(1);
-        let result_reg = Reg::new(2);
+        let key_blob_reg = Reg::new(2);
+        let result_reg = Reg::new(3);
 
-        // cursor at 20, bound=20, inclusive=false → key == bound → exceeded (not strictly less)
+        // cursor at 20, bound=20 → prefix(20) < 20 → false (out of range for exclusive bound)
         let mut harness = TestHarness::new_with_btree(
             &[
                 Operation::Open(cursor_reg, root),
@@ -2240,49 +2241,64 @@ mod test {
                     ScalarValue::Blob(storage::encode_integer_key(20)),
                 ),
                 Operation::MoveCursor(cursor_reg, MoveOperation::Find(bound_reg)),
-                Operation::KeyExceedsBound(result_reg, cursor_reg, bound_reg, false),
+                Operation::ReadCurrentKey(key_blob_reg, cursor_reg),
+                Operation::BlobPrefixLt(result_reg, key_blob_reg, bound_reg),
                 Operation::Yield(vec![result_reg]),
                 Operation::Halt,
             ],
-            3,
+            4,
             btree,
         );
         harness.run();
         assert_eq!(harness.num_yields(), 1);
-        // key == bound, exclusive → exceeded (we want strictly less than)
-        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));
+        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(false));
     }
 
     #[test]
-    fn test_key_exceeds_bound_no_entry() {
-        // When cursor has no entry (past end), should return exceeded=true
+    fn test_read_current_key_and_decode() {
+        // ReadCurrentKey + BlobSliceTail + DecodeU64Key extracts the rowid from an index key
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        // Empty tree
+        let rowid: u64 = 42;
+        {
+            let mut cursor = btree.open(root);
+            let mut c = cursor.open_readwrite();
+            // Composite key: [col_encoded 8 bytes][rowid 8 bytes]
+            let mut key = storage::encode_integer_key(100);
+            key.extend_from_slice(&storage::encode_u64_key(rowid));
+            c.insert(&key, vec![]);
+        }
+
         let cursor_reg = Reg::new(0);
-        let bound_reg = Reg::new(1);
-        let result_reg = Reg::new(2);
+        let seek_reg = Reg::new(1);
+        let key_blob_reg = Reg::new(2);
+        let tail_reg = Reg::new(3);
+        let rowid_reg = Reg::new(4);
+
+        let seek_key = {
+            let mut k = storage::encode_integer_key(100);
+            k.extend_from_slice(&storage::encode_u64_key(rowid));
+            ScalarValue::Blob(k)
+        };
 
         let mut harness = TestHarness::new_with_btree(
             &[
                 Operation::Open(cursor_reg, root),
-                Operation::StoreValue(
-                    bound_reg,
-                    ScalarValue::Blob(storage::encode_integer_key(10)),
-                ),
-                Operation::MoveCursor(cursor_reg, MoveOperation::First),
-                Operation::KeyExceedsBound(result_reg, cursor_reg, bound_reg, true),
-                Operation::Yield(vec![result_reg]),
+                Operation::StoreValue(seek_reg, seek_key),
+                Operation::MoveCursor(cursor_reg, MoveOperation::Find(seek_reg)),
+                Operation::ReadCurrentKey(key_blob_reg, cursor_reg),
+                Operation::BlobSliceTail(tail_reg, key_blob_reg, 8),
+                Operation::DecodeU64Key(rowid_reg, tail_reg),
+                Operation::Yield(vec![rowid_reg]),
                 Operation::Halt,
             ],
-            3,
+            5,
             btree,
         );
         harness.run();
         assert_eq!(harness.num_yields(), 1);
-        // No entry → exceeded
-        assert_eq!(harness.value(0, 0), ScalarValue::Boolean(true));
+        assert_eq!(harness.value(0, 0), ScalarValue::Integer(rowid as i64));
     }
 }
