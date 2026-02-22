@@ -502,10 +502,13 @@ pub fn codegen_index_scan(
                 .emit(Operation::CanReadCursor(can_read_reg, index_cursor_reg));
             ctx.body_emitter
                 .emit_goto_if_false(cont.on_done, can_read_reg);
+            let key_blob = ctx.registers.alloc();
             let matches_lower = ctx.registers.alloc();
-            ctx.body_emitter.emit(Operation::KeyMatchesPrefix(
+            ctx.body_emitter
+                .emit(Operation::ReadCurrentKey(key_blob, index_cursor_reg));
+            ctx.body_emitter.emit(Operation::BlobStartsWith(
                 matches_lower,
-                index_cursor_reg,
+                key_blob,
                 lower_key_reg,
             ));
             // If key matches lower prefix, advance past it
@@ -545,25 +548,33 @@ pub fn codegen_index_scan(
         .emit(Operation::CanReadCursor(flag_reg, index_cursor_reg));
     ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
 
-    // Check upper bound: if key exceeds bound, stop
+    // Read the current index key once; reused for bound check and rowid extraction
+    let key_blob_reg = ctx.registers.alloc();
+    ctx.body_emitter
+        .emit(Operation::ReadCurrentKey(key_blob_reg, index_cursor_reg));
+
+    // Check upper bound: stop if key prefix exceeds bound
     if let Some((upper_reg, inclusive)) = upper_key_reg {
-        let not_exceeded_reg = ctx.registers.alloc();
-        ctx.body_emitter.emit(Operation::KeyExceedsBound(
-            flag_reg,
-            index_cursor_reg,
-            upper_reg,
-            inclusive,
-        ));
-        // flag_reg = true means exceeded → done. Negate and jump if false.
+        let in_range_reg = ctx.registers.alloc();
+        if inclusive {
+            // key_prefix <= bound → continue; key_prefix > bound → stop
+            ctx.body_emitter
+                .emit(Operation::BlobPrefixLe(in_range_reg, key_blob_reg, upper_reg));
+        } else {
+            // key_prefix < bound → continue; key_prefix >= bound → stop
+            ctx.body_emitter
+                .emit(Operation::BlobPrefixLt(in_range_reg, key_blob_reg, upper_reg));
+        }
         ctx.body_emitter
-            .emit(Operation::NotValue(not_exceeded_reg, flag_reg));
-        ctx.body_emitter
-            .emit_goto_if_false(cont.on_done, not_exceeded_reg);
+            .emit_goto_if_false(cont.on_done, in_range_reg);
     }
 
-    // Extract primary key (rowid) from the last 8 bytes of the index key
+    // Extract rowid from last 8 bytes of the index key
+    let pk_blob_reg = ctx.registers.alloc();
     ctx.body_emitter
-        .emit(Operation::ReadIndexRowid(pk_reg, index_cursor_reg));
+        .emit(Operation::BlobSliceTail(pk_blob_reg, key_blob_reg, 8));
+    ctx.body_emitter
+        .emit(Operation::DecodeU64Key(pk_reg, pk_blob_reg));
 
     // Look up row in table
     ctx.body_emitter.emit(Operation::MoveCursor(

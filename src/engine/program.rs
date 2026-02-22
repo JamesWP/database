@@ -154,17 +154,19 @@ pub enum Operation {
     WriteIndex(Reg, Reg, Reg), // WriteIndex(cursor, value, pk): insert into index
     DeleteCursor(Reg),         // DeleteCursor(cursor): delete row at current cursor position
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
-    EncodeIndexKey(Reg, Reg),  // EncodeIndexKey(dest, src): scalar to index blob
-    /// Extract the rowid from the last 8 bytes of the current index key.
-    /// The index key format is [encoded_col_value...][encoded_rowid: 8 bytes].
-    /// Stores the rowid as ScalarValue::Integer in dest.
-    ReadIndexRowid(Reg, Reg), // ReadIndexRowid(dest, cursor)
-    KeyMatchesPrefix(Reg, Reg, Reg), // Reg = KeyMatchesPrefix(cursor, prefix_reg)
-    /// Check if the current key's column-value prefix exceeds an upper bound.
-    /// dest = true means the current entry is OUT of range (scan should stop).
-    /// inclusive=true (for <=): stop when key_prefix > bound (key > upper)
-    /// inclusive=false (for <): stop when key_prefix >= bound (key >= upper)
-    KeyExceedsBound(Reg, Reg, Reg, bool), // (dest, cursor, bound_reg, inclusive)
+    EncodeIndexKey(Reg, Reg), // EncodeIndexKey(dest, src): scalar to sortable index blob
+    /// Read the raw key bytes of the current cursor entry as a Blob scalar.
+    ReadCurrentKey(Reg, Reg), // ReadCurrentKey(dest, cursor)
+    /// True if blob starts with the given prefix bytes.
+    BlobStartsWith(Reg, Reg, Reg), // BlobStartsWith(dest, blob, prefix)
+    /// True if the first len(bound) bytes of blob are strictly less than bound.
+    BlobPrefixLt(Reg, Reg, Reg), // BlobPrefixLt(dest, blob, bound)
+    /// True if the first len(bound) bytes of blob are less than or equal to bound.
+    BlobPrefixLe(Reg, Reg, Reg), // BlobPrefixLe(dest, blob, bound)
+    /// Extract blob[offset..] as a new Blob scalar.
+    BlobSliceTail(Reg, Reg, usize), // BlobSliceTail(dest, blob, offset)
+    /// Decode an 8-byte big-endian blob as a u64 rowid → Integer scalar.
+    DecodeU64Key(Reg, Reg), // DecodeU64Key(dest, blob)
 
     // Control Flow
     Yield(Vec<Reg>),
@@ -434,29 +436,51 @@ impl std::fmt::Display for Operation {
             EncodeIndexKey(dest, src) => {
                 write!(f, "{:10} {}, {}", "EncIdxKey".cyan().bold(), dest, src)
             }
-            ReadIndexRowid(dest, cursor) => {
-                write!(f, "{:10} {}, {}", "RdIdxRwid".cyan().bold(), dest, cursor)
+            ReadCurrentKey(dest, cursor) => {
+                write!(f, "{:10} {}, {}", "ReadKey".cyan().bold(), dest, cursor)
             }
-            KeyMatchesPrefix(dest, cursor, prefix) => {
+            BlobStartsWith(dest, blob, prefix) => {
                 write!(
                     f,
                     "{:10} {}, {}, {}",
-                    "KeyPrefix".cyan().bold(),
+                    "BlobSW".cyan().bold(),
                     dest,
-                    cursor,
+                    blob,
                     prefix
                 )
             }
-            KeyExceedsBound(dest, cursor, bound, inclusive) => {
+            BlobPrefixLt(dest, blob, bound) => {
                 write!(
                     f,
-                    "{:10} {}, {}, {}, {}",
-                    "KeyExceed".cyan().bold(),
+                    "{:10} {}, {}, {}",
+                    "BlobPfxLt".cyan().bold(),
                     dest,
-                    cursor,
-                    bound,
-                    if *inclusive { "incl" } else { "excl" }
+                    blob,
+                    bound
                 )
+            }
+            BlobPrefixLe(dest, blob, bound) => {
+                write!(
+                    f,
+                    "{:10} {}, {}, {}",
+                    "BlobPfxLe".cyan().bold(),
+                    dest,
+                    blob,
+                    bound
+                )
+            }
+            BlobSliceTail(dest, blob, offset) => {
+                write!(
+                    f,
+                    "{:10} {}, {}, {}",
+                    "BlobTail".cyan().bold(),
+                    dest,
+                    blob,
+                    offset
+                )
+            }
+            DecodeU64Key(dest, blob) => {
+                write!(f, "{:10} {}, {}", "DecU64Key".cyan().bold(), dest, blob)
             }
 
             // Control flow
