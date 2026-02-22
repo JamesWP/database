@@ -878,6 +878,36 @@ impl BTree {
         indexes
     }
 
+    /// Return all schema entries as (type, name, tbl_name, rootpage, sql) tuples.
+    pub fn scan_schema_entries(&self) -> Vec<(String, String, String, u32, String)> {
+        let schema_root = match self.schema_root_page() {
+            Some(root) => root,
+            None => return vec![],
+        };
+        let mut entries = Vec::new();
+        let mut cursor = self.open(schema_root);
+        let mut c = cursor.open_readonly();
+        c.first();
+        loop {
+            match c.get_entry() {
+                None => break,
+                Some(mut reader) => {
+                    let values = reader.decode_as_array();
+                    if values.len() >= 5 {
+                        let obj_type = values[0].as_str().unwrap_or("").to_string();
+                        let name = values[1].as_str().unwrap_or("").to_string();
+                        let tbl_name = values[2].as_str().unwrap_or("").to_string();
+                        let rootpage = values[3].as_u64().unwrap_or(0) as u32;
+                        let sql = values[4].as_str().unwrap_or("").to_string();
+                        entries.push((obj_type, name, tbl_name, rootpage, sql));
+                    }
+                }
+            }
+            c.next();
+        }
+        entries
+    }
+
     /// Delete all schema entries (table and indexes) from the catalog by table name.
     /// Returns true if any entry was found and deleted.
     pub fn delete_schema_entries_for_table(&mut self, table_name: &str) -> bool {
