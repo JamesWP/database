@@ -55,6 +55,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **R** | PRIMARY KEY & UNIQUE Constraints | 6 | [phase-r-unique-constraints.md](phase-r-unique-constraints.md) | Planned |
 | **S** | JavaScript / WebAssembly Bindings | 4 | [phase-s-javascript.md](phase-s-javascript.md) | Planned |
 | **T** | INSERT INTO … SELECT | 3 | [phase-t-insert-select.md](phase-t-insert-select.md) | Planned |
+| **U** | UPDATE Index Maintenance | 3 | [phase-u-update-index-maintenance.md](phase-u-update-index-maintenance.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 
