@@ -49,6 +49,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **L** | EXPLAIN Query Plans | 4 | [phase-l-explain.md](completed/phase-l-explain.md) | Completed |
 | **M** | Register Consolidation | 3 | [phase-m-register-consolidation.md](completed/phase-m-register-consolidation.md) | Completed |
 | **N** | Index Maintenance & Sort Elision | 5 | [phase-n-index-maintenance.md](phase-n-index-maintenance.md) | Planned |
+| **O** | HAVING Clause | 4 | [phase-o-having.md](phase-o-having.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 
