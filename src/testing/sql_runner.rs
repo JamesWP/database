@@ -33,23 +33,24 @@ pub fn parse_sql_test_file(content: &str) -> Vec<SqlStatement> {
     let mut statements: Vec<SqlStatement> = Vec::new();
 
     for line in content.lines() {
-        let trimmed = line.trim();
+        let ltrimmed = line.trim_start();
 
-        if trimmed.is_empty() {
+        if ltrimmed.is_empty() {
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("-- >") {
+        if let Some(rest) = ltrimmed.strip_prefix("-- >") {
             // Expected output line — attach to last statement if present
+            // Use trim_start only (preserve trailing whitespace in values like "3\t")
             if let Some(last) = statements.last_mut() {
                 last.expected.push(rest.trim_start().to_string());
             }
-        } else if trimmed.starts_with("--") {
+        } else if ltrimmed.starts_with("--") {
             // Regular comment — ignore
         } else {
             // SQL statement
             statements.push(SqlStatement {
-                sql: trimmed.to_string(),
+                sql: ltrimmed.trim_end().to_string(),
                 expected: Vec::new(),
             });
         }
