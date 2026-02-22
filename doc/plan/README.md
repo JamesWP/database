@@ -54,6 +54,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **Q** | Macro-Based Bytecode Program Builder | 2 | [phase-q-program-macro.md](phase-q-program-macro.md) | Planned |
 | **R** | PRIMARY KEY & UNIQUE Constraints | 6 | [phase-r-unique-constraints.md](phase-r-unique-constraints.md) | Planned |
 | **S** | JavaScript / WebAssembly Bindings | 4 | [phase-s-javascript.md](phase-s-javascript.md) | Planned |
+| **T** | INSERT INTO … SELECT | 3 | [phase-t-insert-select.md](phase-t-insert-select.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 
