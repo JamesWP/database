@@ -4,11 +4,7 @@ Builds on phase-g3-indexing.md to add multi-column indexes, TEXT support, range 
 
 ## Items
 
-| # | Track | Item | Depends on |
-|---|-------|------|------------|
-| 42 | 4.6 | Multi-column indexes | 47 |
-| 43 | 4.7 | TEXT column indexes | 47 |
-| 44 | 4.8 | Type conversions and NULL handling | — |
+(all completed)
 
 ---
 Important: Each item should be committed separately, follow 'Git Workflow' in CLAUDE.md
@@ -24,6 +20,9 @@ Important: Each item should be committed separately, follow 'Git Workflow' in CL
 | 45 | 3.7 | Remove rowid from index entry value | 2026-02-22 |
 | 46 | 5 | Engine: ReadCurrentKey + blob ops | 2026-02-22 |
 | 47 | 4.9 | Split IndexScan into IndexScan + RowidLookup | 2026-02-22 |
+| 42 | 4.6 | Multi-column indexes | 2026-02-22 |
+| 43 | 4.7 | TEXT column indexes | 2026-02-22 |
+| 44 | 4.8 | Type conversions and NULL handling | 2026-02-22 |
 
 ---
 

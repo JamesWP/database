@@ -40,6 +40,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **E** | Query power | 4 | [phase-e-query-power.md](completed/phase-e-query-power.md) | Completed |
 | **F** | Serialization overhaul | 4 | [phase-f-serialization.md](completed/phase-f-serialization.md) | Completed |
 | **G** | Advanced capabilities | 8 | [phase-g-advanced.md](phase-g-advanced.md) | In Progress |
+| **G4** | Advanced Indexing | 8 | [phase-g4-advanced-indexing.md](completed/phase-g4-advanced-indexing.md) | Completed |
 | **G2** | Performance & Testing | 4 | [phase-g2-indexing-and-perf.md](completed/phase-g2-indexing-and-perf.md) | Completed |
 | **H** | Compiler Type Safety | 1 | [phase-h-compiler-safety.md](completed/phase-h-compiler-safety.md) | Completed |
 | **I** | Bug Fixes | 4 | [phase-i-bug-fixes.md](completed/phase-i-bug-fixes.md) | Completed |
