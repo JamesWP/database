@@ -3,17 +3,14 @@ pub mod modes;
 mod shared;
 
 use std::collections::HashMap;
-use std::io::Write;
 
 pub use mode::{CommandResult, Mode, ModeFactory, ModeId};
-use proptest::strategy::W;
 pub use shared::SharedState;
 
 use modes::{BTreeMode, EngineMode, ParserMode, PlannerMode, SqlMode};
 
 use rustyline::error::ReadlineError;
-use rustyline::{DefaultEditor, Result};
-use std::env;
+use rustyline::DefaultEditor;
 
 pub struct Repl {
     shared: SharedState,
@@ -143,7 +140,7 @@ impl Repl {
             // Handle the command
             let result = self.handle_command(&tokens);
 
-            rl.add_history_entry(line);
+            let _ = rl.add_history_entry(line);
 
             match result {
                 CommandResult::Ok => {}
