@@ -273,6 +273,19 @@ pub fn run_sql_test(test_name: &str, update_mode: bool) {
     }
 }
 
+/// Migrate a test from legacy .expected file to inline format
+pub fn migrate_sql_test(test_name: &str) {
+    let sql_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sql");
+    let sql_path = sql_dir.join(format!("{}.sql", test_name));
+
+    let sql_content = fs::read_to_string(&sql_path).unwrap();
+    let statements = parse_sql_test_file(&sql_content);
+    let actual_per_statement = execute_sql_script_parsed(&statements);
+
+    update_sql_file_inline(&sql_path, &statements, &actual_per_statement);
+    println!("Migrated: {}.sql", test_name);
+}
+
 /// Get all SQL test names from the tests/sql directory
 pub fn get_all_sql_tests() -> Vec<String> {
     let sql_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sql");
