@@ -324,6 +324,7 @@ impl Engine {
                 buffer.cursor = 0;
             }
             NextFromRowBuffer(dest_regs, buf_reg, target) => {
+                // Used for Sort iteration, Join inner-loop, and DELETE/UPDATE key drain.
                 // Borrow checker note: must extract data and drop the buffer borrow
                 // BEFORE writing to dest registers.
                 let maybe_row = {
