@@ -2,6 +2,10 @@
 //!
 //! Walks a `LogicalPlan` tree and produces a list of `(id, indented_text)` rows
 //! suitable for returning as a two-column query result.
+//!
+//! Column references in expressions are rendered as `name:index` (e.g. `price:2`)
+//! when the column name can be resolved from the schema context flowing up from
+//! leaf Scan/RowidLookup nodes.
 
 use std::collections::HashMap;
 
@@ -57,6 +61,75 @@ impl ExplainSchema {
 }
 
 // ============================================================================
+// Column context propagation
+// ============================================================================
+
+/// Compute the ordered list of column names produced by `plan`.
+/// Used to resolve `ColumnRef` indices in parent nodes' expressions.
+fn node_output_cols(plan: &LogicalPlan, schema: &ExplainSchema) -> Vec<String> {
+    match plan {
+        LogicalPlan::Scan {
+            rootpage, columns, ..
+        } => columns
+            .iter()
+            .map(|&i| schema.column_name(*rootpage, i))
+            .collect(),
+        LogicalPlan::RowidLookup {
+            table_rootpage,
+            columns,
+            ..
+        } => columns
+            .iter()
+            .map(|&i| schema.column_name(*table_rootpage, i))
+            .collect(),
+        // Pass-through nodes: same columns as input
+        LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Count { input }
+        | LogicalPlan::Distinct { input } => node_output_cols(input, schema),
+        LogicalPlan::Project { input, columns } => {
+            let input_cols = node_output_cols(input, schema);
+            columns
+                .iter()
+                .map(|expr| format_expr_with_names(expr, &input_cols))
+                .collect()
+        }
+        LogicalPlan::Aggregate {
+            input,
+            group_keys,
+            aggregates,
+            ..
+        } => {
+            let input_cols = node_output_cols(input, schema);
+            let mut out: Vec<String> = group_keys
+                .iter()
+                .map(|e| format_expr_with_names(e, &input_cols))
+                .collect();
+            for _ in aggregates {
+                out.push("agg".to_string());
+            }
+            out
+        }
+        LogicalPlan::Join { left, right, .. } => {
+            let mut cols = node_output_cols(left, schema);
+            cols.extend(node_output_cols(right, schema));
+            cols
+        }
+        LogicalPlan::IndexScan { .. } => vec!["rowid".to_string()],
+        LogicalPlan::Values { rows } => rows
+            .first()
+            .map(|r| (0..r.len()).map(|i| format!("col:{i}")).collect())
+            .unwrap_or_default(),
+        LogicalPlan::Sequence { .. } => vec!["n".to_string()],
+        LogicalPlan::Insert { .. }
+        | LogicalPlan::Update { .. }
+        | LogicalPlan::Delete { .. }
+        | LogicalPlan::PopulateIndex { .. } => vec!["count".to_string()],
+    }
+}
+
+// ============================================================================
 // Plan formatting
 // ============================================================================
 
@@ -78,6 +151,27 @@ fn collect_rows(
     let id = *counter;
     *counter += 1;
     let indent = "  ".repeat(depth);
+
+    // Compute the input column names (what the child/children produce).
+    // These are used to resolve ColumnRef indices in this node's expressions.
+    let input_cols: Vec<String> = match plan {
+        LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Project { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Count { input }
+        | LogicalPlan::Aggregate { input, .. }
+        | LogicalPlan::Distinct { input }
+        | LogicalPlan::Insert { input, .. }
+        | LogicalPlan::RowidLookup { input, .. }
+        | LogicalPlan::PopulateIndex { input, .. } => node_output_cols(input, schema),
+        LogicalPlan::Join { left, right, .. } => {
+            let mut cols = node_output_cols(left, schema);
+            cols.extend(node_output_cols(right, schema));
+            cols
+        }
+        _ => vec![],
+    };
 
     let summary = match plan {
         LogicalPlan::Scan {
@@ -106,15 +200,24 @@ fn collect_rows(
             format!("{indent}RowidLookup {table} [cols: {cols}]")
         }
         LogicalPlan::Filter { predicate, .. } => {
-            format!("{indent}Filter [{}]", format_expr(predicate))
+            format!(
+                "{indent}Filter [{}]",
+                format_expr_with_names(predicate, &input_cols)
+            )
         }
         LogicalPlan::Project { columns, .. } => {
-            let exprs: Vec<_> = columns.iter().map(format_expr).collect();
+            let exprs: Vec<_> = columns
+                .iter()
+                .map(|e| format_expr_with_names(e, &input_cols))
+                .collect();
             format!("{indent}Project [{}]", exprs.join(", "))
         }
         LogicalPlan::Limit { count, .. } => format!("{indent}Limit [{count}]"),
         LogicalPlan::Sort { sort_keys, .. } => {
-            let keys: Vec<_> = sort_keys.iter().map(format_sort_key).collect();
+            let keys: Vec<_> = sort_keys
+                .iter()
+                .map(|k| format_sort_key_with_names(k, &input_cols))
+                .collect();
             format!("{indent}Sort [{}]", keys.join(", "))
         }
         LogicalPlan::Count { .. } => format!("{indent}Count"),
@@ -130,7 +233,10 @@ fn collect_rows(
             )
         }
         LogicalPlan::Join { on_condition, .. } => {
-            format!("{indent}Join [{}]", format_expr(on_condition))
+            format!(
+                "{indent}Join [{}]",
+                format_expr_with_names(on_condition, &input_cols)
+            )
         }
         LogicalPlan::Distinct { .. } => format!("{indent}Distinct"),
         LogicalPlan::Insert { rootpage, .. } => {
@@ -174,7 +280,6 @@ fn plan_children(plan: &LogicalPlan) -> Vec<&LogicalPlan> {
         | LogicalPlan::RowidLookup { input, .. }
         | LogicalPlan::PopulateIndex { input, .. } => vec![input],
         LogicalPlan::Join { left, right, .. } => vec![left, right],
-        LogicalPlan::IndexScan { .. } => vec![],
         _ => vec![],
     }
 }
@@ -191,26 +296,46 @@ fn resolve_cols(schema: &ExplainSchema, rootpage: u32, columns: &[usize]) -> Str
         .join(", ")
 }
 
-pub fn format_expr(expr: &PlanExpr) -> String {
+/// Format an expression, resolving column indices to `name:index` using `col_names`.
+/// Falls back to `col:index` when the name isn't available.
+pub fn format_expr_with_names(expr: &PlanExpr, col_names: &[String]) -> String {
     match expr {
-        PlanExpr::ColumnRef(idx) => format!("col:{idx}"),
+        PlanExpr::ColumnRef(idx) => {
+            if let Some(name) = col_names.get(*idx) {
+                format!("{name}:{idx}")
+            } else {
+                format!("col:{idx}")
+            }
+        }
         PlanExpr::Literal(lit) => format_literal(lit),
         PlanExpr::BinaryOp { op, left, right } => {
             format!(
                 "{} {} {}",
-                format_expr(left),
+                format_expr_with_names(left, col_names),
                 format_binary_op(op),
-                format_expr(right)
+                format_expr_with_names(right, col_names)
             )
         }
         PlanExpr::UnaryOp { op, operand } => {
-            format!("{}{}", format_unary_op(op), format_expr(operand))
+            format!(
+                "{}{}",
+                format_unary_op(op),
+                format_expr_with_names(operand, col_names)
+            )
         }
         PlanExpr::FunctionCall { name, args } => {
-            let a: Vec<_> = args.iter().map(format_expr).collect();
+            let a: Vec<_> = args
+                .iter()
+                .map(|e| format_expr_with_names(e, col_names))
+                .collect();
             format!("{name}({})", a.join(", "))
         }
     }
+}
+
+/// Format an expression without column name context (falls back to `col:index`).
+pub fn format_expr(expr: &PlanExpr) -> String {
+    format_expr_with_names(expr, &[])
 }
 
 fn format_literal(lit: &Literal) -> String {
@@ -257,9 +382,9 @@ fn format_unary_op(op: &UnaryOp) -> &'static str {
     }
 }
 
-fn format_sort_key(key: &SortKey) -> String {
+fn format_sort_key_with_names(key: &SortKey, col_names: &[String]) -> String {
     let dir = if key.descending { "DESC" } else { "ASC" };
-    format!("{} {dir}", format_expr(&key.expr))
+    format!("{} {dir}", format_expr_with_names(&key.expr, col_names))
 }
 
 fn format_index_predicate(
@@ -298,7 +423,7 @@ fn format_index_predicate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planner::{Literal, LogicalPlan, PlanExpr};
+    use crate::planner::{BinaryOp, Literal, LogicalPlan, PlanExpr};
 
     #[test]
     fn test_explain_scan_only() {
@@ -386,12 +511,65 @@ mod tests {
     }
 
     #[test]
-    fn test_format_expr_binary_op() {
+    fn test_column_names_in_filter_expr() {
+        // Filter on a scan: col refs in predicate should resolve to names
+        let mut schema = ExplainSchema::empty();
+        schema.tables.insert(
+            1,
+            TableMeta {
+                name: "users".to_string(),
+                columns: vec!["id".to_string(), "name".to_string(), "age".to_string()],
+            },
+        );
+        let plan = LogicalPlan::Filter {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: 1,
+                columns: vec![0, 1, 2],
+                with_key: false,
+            }),
+            predicate: PlanExpr::BinaryOp {
+                op: BinaryOp::Equals,
+                left: Box::new(PlanExpr::ColumnRef(2)),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(30))),
+            },
+        };
+        let rows = format_plan(&plan, &schema);
+        // Filter row should show "age:2 = 30", not "col:2 = 30"
+        assert!(rows[0].1.contains("age:2 = 30"), "got: {}", rows[0].1);
+    }
+
+    #[test]
+    fn test_column_names_in_project_expr() {
+        let mut schema = ExplainSchema::empty();
+        schema.tables.insert(
+            1,
+            TableMeta {
+                name: "users".to_string(),
+                columns: vec!["id".to_string(), "name".to_string(), "age".to_string()],
+            },
+        );
+        let plan = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: 1,
+                columns: vec![0, 1, 2],
+                with_key: false,
+            }),
+            columns: vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)],
+        };
+        let rows = format_plan(&plan, &schema);
+        // Project row should show "id:0, name:1"
+        assert!(rows[0].1.contains("id:0"), "got: {}", rows[0].1);
+        assert!(rows[0].1.contains("name:1"), "got: {}", rows[0].1);
+    }
+
+    #[test]
+    fn test_format_expr_no_context_falls_back() {
         let expr = PlanExpr::BinaryOp {
             op: BinaryOp::Equals,
             left: Box::new(PlanExpr::ColumnRef(2)),
             right: Box::new(PlanExpr::Literal(Literal::Integer(30))),
         };
+        // Without context, falls back to col:N
         assert_eq!(format_expr(&expr), "col:2 = 30");
     }
 }
