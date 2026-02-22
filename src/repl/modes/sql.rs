@@ -34,32 +34,67 @@ impl Mode for SqlMode {
             Ok(ExecuteResult::Query(mut query) | ExecuteResult::Explain(mut query)) => {
                 use colored::Colorize;
 
+                let column_names = query.column_names.clone();
+
                 // Collect all rows first
                 let mut rows = Vec::new();
                 while let Some(row) = query.next() {
                     rows.push(row);
                 }
 
-                if rows.is_empty() {
+                if rows.is_empty() && column_names.is_empty() {
                     return CommandResult::Message("(0 rows)".to_string());
                 }
 
+                // Determine number of columns
+                let num_cols = if !rows.is_empty() {
+                    rows[0].len()
+                } else {
+                    column_names.len()
+                };
+
                 // Convert to plain strings and compute max width per column
-                let num_cols = rows[0].len();
                 let plain_rows: Vec<Vec<String>> = rows
                     .iter()
                     .map(|row| row.iter().map(|v| v.plain_string()).collect())
                     .collect();
 
-                let mut col_widths = vec![0; num_cols];
+                let mut col_widths = vec![0usize; num_cols];
+                // Include header name widths
+                for (i, name) in column_names.iter().enumerate() {
+                    if i < num_cols {
+                        col_widths[i] = col_widths[i].max(name.len());
+                    }
+                }
                 for row in &plain_rows {
                     for (i, cell) in row.iter().enumerate() {
                         col_widths[i] = col_widths[i].max(cell.len());
                     }
                 }
 
-                // Build output with aligned and colored cells
                 let mut output = String::new();
+
+                // Print header row if column names are available
+                if !column_names.is_empty() {
+                    let header: Vec<String> = column_names
+                        .iter()
+                        .enumerate()
+                        .map(|(i, name)| format!("{:<width$}", name, width = col_widths[i]))
+                        .collect();
+                    output += &header.join(" | ");
+                    output += "\n";
+                    let sep: Vec<String> =
+                        col_widths.iter().map(|w| "-".repeat(*w)).collect();
+                    output += &sep.join("-|-");
+                    output += "\n";
+                }
+
+                if rows.is_empty() {
+                    output += "(0 rows)";
+                    return CommandResult::Message(output);
+                }
+
+                // Build output with aligned and colored cells
                 for plain_row in &plain_rows {
                     let padded_cells: Vec<String> = plain_row
                         .iter()
