@@ -18,10 +18,16 @@ pub struct CreateIndexStatement {
 }
 
 #[derive(Debug)]
+pub enum InsertSource {
+    Values(Vec<Vec<Expression>>),
+    Query(Box<SelectStatement>),
+}
+
+#[derive(Debug)]
 pub struct InsertStatement {
     pub table_name: String,
     pub columns: Option<Vec<String>>,
-    pub values: Vec<Vec<Expression>>,
+    pub source: InsertSource,
 }
 
 #[derive(Debug)]

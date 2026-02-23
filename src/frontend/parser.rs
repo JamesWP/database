@@ -248,11 +248,9 @@ impl Parser {
         self.input.expect(Expect::Into)?;
         let table_name = self.parse_identifier()?;
 
-        // Optional column list appears before VALUES keyword.
-        // We distinguish it from the VALUES rows by checking for the VALUES keyword:
-        // if the next token is not VALUES, it must be a column list in parens.
+        // Optional column list appears before VALUES/SELECT keyword.
         let columns = match self.input.peek() {
-            lexer::Type::Values => None,
+            lexer::Type::Values | lexer::Type::Select => None,
             lexer::Type::LeftParen => {
                 self.input.expect(Expect::LeftParen)?;
                 let mut cols = vec![self.parse_identifier()?];
@@ -266,19 +264,27 @@ impl Parser {
             t => return Err(ParseError::UnexpectedToken(Expect::Values, t)),
         };
 
-        self.input.expect(Expect::Values)?;
-
-        // Parse one or more value rows: (expr, ...) [, (expr, ...)]
-        let mut values = vec![self.parse_value_row()?];
-        while let lexer::Type::Comma = self.input.peek() {
-            self.input.advance();
-            values.push(self.parse_value_row()?);
-        }
+        let source = match self.input.peek() {
+            lexer::Type::Values => {
+                self.input.advance();
+                let mut values = vec![self.parse_value_row()?];
+                while let lexer::Type::Comma = self.input.peek() {
+                    self.input.advance();
+                    values.push(self.parse_value_row()?);
+                }
+                ast::InsertSource::Values(values)
+            }
+            lexer::Type::Select => {
+                let select = self.parse_select_statement()?;
+                ast::InsertSource::Query(Box::new(select))
+            }
+            t => return Err(ParseError::UnexpectedToken(Expect::Values, t)),
+        };
 
         Ok(ast::InsertStatement {
             table_name,
             columns,
-            values,
+            source,
         })
     }
 
@@ -1095,8 +1101,13 @@ mod test {
             ast::Statement::Insert(ins) => {
                 assert_eq!(ins.table_name, "users");
                 assert!(ins.columns.is_none());
-                assert_eq!(ins.values.len(), 1);
-                assert_eq!(ins.values[0].len(), 3);
+                match ins.source {
+                    ast::InsertSource::Values(rows) => {
+                        assert_eq!(rows.len(), 1);
+                        assert_eq!(rows[0].len(), 3);
+                    }
+                    _ => panic!("Expected Values source"),
+                }
             }
             _ => panic!("Expected Insert statement"),
         }
@@ -1116,8 +1127,13 @@ mod test {
                         "age".to_string()
                     ])
                 );
-                assert_eq!(ins.values.len(), 1);
-                assert_eq!(ins.values[0].len(), 3);
+                match ins.source {
+                    ast::InsertSource::Values(rows) => {
+                        assert_eq!(rows.len(), 1);
+                        assert_eq!(rows[0].len(), 3);
+                    }
+                    _ => panic!("Expected Values source"),
+                }
             }
             _ => panic!("Expected Insert statement"),
         }
@@ -1130,9 +1146,14 @@ mod test {
             ast::Statement::Insert(ins) => {
                 assert_eq!(ins.table_name, "users");
                 assert!(ins.columns.is_none());
-                assert_eq!(ins.values.len(), 2);
-                assert_eq!(ins.values[0].len(), 3);
-                assert_eq!(ins.values[1].len(), 3);
+                match ins.source {
+                    ast::InsertSource::Values(rows) => {
+                        assert_eq!(rows.len(), 2);
+                        assert_eq!(rows[0].len(), 3);
+                        assert_eq!(rows[1].len(), 3);
+                    }
+                    _ => panic!("Expected Values source"),
+                }
             }
             _ => panic!("Expected Insert statement"),
         }
@@ -1146,14 +1167,18 @@ mod test {
             ast::Statement::Insert(ins) => {
                 assert_eq!(ins.table_name, "sprocket");
                 assert!(ins.columns.is_none());
-                assert_eq!(ins.values.len(), 1);
-                assert_eq!(ins.values[0].len(), 1);
-                // Verify it parsed as a float
-                match &ins.values[0][0] {
-                    ast::Expression::Value(ast::ScalarValue::FloatingNumber(n)) => {
-                        assert_eq!(*n, 4.5);
+                match ins.source {
+                    ast::InsertSource::Values(rows) => {
+                        assert_eq!(rows.len(), 1);
+                        assert_eq!(rows[0].len(), 1);
+                        match &rows[0][0] {
+                            ast::Expression::Value(ast::ScalarValue::FloatingNumber(n)) => {
+                                assert_eq!(*n, 4.5);
+                            }
+                            other => panic!("Expected FloatingNumber(4.5), got {:?}", other),
+                        }
                     }
-                    other => panic!("Expected FloatingNumber(4.5), got {:?}", other),
+                    _ => panic!("Expected Values source"),
                 }
             }
             _ => panic!("Expected Insert statement"),
@@ -1166,28 +1191,53 @@ mod test {
         let stmt = parse("INSERT INTO sprocket VALUES (1, 4.5, 'test', .5, 5., 1e-3)").unwrap();
         match stmt {
             ast::Statement::Insert(ins) => {
-                assert_eq!(ins.values[0].len(), 6);
-                // Verify integer
-                match &ins.values[0][0] {
-                    ast::Expression::Value(ast::ScalarValue::IntegerNumber(n)) => {
-                        assert_eq!(*n, 1);
+                match ins.source {
+                    ast::InsertSource::Values(rows) => {
+                        assert_eq!(rows[0].len(), 6);
+                        match &rows[0][0] {
+                            ast::Expression::Value(ast::ScalarValue::IntegerNumber(n)) => {
+                                assert_eq!(*n, 1);
+                            }
+                            other => panic!("Expected IntegerNumber(1), got {:?}", other),
+                        }
+                        match &rows[0][1] {
+                            ast::Expression::Value(ast::ScalarValue::FloatingNumber(n)) => {
+                                assert_eq!(*n, 4.5);
+                            }
+                            other => panic!("Expected FloatingNumber(4.5), got {:?}", other),
+                        }
+                        match &rows[0][2] {
+                            ast::Expression::Value(ast::ScalarValue::StringLiteral(s)) => {
+                                assert_eq!(s, "test");
+                            }
+                            other => panic!("Expected StringLiteral('test'), got {:?}", other),
+                        }
                     }
-                    other => panic!("Expected IntegerNumber(1), got {:?}", other),
+                    _ => panic!("Expected Values source"),
                 }
-                // Verify regular float
-                match &ins.values[0][1] {
-                    ast::Expression::Value(ast::ScalarValue::FloatingNumber(n)) => {
-                        assert_eq!(*n, 4.5);
-                    }
-                    other => panic!("Expected FloatingNumber(4.5), got {:?}", other),
-                }
-                // Verify string
-                match &ins.values[0][2] {
-                    ast::Expression::Value(ast::ScalarValue::StringLiteral(s)) => {
-                        assert_eq!(s, "test");
-                    }
-                    other => panic!("Expected StringLiteral('test'), got {:?}", other),
-                }
+            }
+            _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_insert_select() {
+        let stmt = parse("INSERT INTO t2 SELECT id, name FROM t1").unwrap();
+        match stmt {
+            ast::Statement::Insert(ins) => {
+                assert_eq!(ins.table_name, "t2");
+                assert!(matches!(ins.source, ast::InsertSource::Query(_)));
+            }
+            _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_insert_values_still_works() {
+        let stmt = parse("INSERT INTO t VALUES (1, 'x')").unwrap();
+        match stmt {
+            ast::Statement::Insert(ins) => {
+                assert!(matches!(ins.source, ast::InsertSource::Values(_)));
             }
             _ => panic!("Expected Insert statement"),
         }
