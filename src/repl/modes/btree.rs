@@ -249,48 +249,54 @@ impl Mode for BTreeMode {
                     None => return CommandResult::Error("No schema table found".to_string()),
                 };
 
-                // Scan the catalog to collect all table names and root pages.
+                // Scan the catalog to collect all table and index names and root pages.
                 // db_schema is included because it has a self-referencing row.
-                let tables = {
+                let entries = {
                     let mut cursor = shared.btree.open(schema_root);
                     let mut c = cursor.open_readonly();
                     c.first();
-                    let mut tables = Vec::new();
+                    let mut entries = Vec::new();
                     loop {
                         match c.get_entry() {
                             None => break,
                             Some(mut reader) => {
                                 let row = reader.decode_as_array();
-                                if row.len() >= 5 && row[0].as_str() == Some("table") {
-                                    let name = row[1].as_str().unwrap_or("").to_string();
-                                    let rootpage = row[3].as_u64().unwrap() as u32;
-                                    tables.push((name, rootpage));
+                                if row.len() >= 5 {
+                                    let kind = row[0].as_str().unwrap_or("");
+                                    if kind == "table" || kind == "index" {
+                                        let name = row[1].as_str().unwrap_or("").to_string();
+                                        let rootpage = row[3].as_u64().unwrap() as u32;
+                                        entries.push((name, kind.to_string(), rootpage));
+                                    }
                                 }
                             }
                         }
                         c.next();
                     }
-                    tables
+                    entries
                 };
 
-                if tables.is_empty() {
-                    return CommandResult::Message("No tables found".to_string());
+                if entries.is_empty() {
+                    return CommandResult::Message("No tables or indexes found".to_string());
                 }
 
-                // Verify each table's B-tree
+                // Verify each B-tree
                 let mut failures = Vec::new();
-                for (name, rootpage) in &tables {
+                for (name, kind, rootpage) in &entries {
                     let mut handle = shared.btree.open(*rootpage);
                     let result = handle.open_readonly().verify();
                     if let Err(e) = result {
-                        failures.push(format!("  {}: {:?}", name, e));
+                        failures.push(format!("  {} ({}): {:?}", name, kind, e));
                     }
                 }
                 if failures.is_empty() {
-                    CommandResult::Message(format!("All {} tables verified OK", tables.len()))
+                    CommandResult::Message(format!(
+                        "All {} tables/indexes verified OK",
+                        entries.len()
+                    ))
                 } else {
                     CommandResult::Error(format!(
-                        "Verification failed for {} table(s):\n{}",
+                        "Verification failed for {} B-tree(s):\n{}",
                         failures.len(),
                         failures.join("\n")
                     ))
