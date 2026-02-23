@@ -232,6 +232,7 @@ pub enum LogicalPlan {
         rootpage: u32,
         table_columns: Vec<usize>,
         filter: Option<PlanExpr>,
+        indexes: Vec<IndexMaintenanceInfo>,
     },
 
     /// Join two tables (2 inputs)
@@ -1256,10 +1257,26 @@ fn plan_delete(delete: ast::DeleteStatement, btree: &BTree) -> Result<LogicalPla
     // Get all table column indices
     let table_columns: Vec<usize> = (0..table.columns.len()).collect();
 
+    // Gather secondary index maintenance info (mirrors plan_insert)
+    let index_infos = btree.lookup_indexes_for_table(&delete.table_name);
+    let mut indexes = Vec::new();
+    for index_info in index_infos {
+        let column_idxs = index_info
+            .column_names
+            .iter()
+            .map(|name| table.columns.iter().position(|c| &c.name == name).unwrap())
+            .collect();
+        indexes.push(IndexMaintenanceInfo {
+            rootpage: index_info.rootpage,
+            column_idxs,
+        });
+    }
+
     Ok(LogicalPlan::Delete {
         rootpage: table.rootpage,
         table_columns,
         filter,
+        indexes,
     })
 }
 
@@ -3427,6 +3444,31 @@ mod tests {
                 _ => panic!("Expected Project inside Distinct, got {:?}", input),
             },
             _ => panic!("Expected Distinct at top, got {:?}", plan),
+        }
+    }
+
+    #[test]
+    fn test_plan_delete_gathers_indexes() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
+        let users_root = btree.create_tree();
+        btree.insert_schema_entry("table", "users", "users", users_root, sql_table);
+
+        let sql_index = "CREATE INDEX idx_age ON users(age)";
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry("index", "idx_age", "users", index_root, sql_index);
+
+        let stmt = parse_sql("DELETE FROM users WHERE id = 1");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+
+        if let LogicalPlan::Delete { indexes, .. } = plan {
+            assert_eq!(indexes.len(), 1);
+            assert_eq!(indexes[0].column_idxs, vec![1]); // age is column index 1
+            assert_eq!(indexes[0].rootpage, index_root);
+        } else {
+            panic!("Expected Delete plan");
         }
     }
 }

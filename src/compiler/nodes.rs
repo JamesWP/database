@@ -1775,6 +1775,7 @@ pub fn codegen(
             rootpage,
             table_columns,
             filter,
+            indexes: _,
         } => codegen_delete(*rootpage, table_columns, filter, cont, ctx),
         LogicalPlan::Join {
             left,
@@ -2854,6 +2855,7 @@ mod tests {
             rootpage: root,
             table_columns: vec![0],
             filter: None,
+            indexes: vec![],
         };
 
         let (ops, _num_registers) = compile_plan(&plan);
