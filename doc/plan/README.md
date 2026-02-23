@@ -48,7 +48,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **K** | Inline SQL Test Expected Output | 4 | [phase-k-inline-sql-tests.md](completed/phase-k-inline-sql-tests.md) | Completed |
 | **L** | EXPLAIN Query Plans | 4 | [phase-l-explain.md](completed/phase-l-explain.md) | Completed |
 | **M** | Register Consolidation | 3 | [phase-m-register-consolidation.md](completed/phase-m-register-consolidation.md) | Completed |
-| **N** | Index Maintenance & Sort Elision | 5 | [phase-n-index-maintenance.md](phase-n-index-maintenance.md) | Planned |
+| **N** | Index Maintenance & Sort Elision | 5 | [phase-n-index-maintenance.md](completed/phase-n-index-maintenance.md) | Completed |
 | **O** | HAVING Clause | 4 | [phase-o-having.md](completed/phase-o-having.md) | Completed |
 | **P** | Column Names in Query Output | 3 | [phase-p-column-names.md](completed/phase-p-column-names.md) | Completed |
 | **Q** | Macro-Based Bytecode Program Builder | 2 | [phase-q-program-macro.md](phase-q-program-macro.md) | Planned |
