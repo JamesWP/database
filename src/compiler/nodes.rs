@@ -1546,6 +1546,7 @@ pub fn codegen_delete(
     rootpage: u32,
     table_columns: &[usize],
     filter: &Option<PlanExpr>,
+    indexes: &[crate::planner::IndexMaintenanceInfo],
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
@@ -1557,6 +1558,16 @@ pub fn codegen_delete(
 
     // Allocate registers for reading all table columns (needed for filter evaluation)
     let read_regs = ctx.registers.alloc_block(table_columns.len());
+
+    // Open index cursors in the init phase (one per secondary index)
+    let index_cursor_regs: Vec<Reg> = indexes
+        .iter()
+        .map(|index| {
+            let reg = ctx.registers.alloc();
+            ctx.init_emitter.emit(Operation::Open(reg, index.rootpage));
+            reg
+        })
+        .collect();
 
     // INIT: open cursor, position to first, init key buffer and counter
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
@@ -1637,6 +1648,27 @@ pub fn codegen_delete(
         cursor_reg,
         MoveOperation::Find(key_reg),
     ));
+
+    // For each secondary index: read indexed column values, then delete the index entry
+    if !indexes.is_empty() {
+        let phase2_read_regs = ctx.registers.alloc_block(table_columns.len());
+        ctx.body_emitter
+            .emit(Operation::ReadCursor(phase2_read_regs.clone(), cursor_reg));
+
+        for (index, &index_cursor_reg) in indexes.iter().zip(index_cursor_regs.iter()) {
+            let col_value_regs: Vec<Reg> = index
+                .column_idxs
+                .iter()
+                .map(|&col_idx| phase2_read_regs[col_idx])
+                .collect();
+            ctx.body_emitter.emit(Operation::DeleteIndex(
+                index_cursor_reg,
+                col_value_regs,
+                key_reg,
+            ));
+        }
+    }
+
     ctx.body_emitter.emit(Operation::DeleteCursor(cursor_reg));
     ctx.body_emitter.emit_goto(delete_loop);
 
@@ -1775,8 +1807,8 @@ pub fn codegen(
             rootpage,
             table_columns,
             filter,
-            indexes: _,
-        } => codegen_delete(*rootpage, table_columns, filter, cont, ctx),
+            indexes,
+        } => codegen_delete(*rootpage, table_columns, filter, indexes, cont, ctx),
         LogicalPlan::Join {
             left,
             right,
