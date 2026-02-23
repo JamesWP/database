@@ -1770,6 +1770,7 @@ pub fn codegen(
         } => codegen_scan(*rootpage, columns, cont, ctx, *with_key),
         LogicalPlan::IndexScan {
             index_rootpage,
+            index_col_idx: _,
             lower_bound,
             upper_bound,
         } => codegen_index_scan(*index_rootpage, lower_bound, upper_bound, cont, ctx),

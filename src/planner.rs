@@ -138,6 +138,7 @@ pub enum LogicalPlan {
     /// Knows nothing about the table; a RowidLookup node above fetches columns.
     IndexScan {
         index_rootpage: u32,
+        index_col_idx: usize, // table column index of the indexed column
         lower_bound: Option<(Literal, bool)>, // (value, inclusive)
         upper_bound: Option<(Literal, bool)>, // (value, inclusive)
     },
@@ -488,6 +489,7 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
             &table_name,
             table.rootpage,
             &mapping.scan_columns,
+            &table.columns,
             btree,
         ) {
             index_scan
@@ -1036,6 +1038,7 @@ fn try_plan_index_scan(
     table_name: &str,
     table_rootpage: u32,
     scan_columns: &[usize],
+    table_columns: &[schema::Column],
     btree: &BTree,
 ) -> Option<LogicalPlan> {
     let (col_name, lower_bound, upper_bound) =
@@ -1059,9 +1062,16 @@ fn try_plan_index_scan(
         .iter()
         .find(|idx| idx.column_names.first().map(|s| s.as_str()) == Some(col_name.as_str()))?;
 
+    // Resolve the column name to a table column index
+    let index_col_idx = table_columns
+        .iter()
+        .position(|c| c.name == col_name)
+        .unwrap_or(0);
+
     Some(LogicalPlan::RowidLookup {
         input: Box::new(LogicalPlan::IndexScan {
             index_rootpage: index.rootpage,
+            index_col_idx,
             lower_bound,
             upper_bound,
         }),
@@ -3257,6 +3267,7 @@ mod tests {
                 } => match *input {
                     LogicalPlan::IndexScan {
                         index_rootpage,
+                        index_col_idx: _,
                         lower_bound,
                         upper_bound,
                     } => {
@@ -3301,6 +3312,7 @@ mod tests {
                 } => match *input {
                     LogicalPlan::IndexScan {
                         index_rootpage,
+                        index_col_idx: _,
                         lower_bound,
                         upper_bound,
                     } => {
@@ -3364,6 +3376,7 @@ mod tests {
                 LogicalPlan::RowidLookup { input, .. } => match *input {
                     LogicalPlan::IndexScan {
                         index_rootpage,
+                        index_col_idx: _,
                         lower_bound,
                         upper_bound,
                     } => {
