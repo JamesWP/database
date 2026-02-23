@@ -924,6 +924,24 @@ fn plan_select_with_joins(
     Ok(plan)
 }
 
+fn output_width(plan: &LogicalPlan) -> usize {
+    match plan {
+        LogicalPlan::Project { columns, .. } => columns.len(),
+        LogicalPlan::Aggregate { group_keys, aggregates, .. } => {
+            group_keys.len() + aggregates.len()
+        }
+        LogicalPlan::Count { .. } => 1,
+        LogicalPlan::Values { rows } => rows.first().map(|r| r.len()).unwrap_or(0),
+        LogicalPlan::Sort { input, .. }
+        | LogicalPlan::Limit { input, .. }
+        | LogicalPlan::Distinct { input, .. }
+        | LogicalPlan::Filter { input, .. }
+        | LogicalPlan::RowidLookup { input, .. } => output_width(input),
+        LogicalPlan::Scan { columns, .. } => columns.len(),
+        _ => 0,
+    }
+}
+
 fn plan_insert(insert: ast::InsertStatement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
     let table = resolve_table(&insert.table_name, btree)?;
     let num_table_columns = table.columns.len();
@@ -944,25 +962,41 @@ fn plan_insert(insert: ast::InsertStatement, btree: &BTree) -> Result<LogicalPla
         None => (0..num_table_columns).collect(),
     };
 
-    // Convert each value row to Literals, validating column count
-    let no_resolver = NoColumnResolver;
-    let mut rows = Vec::new();
-    for value_row in &insert.values {
-        if value_row.len() != table_columns.len() {
-            return Err(PlanError::ColumnCountMismatch {
-                expected: table_columns.len(),
-                got: value_row.len(),
-            });
+    // Build the input plan from the INSERT source
+    let input_plan = match insert.source {
+        ast::InsertSource::Values(value_rows) => {
+            let no_resolver = NoColumnResolver;
+            let mut rows = Vec::new();
+            for value_row in &value_rows {
+                if value_row.len() != table_columns.len() {
+                    return Err(PlanError::ColumnCountMismatch {
+                        expected: table_columns.len(),
+                        got: value_row.len(),
+                    });
+                }
+                let literals: Vec<Literal> = value_row
+                    .iter()
+                    .map(|expr| {
+                        let plan_expr = convert_expr(expr, &no_resolver)?;
+                        eval_constant(&plan_expr)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows.push(literals);
+            }
+            LogicalPlan::Values { rows }
         }
-        let literals: Vec<Literal> = value_row
-            .iter()
-            .map(|expr| {
-                let plan_expr = convert_expr(expr, &no_resolver)?;
-                eval_constant(&plan_expr)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.push(literals);
-    }
+        ast::InsertSource::Query(select) => {
+            let input = plan_select(*select, btree)?;
+            let produced = output_width(&input);
+            if produced != table_columns.len() {
+                return Err(PlanError::ColumnCountMismatch {
+                    expected: table_columns.len(),
+                    got: produced,
+                });
+            }
+            input
+        }
+    };
 
     // Look up indexes for this table
     let index_infos = btree.lookup_indexes_for_table(&insert.table_name);
@@ -990,7 +1024,7 @@ fn plan_insert(insert: ast::InsertStatement, btree: &BTree) -> Result<LogicalPla
     Ok(LogicalPlan::Insert {
         rootpage: table.rootpage,
         table_columns,
-        input: Box::new(LogicalPlan::Values { rows }),
+        input: Box::new(input_plan),
         indexes,
     })
 }
