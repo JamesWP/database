@@ -699,10 +699,36 @@ fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPla
                 })
                 .collect();
 
-            plan = LogicalPlan::Sort {
-                input: Box::new(plan),
-                sort_keys: sort_keys?,
+            let sort_keys = sort_keys?;
+
+            // Sort elision: if there is exactly one ASC sort key that resolves to a
+            // table column already ordered by an IndexScan, skip the Sort node entirely.
+            let elide = if sort_keys.len() == 1 && !sort_keys[0].descending {
+                // Reverse-map projection index → scan column index
+                let proj_to_scan: HashMap<usize, usize> = scan_idx_to_proj_idx
+                    .iter()
+                    .map(|(&scan, &proj)| (proj, scan))
+                    .collect();
+
+                if let PlanExpr::ColumnRef(proj_idx) = sort_keys[0].expr {
+                    if let Some(&scan_col_idx) = proj_to_scan.get(&proj_idx) {
+                        can_elide_sort(&plan, scan_col_idx)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
             };
+
+            if !elide {
+                plan = LogicalPlan::Sort {
+                    input: Box::new(plan),
+                    sort_keys,
+                };
+            }
 
             // If we added extra columns for ORDER BY, add a final projection to remove them
             if has_extra_order_columns {
@@ -1078,6 +1104,23 @@ fn try_plan_index_scan(
         table_rootpage,
         columns: scan_columns.to_vec(),
     })
+}
+
+/// Returns true if the plan tree rooted at `plan` contains an IndexScan on
+/// `sort_col_idx` with only pass-through nodes (Project/Filter/Limit/RowidLookup)
+/// in between — meaning the scan already produces rows in ascending order by that column.
+fn can_elide_sort(plan: &LogicalPlan, sort_col_idx: usize) -> bool {
+    match plan {
+        LogicalPlan::Project { input, .. }
+        | LogicalPlan::Filter { input, .. }
+        | LogicalPlan::Limit { input, .. } => can_elide_sort(input, sort_col_idx),
+
+        LogicalPlan::RowidLookup { input, .. } => can_elide_sort(input, sort_col_idx),
+
+        LogicalPlan::IndexScan { index_col_idx, .. } => *index_col_idx == sort_col_idx,
+
+        _ => false,
+    }
 }
 
 /// Extract a range filter from an expression involving a single column.
@@ -3483,5 +3526,59 @@ mod tests {
         } else {
             panic!("Expected Delete plan");
         }
+    }
+
+    fn make_btree_with_index_on_age() -> crate::storage::BTree {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
+        let users_root = btree.create_tree();
+        btree.insert_schema_entry("table", "users", "users", users_root, sql_table);
+        let sql_index = "CREATE INDEX idx_age ON users(age)";
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry("index", "idx_age", "users", index_root, sql_index);
+        btree
+    }
+
+    fn plan_contains_sort(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::Sort { .. } => true,
+            LogicalPlan::Project { input, .. }
+            | LogicalPlan::Filter { input, .. }
+            | LogicalPlan::Limit { input, .. } => plan_contains_sort(input),
+            LogicalPlan::RowidLookup { input, .. } => plan_contains_sort(input),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn test_sort_elided_for_index_scan() {
+        let btree = make_btree_with_index_on_age();
+        let stmt = parse_sql("SELECT id FROM users WHERE age > 20 ORDER BY age");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+        assert!(
+            !plan_contains_sort(&plan),
+            "expected sort to be elided, got:\n{:#?}",
+            plan
+        );
+    }
+
+    #[test]
+    fn test_sort_not_elided_for_desc() {
+        let btree = make_btree_with_index_on_age();
+        let stmt = parse_sql("SELECT id FROM users WHERE age > 20 ORDER BY age DESC");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+        assert!(plan_contains_sort(&plan), "DESC should not be elided");
+    }
+
+    #[test]
+    fn test_sort_not_elided_for_different_column() {
+        let btree = make_btree_with_index_on_age();
+        let stmt = parse_sql("SELECT id FROM users WHERE age > 20 ORDER BY id");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+        assert!(
+            plan_contains_sort(&plan),
+            "non-indexed column should not be elided"
+        );
     }
 }
