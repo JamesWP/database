@@ -183,6 +183,7 @@ fn collect_rows(
         }
         LogicalPlan::IndexScan {
             index_rootpage,
+            index_col_idx: _,
             lower_bound,
             upper_bound,
         } => {
@@ -481,6 +482,7 @@ mod tests {
     fn test_explain_index_scan_equality() {
         let plan = LogicalPlan::IndexScan {
             index_rootpage: 5,
+            index_col_idx: 0,
             lower_bound: Some((Literal::Integer(30), true)),
             upper_bound: Some((Literal::Integer(30), true)),
         };
