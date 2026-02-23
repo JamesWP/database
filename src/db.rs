@@ -861,4 +861,40 @@ mod tests {
             _ => panic!("Expected Query result"),
         }
     }
+
+    #[test]
+    fn test_delete_keeps_index_in_sync() {
+        let mut test = TestDb::default();
+        execute(
+            "CREATE TABLE users (id INTEGER, age INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+        execute("CREATE INDEX idx_age ON users(age)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (1, 25)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (2, 30)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (3, 25)", &mut test.btree).unwrap();
+
+        // Delete one of the age=25 rows
+        execute("DELETE FROM users WHERE id = 1", &mut test.btree).unwrap();
+
+        // Query via index — must not see the deleted row
+        let result = execute("SELECT id FROM users WHERE age = 25", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(q) => {
+                assert_eq!(q.rows.len(), 1);
+                assert_eq!(q.rows[0][0], ScalarValue::Integer(3));
+            }
+            _ => panic!("Expected Query result"),
+        }
+
+        // Full scan must also agree
+        let result = execute("SELECT id FROM users", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(q) => {
+                assert_eq!(q.rows.len(), 2);
+            }
+            _ => panic!("Expected Query result"),
+        }
+    }
 }
