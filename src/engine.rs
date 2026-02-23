@@ -722,6 +722,27 @@ impl Engine {
                 let mut c = cursor.open_readwrite();
                 c.insert(&index_key, vec![]);
             }
+            DeleteIndex(cursor_reg, value_regs, pk_reg) => {
+                // Build composite index key identical to WriteIndex
+                let mut index_key = Vec::new();
+                for value_reg in value_regs {
+                    let indexed_value = self.registers.get(value_reg).scalar().unwrap();
+                    index_key.extend_from_slice(&storage::encode_index_value(indexed_value));
+                }
+                let pk_value = self.registers.get(pk_reg).scalar().unwrap();
+                let pk = match pk_value {
+                    ScalarValue::Integer(i) => *i as u64,
+                    _ => panic!("DeleteIndex: primary key must be INTEGER"),
+                };
+                index_key.extend_from_slice(&storage::encode_u64_key(pk));
+
+                // Find and delete the entry from the index B-tree
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let mut c = cursor.open_readwrite();
+                if c.find(&index_key) {
+                    c.delete_current();
+                }
+            }
             DeleteCursor(cursor_reg) => {
                 // Delete at current cursor position
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();

@@ -151,6 +151,7 @@ impl BytecodeEmitter {
                 | Operation::ReadKey(_, _)
                 | Operation::WriteCursor(_, _, _)
                 | Operation::WriteIndex(_, _, _)
+                | Operation::DeleteIndex(_, _, _)
                 | Operation::DeleteCursor(_)
                 | Operation::CanReadCursor(_, _)
                 | Operation::EncodeIndexKey(_, _)
