@@ -146,6 +146,7 @@ pub enum Operation {
     ReadKey(Reg, Reg),         // ReadKey(dest, cursor): read btree key as integer
     WriteCursor(Reg, Reg, Vec<Reg>), // WriteCursor(cursor, key, values): insert row
     WriteIndex(Reg, Vec<Reg>, Reg), // WriteIndex(cursor, col_values, pk): insert into index
+    DeleteIndex(Reg, Vec<Reg>, Reg), // DeleteIndex(cursor, col_values, pk): remove from index
     DeleteCursor(Reg),         // DeleteCursor(cursor): delete row at current cursor position
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
     EncodeIndexKey(Reg, Reg),  // EncodeIndexKey(dest, src): scalar to sortable index blob
@@ -391,6 +392,17 @@ impl std::fmt::Display for Operation {
                     f,
                     "{:10} {}, [{}], {}",
                     "WriteIdx".cyan().bold(),
+                    cursor,
+                    vals_str.join(", "),
+                    pk
+                )
+            }
+            DeleteIndex(cursor, vals, pk) => {
+                let vals_str: Vec<String> = vals.iter().map(|r| format!("{}", r)).collect();
+                write!(
+                    f,
+                    "{:10} {}, [{}], {}",
+                    "DelIdx".cyan().bold(),
                     cursor,
                     vals_str.join(", "),
                     pk
