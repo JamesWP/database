@@ -1275,7 +1275,7 @@ pub fn codegen_update(
     let read_regs = ctx.registers.alloc_block(table_columns.len());
 
     // Open index cursors in the init phase (one per secondary index)
-    let _index_cursor_regs: Vec<Reg> = indexes
+    let index_cursor_regs: Vec<Reg> = indexes
         .iter()
         .map(|index| {
             let reg = ctx.registers.alloc();
@@ -1366,6 +1366,20 @@ pub fn codegen_update(
     ctx.body_emitter
         .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
 
+    // Delete stale index entries (old column values, before applying assignments)
+    for (index, &index_cursor_reg) in indexes.iter().zip(index_cursor_regs.iter()) {
+        let old_val_regs: Vec<Reg> = index
+            .column_idxs
+            .iter()
+            .map(|&col_idx| read_regs[col_idx])
+            .collect();
+        ctx.body_emitter.emit(Operation::DeleteIndex(
+            index_cursor_reg,
+            old_val_regs,
+            key_reg,
+        ));
+    }
+
     // Compute new values from assignments
     let new_values = read_regs.clone();
     for (col_idx, expr) in assignments {
@@ -1378,6 +1392,20 @@ pub fn codegen_update(
         };
         ctx.body_emitter
             .emit(Operation::CopyValue(new_values[*col_idx], value_reg));
+    }
+
+    // Write updated index entries (new column values, after applying assignments)
+    for (index, &index_cursor_reg) in indexes.iter().zip(index_cursor_regs.iter()) {
+        let new_val_regs: Vec<Reg> = index
+            .column_idxs
+            .iter()
+            .map(|&col_idx| new_values[col_idx])
+            .collect();
+        ctx.body_emitter.emit(Operation::WriteIndex(
+            index_cursor_reg,
+            new_val_regs,
+            key_reg,
+        ));
     }
 
     // Write updated row

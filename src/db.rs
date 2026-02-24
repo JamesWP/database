@@ -897,4 +897,51 @@ mod tests {
             _ => panic!("Expected Query result"),
         }
     }
+
+    #[test]
+    fn test_update_keeps_index_in_sync() {
+        let mut test = TestDb::default();
+        execute(
+            "CREATE TABLE users (id INTEGER, age INTEGER)",
+            &mut test.btree,
+        )
+        .unwrap();
+        execute("CREATE INDEX idx_age ON users(age)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (1, 25)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (2, 30)", &mut test.btree).unwrap();
+
+        // Change age of row 1 from 25 to 40
+        execute("UPDATE users SET age = 40 WHERE id = 1", &mut test.btree).unwrap();
+
+        // Old value must not be findable via index
+        let result = execute("SELECT id FROM users WHERE age = 25", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(q) => {
+                assert!(
+                    q.rows.is_empty(),
+                    "stale index entry for age=25 must be gone"
+                );
+            }
+            _ => panic!("Expected Query result"),
+        }
+
+        // New value must be findable via index
+        let result = execute("SELECT id FROM users WHERE age = 40", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(q) => {
+                assert_eq!(q.rows.len(), 1);
+                assert_eq!(q.rows[0][0], ScalarValue::Integer(1));
+            }
+            _ => panic!("Expected Query result"),
+        }
+
+        // Full scan must agree
+        let result = execute("SELECT id FROM users", &mut test.btree).unwrap();
+        match result {
+            ExecuteResult::Query(q) => {
+                assert_eq!(q.rows.len(), 2);
+            }
+            _ => panic!("Expected Query result"),
+        }
+    }
 }
