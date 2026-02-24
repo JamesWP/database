@@ -1803,6 +1803,7 @@ pub fn codegen(
             table_columns,
             assignments,
             filter,
+            indexes: _,
         } => codegen_update(*rootpage, table_columns, assignments, filter, cont, ctx),
         LogicalPlan::Delete {
             rootpage,

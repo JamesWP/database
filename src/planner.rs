@@ -224,6 +224,7 @@ pub enum LogicalPlan {
         table_columns: Vec<usize>,
         assignments: Vec<(usize, PlanExpr)>, // (column_index, new_value_expr)
         filter: Option<PlanExpr>,
+        indexes: Vec<IndexMaintenanceInfo>,
     },
 
     /// Delete rows from a table
@@ -956,9 +957,11 @@ fn plan_select_with_joins(
 fn output_width(plan: &LogicalPlan) -> usize {
     match plan {
         LogicalPlan::Project { columns, .. } => columns.len(),
-        LogicalPlan::Aggregate { group_keys, aggregates, .. } => {
-            group_keys.len() + aggregates.len()
-        }
+        LogicalPlan::Aggregate {
+            group_keys,
+            aggregates,
+            ..
+        } => group_keys.len() + aggregates.len(),
         LogicalPlan::Count { .. } => 1,
         LogicalPlan::Values { rows } => rows.first().map(|r| r.len()).unwrap_or(0),
         LogicalPlan::Sort { input, .. }
@@ -1278,11 +1281,27 @@ fn plan_update(update: ast::UpdateStatement, btree: &BTree) -> Result<LogicalPla
     // Get all table column indices
     let table_columns: Vec<usize> = (0..table.columns.len()).collect();
 
+    // Gather secondary index maintenance info (mirrors plan_delete)
+    let index_infos = btree.lookup_indexes_for_table(&update.table_name);
+    let mut indexes = Vec::new();
+    for index_info in index_infos {
+        let column_idxs = index_info
+            .column_names
+            .iter()
+            .map(|name| table.columns.iter().position(|c| &c.name == name).unwrap())
+            .collect();
+        indexes.push(IndexMaintenanceInfo {
+            rootpage: index_info.rootpage,
+            column_idxs,
+        });
+    }
+
     Ok(LogicalPlan::Update {
         rootpage: table.rootpage,
         table_columns,
         assignments,
         filter,
+        indexes,
     })
 }
 
@@ -3525,6 +3544,31 @@ mod tests {
             assert_eq!(indexes[0].rootpage, index_root);
         } else {
             panic!("Expected Delete plan");
+        }
+    }
+
+    #[test]
+    fn test_plan_update_gathers_indexes() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
+        let users_root = btree.create_tree();
+        btree.insert_schema_entry("table", "users", "users", users_root, sql_table);
+
+        let sql_index = "CREATE INDEX idx_age ON users(age)";
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry("index", "idx_age", "users", index_root, sql_index);
+
+        let stmt = parse_sql("UPDATE users SET age = 30 WHERE id = 1");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+
+        if let LogicalPlan::Update { indexes, .. } = plan {
+            assert_eq!(indexes.len(), 1);
+            assert_eq!(indexes[0].column_idxs, vec![1]); // age is column index 1
+            assert_eq!(indexes[0].rootpage, index_root);
+        } else {
+            panic!("Expected Update plan");
         }
     }
 
