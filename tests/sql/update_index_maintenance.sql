@@ -15,6 +15,12 @@ INSERT INTO products VALUES (3, 100, 'cherry')
 UPDATE products SET price = 150 WHERE id = 1
 -- > 1
 
+-- Verify the planner uses the index for price equality lookups
+EXPLAIN SELECT id FROM products WHERE price = 100
+-- > 0, "Project [id:0]"
+-- > 1, "  RowidLookup products [cols: id, price]"
+-- > 2, "    IndexScan via idx_price [= 100]"
+
 -- Old price must yield only the non-updated rows
 SELECT id FROM products WHERE price = 100 ORDER BY id
 -- > 3
