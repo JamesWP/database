@@ -1261,6 +1261,7 @@ pub fn codegen_update(
     table_columns: &[usize],
     assignments: &[(usize, PlanExpr)],
     filter: &Option<PlanExpr>,
+    indexes: &[crate::planner::IndexMaintenanceInfo],
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
@@ -1272,6 +1273,16 @@ pub fn codegen_update(
 
     // Allocate registers for reading all table columns
     let read_regs = ctx.registers.alloc_block(table_columns.len());
+
+    // Open index cursors in the init phase (one per secondary index)
+    let _index_cursor_regs: Vec<Reg> = indexes
+        .iter()
+        .map(|index| {
+            let reg = ctx.registers.alloc();
+            ctx.init_emitter.emit(Operation::Open(reg, index.rootpage));
+            reg
+        })
+        .collect();
 
     // INIT: open cursor, position to first, init key buffer and counter
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
@@ -1803,8 +1814,16 @@ pub fn codegen(
             table_columns,
             assignments,
             filter,
-            indexes: _,
-        } => codegen_update(*rootpage, table_columns, assignments, filter, cont, ctx),
+            indexes,
+        } => codegen_update(
+            *rootpage,
+            table_columns,
+            assignments,
+            filter,
+            indexes,
+            cont,
+            ctx,
+        ),
         LogicalPlan::Delete {
             rootpage,
             table_columns,
