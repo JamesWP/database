@@ -57,6 +57,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **T** | INSERT INTO … SELECT | 3 | [phase-t-insert-select.md](completed/phase-t-insert-select.md) | Completed |
 | **U** | UPDATE Index Maintenance | 3 | [phase-u-update-index-maintenance.md](phase-u-update-index-maintenance.md) | Planned |
 | **V** | README Overhaul | 2 | [phase-v-readme-overhaul.md](phase-v-readme-overhaul.md) | Planned |
+| **W** | Simplify: Targeted Refactors | 4 | [phase-w-simplify.md](phase-w-simplify.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 
