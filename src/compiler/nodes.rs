@@ -1113,6 +1113,48 @@ pub fn codegen_aggregate(
 ///   child_on_done:  GoTo(on_tuple)     // yield the count
 ///   insert_next:    GoTo(on_done)      // done after yielding
 /// ```
+fn open_index_cursors(
+    indexes: &[crate::planner::IndexMaintenanceInfo],
+    ctx: &mut CodegenContext,
+) -> Vec<Reg> {
+    indexes
+        .iter()
+        .map(|index| {
+            let reg = ctx.registers.alloc();
+            ctx.init_emitter.emit(Operation::Open(reg, index.rootpage));
+            reg
+        })
+        .collect()
+}
+
+fn emit_write_indexes(
+    indexes: &[crate::planner::IndexMaintenanceInfo],
+    cursor_regs: &[Reg],
+    row_regs: &[Reg],
+    key_reg: Reg,
+    ctx: &mut CodegenContext,
+) {
+    for (index, &cursor_reg) in indexes.iter().zip(cursor_regs) {
+        let col_regs: Vec<Reg> = index.column_idxs.iter().map(|&c| row_regs[c]).collect();
+        ctx.body_emitter
+            .emit(Operation::WriteIndex(cursor_reg, col_regs, key_reg));
+    }
+}
+
+fn emit_delete_indexes(
+    indexes: &[crate::planner::IndexMaintenanceInfo],
+    cursor_regs: &[Reg],
+    row_regs: &[Reg],
+    key_reg: Reg,
+    ctx: &mut CodegenContext,
+) {
+    for (index, &cursor_reg) in indexes.iter().zip(cursor_regs) {
+        let col_regs: Vec<Reg> = index.column_idxs.iter().map(|&c| row_regs[c]).collect();
+        ctx.body_emitter
+            .emit(Operation::DeleteIndex(cursor_reg, col_regs, key_reg));
+    }
+}
+
 pub fn codegen_insert(
     rootpage: u32,
     table_columns: &[usize],
@@ -1128,12 +1170,7 @@ pub fn codegen_insert(
     let counter_reg = ctx.registers.alloc();
 
     // Allocate registers for index cursors
-    let mut index_cursor_regs = Vec::new();
-    for index in indexes {
-        let reg = ctx.registers.alloc();
-        ctx.init_emitter.emit(Operation::Open(reg, index.rootpage));
-        index_cursor_regs.push(reg);
-    }
+    let index_cursor_regs = open_index_cursors(indexes, ctx);
 
     // INIT: Open cursor and discover next key
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
@@ -1207,20 +1244,7 @@ pub fn codegen_insert(
     ));
 
     // Write to each index
-    for (i, index) in indexes.iter().enumerate() {
-        let index_cursor = index_cursor_regs[i];
-        let col_value_regs: Vec<_> = index
-            .column_idxs
-            .iter()
-            .map(|&col_idx| reordered_regs[col_idx])
-            .collect();
-
-        ctx.body_emitter.emit(Operation::WriteIndex(
-            index_cursor,
-            col_value_regs, // Column values to index (multi-column)
-            key_reg,        // Primary key (table key)
-        ));
-    }
+    emit_write_indexes(indexes, &index_cursor_regs, &reordered_regs, key_reg, ctx);
 
     ctx.body_emitter.emit(Operation::IncrementValue(key_reg));
     ctx.body_emitter
@@ -1275,14 +1299,7 @@ pub fn codegen_update(
     let read_regs = ctx.registers.alloc_block(table_columns.len());
 
     // Open index cursors in the init phase (one per secondary index)
-    let index_cursor_regs: Vec<Reg> = indexes
-        .iter()
-        .map(|index| {
-            let reg = ctx.registers.alloc();
-            ctx.init_emitter.emit(Operation::Open(reg, index.rootpage));
-            reg
-        })
-        .collect();
+    let index_cursor_regs = open_index_cursors(indexes, ctx);
 
     // INIT: open cursor, position to first, init key buffer and counter
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
@@ -1367,18 +1384,7 @@ pub fn codegen_update(
         .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
 
     // Delete stale index entries (old column values, before applying assignments)
-    for (index, &index_cursor_reg) in indexes.iter().zip(index_cursor_regs.iter()) {
-        let old_val_regs: Vec<Reg> = index
-            .column_idxs
-            .iter()
-            .map(|&col_idx| read_regs[col_idx])
-            .collect();
-        ctx.body_emitter.emit(Operation::DeleteIndex(
-            index_cursor_reg,
-            old_val_regs,
-            key_reg,
-        ));
-    }
+    emit_delete_indexes(indexes, &index_cursor_regs, &read_regs, key_reg, ctx);
 
     // Compute new values from assignments
     let new_values = read_regs.clone();
@@ -1395,18 +1401,7 @@ pub fn codegen_update(
     }
 
     // Write updated index entries (new column values, after applying assignments)
-    for (index, &index_cursor_reg) in indexes.iter().zip(index_cursor_regs.iter()) {
-        let new_val_regs: Vec<Reg> = index
-            .column_idxs
-            .iter()
-            .map(|&col_idx| new_values[col_idx])
-            .collect();
-        ctx.body_emitter.emit(Operation::WriteIndex(
-            index_cursor_reg,
-            new_val_regs,
-            key_reg,
-        ));
-    }
+    emit_write_indexes(indexes, &index_cursor_regs, &new_values, key_reg, ctx);
 
     // Write updated row
     ctx.body_emitter
@@ -1599,14 +1594,7 @@ pub fn codegen_delete(
     let read_regs = ctx.registers.alloc_block(table_columns.len());
 
     // Open index cursors in the init phase (one per secondary index)
-    let index_cursor_regs: Vec<Reg> = indexes
-        .iter()
-        .map(|index| {
-            let reg = ctx.registers.alloc();
-            ctx.init_emitter.emit(Operation::Open(reg, index.rootpage));
-            reg
-        })
-        .collect();
+    let index_cursor_regs = open_index_cursors(indexes, ctx);
 
     // INIT: open cursor, position to first, init key buffer and counter
     ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
@@ -1693,19 +1681,7 @@ pub fn codegen_delete(
         let phase2_read_regs = ctx.registers.alloc_block(table_columns.len());
         ctx.body_emitter
             .emit(Operation::ReadCursor(phase2_read_regs.clone(), cursor_reg));
-
-        for (index, &index_cursor_reg) in indexes.iter().zip(index_cursor_regs.iter()) {
-            let col_value_regs: Vec<Reg> = index
-                .column_idxs
-                .iter()
-                .map(|&col_idx| phase2_read_regs[col_idx])
-                .collect();
-            ctx.body_emitter.emit(Operation::DeleteIndex(
-                index_cursor_reg,
-                col_value_regs,
-                key_reg,
-            ));
-        }
+        emit_delete_indexes(indexes, &index_cursor_regs, &phase2_read_regs, key_reg, ctx);
     }
 
     ctx.body_emitter.emit(Operation::DeleteCursor(cursor_reg));
