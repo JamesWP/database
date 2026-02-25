@@ -1190,32 +1190,30 @@ mod test {
         // Test INSERT with mix of integers, floats, strings
         let stmt = parse("INSERT INTO sprocket VALUES (1, 4.5, 'test', .5, 5., 1e-3)").unwrap();
         match stmt {
-            ast::Statement::Insert(ins) => {
-                match ins.source {
-                    ast::InsertSource::Values(rows) => {
-                        assert_eq!(rows[0].len(), 6);
-                        match &rows[0][0] {
-                            ast::Expression::Value(ast::ScalarValue::IntegerNumber(n)) => {
-                                assert_eq!(*n, 1);
-                            }
-                            other => panic!("Expected IntegerNumber(1), got {:?}", other),
+            ast::Statement::Insert(ins) => match ins.source {
+                ast::InsertSource::Values(rows) => {
+                    assert_eq!(rows[0].len(), 6);
+                    match &rows[0][0] {
+                        ast::Expression::Value(ast::ScalarValue::IntegerNumber(n)) => {
+                            assert_eq!(*n, 1);
                         }
-                        match &rows[0][1] {
-                            ast::Expression::Value(ast::ScalarValue::FloatingNumber(n)) => {
-                                assert_eq!(*n, 4.5);
-                            }
-                            other => panic!("Expected FloatingNumber(4.5), got {:?}", other),
-                        }
-                        match &rows[0][2] {
-                            ast::Expression::Value(ast::ScalarValue::StringLiteral(s)) => {
-                                assert_eq!(s, "test");
-                            }
-                            other => panic!("Expected StringLiteral('test'), got {:?}", other),
-                        }
+                        other => panic!("Expected IntegerNumber(1), got {:?}", other),
                     }
-                    _ => panic!("Expected Values source"),
+                    match &rows[0][1] {
+                        ast::Expression::Value(ast::ScalarValue::FloatingNumber(n)) => {
+                            assert_eq!(*n, 4.5);
+                        }
+                        other => panic!("Expected FloatingNumber(4.5), got {:?}", other),
+                    }
+                    match &rows[0][2] {
+                        ast::Expression::Value(ast::ScalarValue::StringLiteral(s)) => {
+                            assert_eq!(s, "test");
+                        }
+                        other => panic!("Expected StringLiteral('test'), got {:?}", other),
+                    }
                 }
-            }
+                _ => panic!("Expected Values source"),
+            },
             _ => panic!("Expected Insert statement"),
         }
     }

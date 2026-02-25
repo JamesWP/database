@@ -80,11 +80,7 @@ impl Mode for SqlMode {
                         .iter()
                         .enumerate()
                         .map(|(i, name)| {
-                            format!(
-                                "{:<width$}",
-                                name.bold().white(),
-                                width = col_widths[i]
-                            )
+                            format!("{:<width$}", name.bold().white(), width = col_widths[i])
                         })
                         .collect();
                     output += &header.join(&" │ ".truecolor(90, 90, 90).to_string());
