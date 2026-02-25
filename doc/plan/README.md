@@ -58,7 +58,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **U** | UPDATE Index Maintenance | 3 | [phase-u-update-index-maintenance.md](completed/phase-u-update-index-maintenance.md) | Completed |
 | **V** | README Overhaul | 2 | [phase-v-readme-overhaul.md](phase-v-readme-overhaul.md) | Planned |
 | **W** | Planner Architecture | 3 | [phase-w-planner-architecture.md](phase-w-planner-architecture.md) | Planned |
-| **X** | Compiler Index Codegen Cleanup | 1 | [phase-x-compiler-cleanup.md](phase-x-compiler-cleanup.md) | Planned |
+| **X** | Compiler Index Codegen Cleanup | 1 | [phase-x-compiler-cleanup.md](completed/phase-x-compiler-cleanup.md) | Completed |
 
 ## Current Test Coverage (161 tests)
 
