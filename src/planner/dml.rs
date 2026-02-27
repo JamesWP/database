@@ -5,11 +5,9 @@ use crate::storage::BTree;
 
 use schema::resolve_table;
 
-use super::{
-    schema, IndexMaintenanceInfo, Literal, LogicalPlan, PlanError, PlanExpr,
-};
 use super::resolver::{convert_expr, eval_constant, NoColumnResolver, SingleTableResolver};
 use super::select::output_width;
+use super::{schema, IndexMaintenanceInfo, Literal, LogicalPlan, PlanError, PlanExpr};
 
 pub(super) fn plan_insert(
     insert: ast::InsertStatement,
