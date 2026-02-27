@@ -1,63 +1,257 @@
 //! Query optimizer: rewrites a naive LogicalPlan tree to use indexes and elide redundant sorts.
 
-use crate::frontend::ast;
+use crate::frontend::ast::Statement;
+use crate::frontend::parse;
 use crate::storage::BTree;
 
-use super::{schema, Literal, LogicalPlan};
+use super::{BinaryOp, Literal, LogicalPlan, PlanExpr, UnaryOp};
 
 /// Apply optimization rules to a naive LogicalPlan.
 ///
-/// Currently a pass-through; rules are implemented in item 93.2.
-pub(super) fn optimize(plan: LogicalPlan, _btree: &BTree) -> LogicalPlan {
-    plan
+/// Rule 1: Filter(predicate, Scan) → IndexScan+RowidLookup when a matching index exists.
+/// Rule 2: Sort(keys, plan) → plan when an IndexScan below already provides the ordering.
+pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
+    match plan {
+        // Rule 1: Scan+Filter → IndexScan+RowidLookup when a matching index exists.
+        LogicalPlan::Filter { predicate, input } => {
+            let opt_input = optimize(*input, btree);
+            if let LogicalPlan::Scan {
+                rootpage,
+                ref columns,
+                ..
+            } = opt_input
+            {
+                if let Some(index_plan) = try_index_scan_plan(&predicate, rootpage, columns, btree)
+                {
+                    return index_plan;
+                }
+            }
+            LogicalPlan::Filter {
+                predicate,
+                input: Box::new(opt_input),
+            }
+        }
+
+        // Rule 2: Sort → elided when IndexScan below already provides the ordering.
+        LogicalPlan::Sort { sort_keys, input } => {
+            let opt_input = optimize(*input, btree);
+            // Elide sort if there is exactly one ASC key and an IndexScan provides the order.
+            let elide = if sort_keys.len() == 1 && !sort_keys[0].descending {
+                if let PlanExpr::ColumnRef(proj_idx) = sort_keys[0].expr {
+                    can_elide_sort_by_proj(&opt_input, proj_idx)
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if elide {
+                opt_input
+            } else {
+                LogicalPlan::Sort {
+                    sort_keys,
+                    input: Box::new(opt_input),
+                }
+            }
+        }
+
+        // Single-child nodes: recurse.
+        LogicalPlan::Project { columns, input } => LogicalPlan::Project {
+            columns,
+            input: Box::new(optimize(*input, btree)),
+        },
+        LogicalPlan::Limit { count, input } => LogicalPlan::Limit {
+            count,
+            input: Box::new(optimize(*input, btree)),
+        },
+        LogicalPlan::Count { input } => LogicalPlan::Count {
+            input: Box::new(optimize(*input, btree)),
+        },
+        LogicalPlan::Aggregate {
+            input,
+            group_keys,
+            aggregates,
+            having,
+        } => LogicalPlan::Aggregate {
+            input: Box::new(optimize(*input, btree)),
+            group_keys,
+            aggregates,
+            having,
+        },
+        LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
+            input: Box::new(optimize(*input, btree)),
+        },
+        LogicalPlan::RowidLookup {
+            input,
+            table_rootpage,
+            columns,
+        } => LogicalPlan::RowidLookup {
+            input: Box::new(optimize(*input, btree)),
+            table_rootpage,
+            columns,
+        },
+        LogicalPlan::PopulateIndex {
+            input,
+            index_rootpage,
+            column_idxs,
+        } => LogicalPlan::PopulateIndex {
+            input: Box::new(optimize(*input, btree)),
+            index_rootpage,
+            column_idxs,
+        },
+
+        // Two-child node.
+        LogicalPlan::Join {
+            left,
+            right,
+            on_condition,
+            left_column_count,
+        } => LogicalPlan::Join {
+            left: Box::new(optimize(*left, btree)),
+            right: Box::new(optimize(*right, btree)),
+            on_condition,
+            left_column_count,
+        },
+
+        // Leaf and DML nodes: no optimization.
+        other => other,
+    }
 }
 
-/// Try to replace a Scan+Filter with an IndexScan+RowidLookup when a matching index exists.
-pub(super) fn try_index_scan(
-    filter: &ast::Expression,
-    table_name: &str,
+/// Try to replace Filter(predicate, Scan{rootpage}) with IndexScan+RowidLookup.
+///
+/// Works on the already-resolved PlanExpr predicate. Looks up the table name from
+/// the rootpage, then finds a matching index.
+fn try_index_scan_plan(
+    predicate: &PlanExpr,
     table_rootpage: u32,
     scan_columns: &[usize],
-    table_columns: &[schema::Column],
     btree: &BTree,
 ) -> Option<LogicalPlan> {
-    let (col_name, lower_bound, upper_bound) =
-        if let Some((col, lit)) = extract_equality_filter(filter) {
-            // Equality: col = X → [X, X] inclusive on both sides
-            (col, Some((lit.clone(), true)), Some((lit, true)))
-        } else if let Some(col) = extract_is_null_filter(filter) {
-            // IS NULL: use Null literal as both bounds
-            (
-                col,
-                Some((Literal::Null, true)),
-                Some((Literal::Null, true)),
-            )
-        } else {
-            extract_range_filter(filter)?
-        };
+    let table_name = btree.lookup_table_name_by_rootpage(table_rootpage)?;
+    let indexes = btree.lookup_indexes_for_table(&table_name);
+    if indexes.is_empty() {
+        return None;
+    }
 
-    let indexes = btree.lookup_indexes_for_table(table_name);
-    // Find an index whose first column matches col_name (prefix matching)
-    let index = indexes
-        .iter()
-        .find(|idx| idx.column_names.first().map(|s| s.as_str()) == Some(col_name.as_str()))?;
+    // extract_index_bounds returns a scan-output column index (ColumnRef position).
+    // We remap it to the table column index via scan_columns.
+    let (scan_out_idx, lower_bound, upper_bound) = extract_index_bounds(predicate)?;
+    let table_col_idx = *scan_columns.get(scan_out_idx)?;
 
-    // Resolve the column name to a table column index
-    let index_col_idx = table_columns
-        .iter()
-        .position(|c| c.name == col_name)
-        .unwrap_or(0);
+    // Find an index whose first column (by TABLE column index) matches table_col_idx.
+    let index = indexes.iter().find(|idx| {
+        idx.column_names
+            .first()
+            .and_then(|col_name| {
+                // Resolve the column name to a table column index.
+                btree.lookup_table(&table_name).and_then(|(_, sql)| {
+                    parse(&sql).ok().and_then(|stmt| match stmt {
+                        Statement::CreateTable(ct) => {
+                            ct.columns.iter().position(|c| c.name == *col_name)
+                        }
+                        _ => None,
+                    })
+                })
+            })
+            .unwrap_or(usize::MAX)
+            == table_col_idx
+    })?;
 
     Some(LogicalPlan::RowidLookup {
         input: Box::new(LogicalPlan::IndexScan {
             index_rootpage: index.rootpage,
-            index_col_idx,
+            index_col_idx: table_col_idx,
             lower_bound,
             upper_bound,
         }),
         table_rootpage,
         columns: scan_columns.to_vec(),
     })
+}
+
+/// Extract (column_index, lower_bound, upper_bound) from a PlanExpr filter predicate.
+/// Returns None if the predicate is not a supported index filter shape.
+fn extract_index_bounds(
+    predicate: &PlanExpr,
+) -> Option<(usize, Option<(Literal, bool)>, Option<(Literal, bool)>)> {
+    match predicate {
+        // Equality: col = lit or lit = col
+        PlanExpr::BinaryOp {
+            op: BinaryOp::Equals,
+            left,
+            right,
+        } => {
+            if let (PlanExpr::ColumnRef(col), PlanExpr::Literal(lit)) =
+                (left.as_ref(), right.as_ref())
+            {
+                return Some((*col, Some((lit.clone(), true)), Some((lit.clone(), true))));
+            }
+            if let (PlanExpr::Literal(lit), PlanExpr::ColumnRef(col)) =
+                (left.as_ref(), right.as_ref())
+            {
+                return Some((*col, Some((lit.clone(), true)), Some((lit.clone(), true))));
+            }
+            None
+        }
+
+        // IS NULL: col IS NULL
+        PlanExpr::UnaryOp {
+            op: UnaryOp::IsNull,
+            operand,
+        } => {
+            if let PlanExpr::ColumnRef(col) = operand.as_ref() {
+                return Some((
+                    *col,
+                    Some((Literal::Null, true)),
+                    Some((Literal::Null, true)),
+                ));
+            }
+            None
+        }
+
+        // Range comparisons and AND combinations
+        PlanExpr::BinaryOp { op, left, right } => {
+            // Single range: col op lit
+            if let (PlanExpr::ColumnRef(col), PlanExpr::Literal(lit)) =
+                (left.as_ref(), right.as_ref())
+            {
+                match op {
+                    BinaryOp::GreaterThan => {
+                        return Some((*col, Some((lit.clone(), false)), None));
+                    }
+                    BinaryOp::GreaterThanOrEqual => {
+                        return Some((*col, Some((lit.clone(), true)), None));
+                    }
+                    BinaryOp::LessThan => {
+                        return Some((*col, None, Some((lit.clone(), false))));
+                    }
+                    BinaryOp::LessThanOrEqual => {
+                        return Some((*col, None, Some((lit.clone(), true))));
+                    }
+                    _ => {}
+                }
+            }
+            // AND combination: (col > L) AND (col < U)
+            if let BinaryOp::And = op {
+                let left_bounds = extract_index_bounds(left)?;
+                let right_bounds = extract_index_bounds(right)?;
+                if left_bounds.0 != right_bounds.0 {
+                    return None; // Different columns
+                }
+                let col = left_bounds.0;
+                let lower = left_bounds.1.or(right_bounds.1);
+                let upper = left_bounds.2.or(right_bounds.2);
+                if lower.is_none() && upper.is_none() {
+                    return None;
+                }
+                return Some((col, lower, upper));
+            }
+            None
+        }
+
+        _ => None,
+    }
 }
 
 /// Returns true if the plan tree rooted at `plan` contains an IndexScan on
@@ -77,116 +271,216 @@ pub(super) fn can_elide_sort(plan: &LogicalPlan, sort_col_idx: usize) -> bool {
     }
 }
 
-/// Extract a range filter from an expression involving a single column.
-/// Returns (column_name, lower_bound, upper_bound).
-/// Each bound is (Literal, inclusive: bool).
-pub(super) fn extract_range_filter(
-    expr: &ast::Expression,
-) -> Option<(String, Option<(Literal, bool)>, Option<(Literal, bool)>)> {
-    // Try single comparison: col > lit, col >= lit, col < lit, col <= lit
-    if let Some((col, lower, upper)) = extract_single_range(expr) {
-        return Some((col, lower, upper));
-    }
-    // Try AND: (col > L) AND (col < U)
-    if let ast::Expression::BinaryOp {
-        op: ast::BinaryOp::And,
-        lhs,
-        rhs,
-    } = expr
-    {
-        let left = extract_single_range(lhs)?;
-        let right = extract_single_range(rhs)?;
-        if left.0 != right.0 {
-            return None; // Different columns
-        }
-        let col = left.0;
-        let lower = left.1.or(right.1);
-        let upper = left.2.or(right.2);
-        if lower.is_none() && upper.is_none() {
-            return None;
-        }
-        return Some((col, lower, upper));
-    }
-    None
-}
-
-pub(super) fn extract_single_range(
-    expr: &ast::Expression,
-) -> Option<(String, Option<(Literal, bool)>, Option<(Literal, bool)>)> {
-    let ast::Expression::BinaryOp { op, lhs, rhs } = expr else {
-        return None;
-    };
-    match op {
-        ast::BinaryOp::GreaterThan => {
-            let col = extract_column_name(lhs)?;
-            let lit = extract_literal(rhs)?;
-            Some((col, Some((lit, false)), None))
-        }
-        ast::BinaryOp::GreaterThanOrEqual => {
-            let col = extract_column_name(lhs)?;
-            let lit = extract_literal(rhs)?;
-            Some((col, Some((lit, true)), None))
-        }
-        ast::BinaryOp::LessThan => {
-            let col = extract_column_name(lhs)?;
-            let lit = extract_literal(rhs)?;
-            Some((col, None, Some((lit, false))))
-        }
-        ast::BinaryOp::LessThanOrEqual => {
-            let col = extract_column_name(lhs)?;
-            let lit = extract_literal(rhs)?;
-            Some((col, None, Some((lit, true))))
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn extract_is_null_filter(expr: &ast::Expression) -> Option<String> {
-    match expr {
-        ast::Expression::UnaryOp {
-            op: ast::UnaryOp::IsNull,
-            expression,
-        } => extract_column_name(expression),
-        _ => None,
-    }
-}
-
-pub(super) fn extract_equality_filter(expr: &ast::Expression) -> Option<(String, Literal)> {
-    match expr {
-        ast::Expression::BinaryOp { op, lhs, rhs } if matches!(op, ast::BinaryOp::Equals) => {
-            // Case 1: col = literal
-            if let Some(col) = extract_column_name(lhs) {
-                if let Some(lit) = extract_literal(rhs) {
-                    return Some((col, lit));
-                }
+/// Like can_elide_sort but takes a projection-space index and looks through
+/// Project nodes to map back to scan-space.
+fn can_elide_sort_by_proj(plan: &LogicalPlan, proj_idx: usize) -> bool {
+    match plan {
+        LogicalPlan::Project { columns, input } => {
+            // Map proj_idx → scan column index via the project expressions.
+            if let Some(PlanExpr::ColumnRef(scan_idx)) = columns.get(proj_idx) {
+                can_elide_sort(input, *scan_idx)
+            } else {
+                false
             }
-            // Case 2: literal = col
-            if let Some(col) = extract_column_name(rhs) {
-                if let Some(lit) = extract_literal(lhs) {
-                    return Some((col, lit));
-                }
-            }
-            None
         }
-        _ => None,
+        other => can_elide_sort(other, proj_idx),
     }
 }
 
-pub(super) fn extract_column_name(expr: &ast::Expression) -> Option<String> {
-    match expr {
-        ast::Expression::Value(ast::ScalarValue::Identifier(name)) => Some(name.clone()),
-        _ => None,
-    }
-}
+// ============================================================================
+// Tests
+// ============================================================================
 
-pub(super) fn extract_literal(expr: &ast::Expression) -> Option<Literal> {
-    match expr {
-        ast::Expression::Value(s) => match s {
-            ast::ScalarValue::IntegerNumber(i) => Some(Literal::Integer(*i)),
-            ast::ScalarValue::StringLiteral(s) => Some(Literal::String(s.clone())),
-            ast::ScalarValue::FloatingNumber(f) => Some(Literal::Float(*f)),
-            _ => None,
-        },
-        _ => None,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::planner::SortKey;
+    use crate::test::TestDb;
+
+    /// Create a test database with users(id, name, age) table.
+    fn make_users_db() -> (TestDb, u32) {
+        let mut db = TestDb::default();
+        let root = db.btree.create_tree();
+        db.btree.insert_schema_entry(
+            "table",
+            "users",
+            "users",
+            root,
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+        );
+        (db, root)
+    }
+
+    /// Create a test database with users(id, name, age) and an index on age.
+    fn make_users_db_with_age_index() -> (TestDb, u32) {
+        let (mut db, root) = make_users_db();
+        let idx_root = db.btree.create_tree();
+        db.btree.insert_schema_entry(
+            "index",
+            "idx_age",
+            "users",
+            idx_root,
+            "CREATE INDEX idx_age ON users (age)",
+        );
+        (db, root)
+    }
+
+    fn make_index_scan(
+        table_rootpage: u32,
+        index_rootpage: u32,
+        index_col_idx: usize,
+    ) -> LogicalPlan {
+        LogicalPlan::RowidLookup {
+            input: Box::new(LogicalPlan::IndexScan {
+                index_rootpage,
+                index_col_idx,
+                lower_bound: Some((Literal::Integer(30), true)),
+                upper_bound: Some((Literal::Integer(30), true)),
+            }),
+            table_rootpage,
+            columns: vec![0, 1, 2],
+        }
+    }
+
+    fn plan_contains_index_scan(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::IndexScan { .. } => true,
+            LogicalPlan::Filter { input, .. }
+            | LogicalPlan::Project { input, .. }
+            | LogicalPlan::Limit { input, .. }
+            | LogicalPlan::Sort { input, .. }
+            | LogicalPlan::Count { input }
+            | LogicalPlan::Distinct { input }
+            | LogicalPlan::RowidLookup { input, .. }
+            | LogicalPlan::PopulateIndex { input, .. } => plan_contains_index_scan(input),
+            LogicalPlan::Aggregate { input, .. } => plan_contains_index_scan(input),
+            LogicalPlan::Join { left, right, .. } => {
+                plan_contains_index_scan(left) || plan_contains_index_scan(right)
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn naive_plan_never_contains_index_scan() {
+        // Verify that plan_select alone (without optimize) never produces IndexScan
+        // even when an index is available.
+        let (db, _root) = make_users_db_with_age_index();
+
+        let naive = super::super::select::plan_select(
+            match crate::frontend::parse("SELECT * FROM users WHERE age = 30").unwrap() {
+                crate::frontend::ast::Statement::Select(s) => s,
+                _ => panic!("expected select"),
+            },
+            &db.btree,
+        )
+        .expect("plan_select failed");
+
+        assert!(
+            !plan_contains_index_scan(&naive),
+            "naive plan should not contain IndexScan, got: {:?}",
+            naive
+        );
+    }
+
+    #[test]
+    fn optimizer_promotes_scan_filter_to_index_scan() {
+        // Build Filter(age=30, Scan) manually, call optimize(), assert IndexScan+RowidLookup.
+        let (db, root) = make_users_db_with_age_index();
+
+        // col index 2 = age (users: id=0, name=1, age=2)
+        let naive = LogicalPlan::Filter {
+            predicate: PlanExpr::BinaryOp {
+                op: BinaryOp::Equals,
+                left: Box::new(PlanExpr::ColumnRef(2)),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(30))),
+            },
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: root,
+                columns: vec![0, 1, 2],
+                with_key: false,
+            }),
+        };
+
+        let optimized = optimize(naive, &db.btree);
+        assert!(
+            matches!(&optimized, LogicalPlan::RowidLookup { input, .. }
+                if matches!(input.as_ref(), LogicalPlan::IndexScan { .. })),
+            "expected RowidLookup(IndexScan), got: {:?}",
+            optimized
+        );
+    }
+
+    #[test]
+    fn optimizer_elides_sort_over_index_scan() {
+        // Build Sort(age ASC, Project(RowidLookup(IndexScan(age)))) and assert Sort is absent.
+        let (db, root) = make_users_db_with_age_index();
+        let idx_root = db.btree.lookup_indexes_for_table("users")[0].rootpage;
+
+        let index_plan = make_index_scan(root, idx_root, 2); // age is col 2
+
+        // Wrap in Project: pass all 3 columns through
+        let project = LogicalPlan::Project {
+            columns: vec![
+                PlanExpr::ColumnRef(0),
+                PlanExpr::ColumnRef(1),
+                PlanExpr::ColumnRef(2),
+            ],
+            input: Box::new(index_plan),
+        };
+
+        let sort_plan = LogicalPlan::Sort {
+            sort_keys: vec![SortKey {
+                expr: PlanExpr::ColumnRef(2), // proj index 2 = age
+                descending: false,
+            }],
+            input: Box::new(project),
+        };
+
+        let optimized = optimize(sort_plan, &db.btree);
+        assert!(
+            !matches!(optimized, LogicalPlan::Sort { .. }),
+            "expected Sort to be elided, got: {:?}",
+            optimized
+        );
+    }
+
+    #[test]
+    fn optimizer_keeps_sort_when_no_index() {
+        // Build Sort(age ASC, Project(Filter(age=30, Scan))) with no index → Sort must remain.
+        let (db, root) = make_users_db(); // no index
+
+        let plan = LogicalPlan::Sort {
+            sort_keys: vec![SortKey {
+                expr: PlanExpr::ColumnRef(2),
+                descending: false,
+            }],
+            input: Box::new(LogicalPlan::Project {
+                columns: vec![
+                    PlanExpr::ColumnRef(0),
+                    PlanExpr::ColumnRef(1),
+                    PlanExpr::ColumnRef(2),
+                ],
+                input: Box::new(LogicalPlan::Filter {
+                    predicate: PlanExpr::BinaryOp {
+                        op: BinaryOp::Equals,
+                        left: Box::new(PlanExpr::ColumnRef(2)),
+                        right: Box::new(PlanExpr::Literal(Literal::Integer(30))),
+                    },
+                    input: Box::new(LogicalPlan::Scan {
+                        rootpage: root,
+                        columns: vec![0, 1, 2],
+                        with_key: false,
+                    }),
+                }),
+            }),
+        };
+
+        let optimized = optimize(plan, &db.btree);
+        assert!(
+            matches!(optimized, LogicalPlan::Sort { .. }),
+            "expected Sort to remain when no index, got: {:?}",
+            optimized
+        );
     }
 }
