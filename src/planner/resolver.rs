@@ -630,3 +630,635 @@ pub(super) fn ast_expr_name(expr: &ast::Expression) -> String {
         _ => "?".to_string(),
     }
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frontend::ast;
+    use crate::planner::{BinaryOp, Literal, PlanError, PlanExpr, UnaryOp};
+    use std::collections::{HashMap, HashSet};
+
+    fn make_column_map() -> HashMap<String, usize> {
+        // Simulates: Scan { columns: [0, 1, 2] } for users(id, name, age)
+        // So id → 0, name → 1, age → 2 in scan output
+        let mut map = HashMap::new();
+        map.insert("id".to_string(), 0);
+        map.insert("name".to_string(), 1);
+        map.insert("age".to_string(), 2);
+        map
+    }
+
+    // ========================================================================
+    // Expression Converter Tests
+    // ========================================================================
+
+    #[test]
+    fn test_convert_integer_literal() {
+        let columns = make_column_map();
+        let resolver = SingleTableResolver {
+            table_ref: "users",
+            columns: &columns,
+        };
+
+        let expr = ast::Expression::Value(ast::ScalarValue::IntegerNumber(42));
+        let result = convert_expr(&expr, &resolver).unwrap();
+
+        assert_eq!(result, PlanExpr::Literal(Literal::Integer(42)));
+    }
+
+    #[test]
+    fn test_convert_float_literal() {
+        let columns = make_column_map();
+        let resolver = SingleTableResolver {
+            table_ref: "users",
+            columns: &columns,
+        };
+
+        let expr = ast::Expression::Value(ast::ScalarValue::FloatingNumber(3.14));
+        let result = convert_expr(&expr, &resolver).unwrap();
+
+        assert_eq!(result, PlanExpr::Literal(Literal::Float(3.14)));
+    }
+
+    #[test]
+    fn test_convert_column_ref() {
+        let columns = make_column_map();
+        let resolver = SingleTableResolver {
+            table_ref: "users",
+            columns: &columns,
+        };
+
+        let expr = ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()));
+        let result = convert_expr(&expr, &resolver).unwrap();
+
+        assert_eq!(result, PlanExpr::ColumnRef(2));
+    }
+
+    #[test]
+    fn test_convert_qualified_column_ref() {
+        let columns = make_column_map();
+        let resolver = SingleTableResolver {
+            table_ref: "users",
+            columns: &columns,
+        };
+
+        // users.name
+        let table_expr = Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+            "users".to_string(),
+        )));
+        let expr = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
+            table_expr,
+            "name".to_string(),
+        ));
+        let result = convert_expr(&expr, &resolver).unwrap();
+
+        assert_eq!(result, PlanExpr::ColumnRef(1));
+    }
+
+    #[test]
+    fn test_convert_qualified_column_wrong_table() {
+        let columns = make_column_map();
+        let resolver = SingleTableResolver {
+            table_ref: "users",
+            columns: &columns,
+        };
+
+        // other.name - should fail because "other" != "users"
+        let table_expr = Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+            "other".to_string(),
+        )));
+        let expr = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
+            table_expr,
+            "name".to_string(),
+        ));
+        let result = convert_expr(&expr, &resolver);
+
+        assert_eq!(result, Err(PlanError::TableNotFound("other".to_string())));
+    }
+
+    #[test]
+    fn test_convert_column_not_found() {
+        let columns = make_column_map();
+        let resolver = SingleTableResolver {
+            table_ref: "users",
+            columns: &columns,
+        };
+
+        let expr = ast::Expression::Value(ast::ScalarValue::Identifier("nonexistent".to_string()));
+        let result = convert_expr(&expr, &resolver);
+
+        assert_eq!(
+            result,
+            Err(PlanError::ColumnNotFound {
+                table: "users".to_string(),
+                column: "nonexistent".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_convert_binary_comparison() {
+        let columns = make_column_map();
+        let resolver = SingleTableResolver {
+            table_ref: "users",
+            columns: &columns,
+        };
+
+        // age > 21
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::GreaterThan,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "age".to_string(),
+            ))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(21))),
+        };
+        let result = convert_expr(&expr, &resolver).unwrap();
+
+        assert_eq!(
+            result,
+            PlanExpr::BinaryOp {
+                op: BinaryOp::GreaterThan,
+                left: Box::new(PlanExpr::ColumnRef(2)),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(21))),
+            }
+        );
+    }
+
+    #[test]
+    fn test_convert_unary_negate() {
+        let columns = make_column_map();
+        let resolver = SingleTableResolver {
+            table_ref: "users",
+            columns: &columns,
+        };
+
+        // -age
+        let expr = ast::Expression::UnaryOp {
+            op: ast::UnaryOp::Negate,
+            expression: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "age".to_string(),
+            ))),
+        };
+        let result = convert_expr(&expr, &resolver).unwrap();
+
+        assert_eq!(
+            result,
+            PlanExpr::UnaryOp {
+                op: UnaryOp::Negate,
+                operand: Box::new(PlanExpr::ColumnRef(2)),
+            }
+        );
+    }
+
+    #[test]
+    fn test_convert_nested_expression() {
+        let columns = make_column_map();
+        let resolver = SingleTableResolver {
+            table_ref: "users",
+            columns: &columns,
+        };
+
+        // (age + 1) > 21
+        let age_plus_one = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Sum,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "age".to_string(),
+            ))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(1))),
+        };
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::GreaterThan,
+            lhs: Box::new(age_plus_one),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(21))),
+        };
+        let result = convert_expr(&expr, &resolver).unwrap();
+
+        let expected = PlanExpr::BinaryOp {
+            op: BinaryOp::GreaterThan,
+            left: Box::new(PlanExpr::BinaryOp {
+                op: BinaryOp::Add,
+                left: Box::new(PlanExpr::ColumnRef(2)),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(1))),
+            }),
+            right: Box::new(PlanExpr::Literal(Literal::Integer(21))),
+        };
+        assert_eq!(result, expected);
+    }
+
+    // ========================================================================
+    // Column Collection Tests
+    // ========================================================================
+
+    #[test]
+    fn test_collect_simple_column() {
+        let expr = ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()));
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["age".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_qualified_column() {
+        // users.name
+        let table_expr = Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+            "users".to_string(),
+        )));
+        let expr = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
+            table_expr,
+            "name".to_string(),
+        ));
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["name".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_literal_no_columns() {
+        let expr = ast::Expression::Value(ast::ScalarValue::IntegerNumber(42));
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert!(columns.is_empty());
+    }
+
+    #[test]
+    fn test_collect_binary_expr_columns() {
+        // age > 21
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::GreaterThan,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "age".to_string(),
+            ))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(21))),
+        };
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["age".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_multiple_columns() {
+        // name = age (contrived but tests collecting from both sides)
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Equals,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "name".to_string(),
+            ))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "age".to_string(),
+            ))),
+        };
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(
+            columns,
+            HashSet::from(["name".to_string(), "age".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_collect_nested_columns() {
+        // (age + 1) > id
+        let age_plus_one = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Sum,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "age".to_string(),
+            ))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(1))),
+        };
+        let expr = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::GreaterThan,
+            lhs: Box::new(age_plus_one),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "id".to_string(),
+            ))),
+        };
+        let mut columns = HashSet::new();
+        collect_columns(&expr, &mut columns);
+
+        assert_eq!(
+            columns,
+            HashSet::from(["age".to_string(), "id".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_collect_from_column_expr_named() {
+        // SELECT age AS user_age
+        let col_expr = ast::ColumnExpression::Named {
+            name: "user_age".to_string(),
+            expression: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "age".to_string(),
+            ))),
+        };
+        let mut columns = HashSet::new();
+        collect_columns_from_column_expr(&col_expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["age".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_from_column_expr_anonymous() {
+        // SELECT age + 1
+        let col_expr = ast::ColumnExpression::Anonyomous(Box::new(ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Sum,
+            lhs: Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "age".to_string(),
+            ))),
+            rhs: Box::new(ast::Expression::Value(ast::ScalarValue::IntegerNumber(1))),
+        }));
+        let mut columns = HashSet::new();
+        collect_columns_from_column_expr(&col_expr, &mut columns);
+
+        assert_eq!(columns, HashSet::from(["age".to_string()]));
+    }
+
+    // ========================================================================
+    // Column Mapping Tests
+    // ========================================================================
+
+    fn make_test_table() -> schema::Table {
+        schema::Table {
+            name: "users".to_string(),
+            rootpage: 5,
+            columns: vec![
+                schema::Column {
+                    name: "id".to_string(),
+                },
+                schema::Column {
+                    name: "name".to_string(),
+                },
+                schema::Column {
+                    name: "age".to_string(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_build_column_mapping_simple() {
+        let table = make_test_table();
+        let columns = HashSet::from(["id".to_string(), "name".to_string()]);
+
+        let mapping = build_column_mapping(&columns, &table, "users").unwrap();
+
+        // Scan should read columns [0, 1] (id, name) in table order
+        assert_eq!(mapping.scan_columns, vec![0, 1]);
+        // id is at scan position 0, name is at scan position 1
+        assert_eq!(mapping.column_map.get("id"), Some(&0));
+        assert_eq!(mapping.column_map.get("name"), Some(&1));
+    }
+
+    #[test]
+    fn test_build_column_mapping_reordered() {
+        let table = make_test_table();
+        // Request columns in different order than table schema
+        let columns = HashSet::from(["age".to_string(), "id".to_string()]);
+
+        let mapping = build_column_mapping(&columns, &table, "users").unwrap();
+
+        // Scan should read columns [0, 2] (id, age) in table order
+        assert_eq!(mapping.scan_columns, vec![0, 2]);
+        // id is at scan position 0, age is at scan position 1
+        assert_eq!(mapping.column_map.get("id"), Some(&0));
+        assert_eq!(mapping.column_map.get("age"), Some(&1));
+    }
+
+    #[test]
+    fn test_build_column_mapping_all_columns() {
+        let table = make_test_table();
+        let columns = HashSet::from(["id".to_string(), "name".to_string(), "age".to_string()]);
+
+        let mapping = build_column_mapping(&columns, &table, "users").unwrap();
+
+        assert_eq!(mapping.scan_columns, vec![0, 1, 2]);
+        assert_eq!(mapping.column_map.get("id"), Some(&0));
+        assert_eq!(mapping.column_map.get("name"), Some(&1));
+        assert_eq!(mapping.column_map.get("age"), Some(&2));
+    }
+
+    #[test]
+    fn test_build_column_mapping_column_not_found() {
+        let table = make_test_table();
+        let columns = HashSet::from(["nonexistent".to_string()]);
+
+        let result = build_column_mapping(&columns, &table, "users");
+
+        assert_eq!(
+            result,
+            Err(PlanError::ColumnNotFound {
+                table: "users".to_string(),
+                column: "nonexistent".to_string(),
+            })
+        );
+    }
+
+    // ========================================================================
+    // Join Resolver Tests
+    // ========================================================================
+
+    #[test]
+    fn test_join_resolver() {
+        // Build a JoinResolver with:
+        //   left: columns [id, name, dept_id], alias "e"
+        //   right: columns [id, name], alias "d"
+        use std::collections::HashMap;
+
+        let left_table = schema::Table {
+            name: "employees".to_string(),
+            rootpage: 1,
+            columns: vec![
+                schema::Column {
+                    name: "id".to_string(),
+                },
+                schema::Column {
+                    name: "name".to_string(),
+                },
+                schema::Column {
+                    name: "dept_id".to_string(),
+                },
+            ],
+        };
+
+        let right_table = schema::Table {
+            name: "departments".to_string(),
+            rootpage: 2,
+            columns: vec![
+                schema::Column {
+                    name: "id".to_string(),
+                },
+                schema::Column {
+                    name: "name".to_string(),
+                },
+            ],
+        };
+
+        // Build join column resolution maps
+        let mut qualified = HashMap::new();
+        let mut unqualified = HashMap::new();
+        let left_col_count = left_table.columns.len();
+
+        for (idx, col) in left_table.columns.iter().enumerate() {
+            qualified.insert(("e".to_string(), col.name.clone()), idx);
+            unqualified
+                .entry(col.name.clone())
+                .and_modify(|e| *e = None)
+                .or_insert(Some(idx));
+        }
+
+        for (idx, col) in right_table.columns.iter().enumerate() {
+            let combined_idx = left_col_count + idx;
+            qualified.insert(("d".to_string(), col.name.clone()), combined_idx);
+            unqualified
+                .entry(col.name.clone())
+                .and_modify(|e| *e = None)
+                .or_insert(Some(combined_idx));
+        }
+
+        // Test qualified resolution
+        assert_eq!(
+            qualified.get(&("e".to_string(), "name".to_string())),
+            Some(&1)
+        );
+        assert_eq!(
+            qualified.get(&("d".to_string(), "name".to_string())),
+            Some(&4)
+        );
+        assert_eq!(
+            qualified.get(&("e".to_string(), "dept_id".to_string())),
+            Some(&2)
+        );
+
+        // Test unqualified unique column
+        assert_eq!(unqualified.get("dept_id"), Some(&Some(2)));
+
+        // Test unqualified ambiguous columns (appear in both tables)
+        assert_eq!(unqualified.get("id"), Some(&None));
+        assert_eq!(unqualified.get("name"), Some(&None));
+
+        // Test missing column
+        assert_eq!(
+            qualified.get(&("e".to_string(), "nonexistent".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn test_convert_expr_with_join_resolver() {
+        use std::collections::HashMap;
+
+        let left_table = schema::Table {
+            name: "employees".to_string(),
+            rootpage: 1,
+            columns: vec![
+                schema::Column {
+                    name: "id".to_string(),
+                },
+                schema::Column {
+                    name: "dept_id".to_string(),
+                },
+            ],
+        };
+
+        let right_table = schema::Table {
+            name: "departments".to_string(),
+            rootpage: 2,
+            columns: vec![schema::Column {
+                name: "id".to_string(),
+            }],
+        };
+
+        // Build join column resolution maps
+        let mut qualified = HashMap::new();
+        let mut unqualified = HashMap::new();
+        let left_col_count = left_table.columns.len();
+
+        for (idx, col) in left_table.columns.iter().enumerate() {
+            qualified.insert(("e".to_string(), col.name.clone()), idx);
+            unqualified
+                .entry(col.name.clone())
+                .and_modify(|e| *e = None)
+                .or_insert(Some(idx));
+        }
+
+        for (idx, col) in right_table.columns.iter().enumerate() {
+            let combined_idx = left_col_count + idx;
+            qualified.insert(("d".to_string(), col.name.clone()), combined_idx);
+            unqualified
+                .entry(col.name.clone())
+                .and_modify(|e| *e = None)
+                .or_insert(Some(combined_idx));
+        }
+
+        let resolver = JoinResolver {
+            qualified: &qualified,
+            unqualified: &unqualified,
+        };
+
+        // Test qualified column: e.dept_id → ColumnRef(1)
+        let ast_expr = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
+            Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "e".to_string(),
+            ))),
+            "dept_id".to_string(),
+        ));
+        let plan_expr = convert_expr(&ast_expr, &resolver).unwrap();
+        assert_eq!(plan_expr, PlanExpr::ColumnRef(1));
+
+        // Test qualified column: d.id → ColumnRef(2)
+        let ast_expr2 = ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(
+            Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                "d".to_string(),
+            ))),
+            "id".to_string(),
+        ));
+        let plan_expr2 = convert_expr(&ast_expr2, &resolver).unwrap();
+        assert_eq!(plan_expr2, PlanExpr::ColumnRef(2));
+
+        // Test unqualified unique column: dept_id → ColumnRef(1)
+        let ast_expr3 = ast::Expression::Value(ast::ScalarValue::Identifier("dept_id".to_string()));
+        let plan_expr3 = convert_expr(&ast_expr3, &resolver).unwrap();
+        assert_eq!(plan_expr3, PlanExpr::ColumnRef(1));
+
+        // Test ambiguous column: id → Error
+        let ast_expr4 = ast::Expression::Value(ast::ScalarValue::Identifier("id".to_string()));
+        let result = convert_expr(&ast_expr4, &resolver);
+        assert!(matches!(result, Err(PlanError::AmbiguousColumn(_))));
+
+        // Test binary operation: e.dept_id = d.id
+        let ast_expr5 = ast::Expression::BinaryOp {
+            op: ast::BinaryOp::Equals,
+            lhs: Box::new(ast::Expression::Value(
+                ast::ScalarValue::MultiPartIdentifier(
+                    Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                        "e".to_string(),
+                    ))),
+                    "dept_id".to_string(),
+                ),
+            )),
+            rhs: Box::new(ast::Expression::Value(
+                ast::ScalarValue::MultiPartIdentifier(
+                    Box::new(ast::Expression::Value(ast::ScalarValue::Identifier(
+                        "d".to_string(),
+                    ))),
+                    "id".to_string(),
+                ),
+            )),
+        };
+        let plan_expr5 = convert_expr(&ast_expr5, &resolver).unwrap();
+        if let PlanExpr::BinaryOp { left, right, .. } = plan_expr5 {
+            assert_eq!(*left, PlanExpr::ColumnRef(1));
+            assert_eq!(*right, PlanExpr::ColumnRef(2));
+        } else {
+            panic!("Expected BinaryOp");
+        }
+    }
+}

@@ -210,3 +210,190 @@ pub(super) fn plan_delete(
         indexes,
     })
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use crate::frontend::{ast, parse};
+    use crate::planner::{plan, Literal, LogicalPlan, PlanError};
+    use crate::test::TestDb;
+
+    fn make_users_db() -> (TestDb, u32) {
+        let mut test = TestDb::default();
+        let users_root = test.btree.create_tree();
+        test.btree.insert_schema_entry(
+            "table",
+            "users",
+            "users",
+            users_root,
+            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
+        );
+        (test, users_root)
+    }
+
+    fn parse_sql(sql: &str) -> ast::Statement {
+        parse(sql).expect("Failed to parse SQL")
+    }
+
+    // ========================================================================
+    // INSERT Plan Tests
+    // ========================================================================
+
+    #[test]
+    fn test_plan_insert_basic() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("INSERT INTO users VALUES (1, 'alice', 30)");
+
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Insert {
+            rootpage: users_root,
+            table_columns: vec![0, 1, 2],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![
+                    Literal::Integer(1),
+                    Literal::String("alice".to_string()),
+                    Literal::Integer(30),
+                ]],
+            }),
+            indexes: vec![],
+        };
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_plan_insert_with_columns() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("INSERT INTO users (age, name) VALUES (30, 'alice')");
+
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Insert {
+            rootpage: users_root,
+            table_columns: vec![2, 1], // age=2, name=1
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![
+                    Literal::Integer(30),
+                    Literal::String("alice".to_string()),
+                ]],
+            }),
+            indexes: vec![],
+        };
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_plan_insert_column_count_mismatch() {
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("INSERT INTO users VALUES (1, 'alice')");
+
+        let result = plan(stmt, &test.btree);
+
+        assert_eq!(
+            result,
+            Err(PlanError::ColumnCountMismatch {
+                expected: 3,
+                got: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn test_plan_insert_with_expressions() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("INSERT INTO users VALUES (1+1, 'alice', 10*3)");
+
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Insert {
+            rootpage: users_root,
+            table_columns: vec![0, 1, 2],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![
+                    Literal::Integer(2),
+                    Literal::String("alice".to_string()),
+                    Literal::Integer(30),
+                ]],
+            }),
+            indexes: vec![],
+        };
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_plan_insert_table_not_found() {
+        let (test, _) = make_users_db();
+        let stmt = parse_sql("INSERT INTO nonexistent VALUES (1)");
+
+        let result = plan(stmt, &test.btree);
+
+        assert_eq!(
+            result,
+            Err(PlanError::TableNotFound("nonexistent".to_string()))
+        );
+    }
+
+    // ========================================================================
+    // DELETE Plan Tests
+    // ========================================================================
+
+    #[test]
+    fn test_plan_delete_gathers_indexes() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
+        let users_root = btree.create_tree();
+        btree.insert_schema_entry("table", "users", "users", users_root, sql_table);
+
+        let sql_index = "CREATE INDEX idx_age ON users(age)";
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry("index", "idx_age", "users", index_root, sql_index);
+
+        let stmt = parse_sql("DELETE FROM users WHERE id = 1");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+
+        if let LogicalPlan::Delete { indexes, .. } = plan {
+            assert_eq!(indexes.len(), 1);
+            assert_eq!(indexes[0].column_idxs, vec![1]); // age is column index 1
+            assert_eq!(indexes[0].rootpage, index_root);
+        } else {
+            panic!("Expected Delete plan");
+        }
+    }
+
+    // ========================================================================
+    // UPDATE Plan Tests
+    // ========================================================================
+
+    #[test]
+    fn test_plan_update_gathers_indexes() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+
+        let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
+        let users_root = btree.create_tree();
+        btree.insert_schema_entry("table", "users", "users", users_root, sql_table);
+
+        let sql_index = "CREATE INDEX idx_age ON users(age)";
+        let index_root = btree.create_tree();
+        btree.insert_schema_entry("index", "idx_age", "users", index_root, sql_index);
+
+        let stmt = parse_sql("UPDATE users SET age = 30 WHERE id = 1");
+        let plan = plan(stmt, &btree).expect("Planning failed");
+
+        if let LogicalPlan::Update { indexes, .. } = plan {
+            assert_eq!(indexes.len(), 1);
+            assert_eq!(indexes[0].column_idxs, vec![1]); // age is column index 1
+            assert_eq!(indexes[0].rootpage, index_root);
+        } else {
+            panic!("Expected Update plan");
+        }
+    }
+}
