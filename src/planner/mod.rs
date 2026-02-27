@@ -4,8 +4,8 @@
 //! The compiler (future) will convert LogicalPlan to bytecode.
 
 use crate::frontend::ast::{self, Statement};
-use crate::frontend::parse;
 use crate::storage::BTree;
+use schema::resolve_table;
 
 // ============================================================================
 // Operators
@@ -267,40 +267,7 @@ pub enum LogicalPlan {
 // Schema (for column resolution)
 // ============================================================================
 
-pub mod schema {
-    #[derive(Debug, Clone)]
-    #[allow(dead_code)]
-    pub struct Schema {
-        pub tables: Vec<Table>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct Table {
-        #[allow(dead_code)]
-        pub name: String,
-        pub rootpage: u32,
-        pub columns: Vec<Column>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct Column {
-        pub name: String,
-        // Future: pub data_type: DataType,
-    }
-
-    impl Schema {
-        #[allow(dead_code)]
-        pub fn get_table(&self, name: &str) -> Option<&Table> {
-            self.tables.iter().find(|t| t.name == name)
-        }
-    }
-
-    impl Table {
-        pub fn get_column_index(&self, name: &str) -> Option<usize> {
-            self.columns.iter().position(|c| c.name == name)
-        }
-    }
-}
+pub mod schema;
 
 // ============================================================================
 // Planning
@@ -388,33 +355,6 @@ pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanErro
         Statement::Delete(delete) => plan_delete(delete, btree),
         Statement::Explain(inner) => plan(*inner, btree),
     }
-}
-
-/// Resolve a table name to a schema::Table by querying the db_schema catalog
-/// and parsing the stored DDL.
-fn resolve_table(table_name: &str, btree: &BTree) -> Result<schema::Table, PlanError> {
-    let (rootpage, sql) = btree
-        .lookup_table(table_name)
-        .ok_or_else(|| PlanError::TableNotFound(table_name.to_string()))?;
-
-    // Parse the stored CREATE TABLE DDL to extract column definitions
-    let stmt = parse(&sql).map_err(|_| PlanError::UnsupportedStatement)?;
-    let create = match stmt {
-        Statement::CreateTable(c) => c,
-        _ => return Err(PlanError::UnsupportedStatement),
-    };
-
-    let columns = create
-        .columns
-        .into_iter()
-        .map(|col| schema::Column { name: col.name })
-        .collect();
-
-    Ok(schema::Table {
-        name: table_name.to_string(),
-        rootpage,
-        columns,
-    })
 }
 
 fn plan_select(select: ast::SelectStatement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
@@ -1244,10 +1184,7 @@ fn plan_update(update: ast::UpdateStatement, btree: &BTree) -> Result<LogicalPla
     let table = resolve_table(&update.table_name, btree)?;
 
     // Build column mapping: all table columns in order
-    let mut column_map = HashMap::new();
-    for (i, col) in table.columns.iter().enumerate() {
-        column_map.insert(col.name.clone(), i);
-    }
+    let column_map = table.column_name_map();
 
     // Create column resolver
     let resolver = SingleTableResolver {
@@ -1309,10 +1246,7 @@ fn plan_delete(delete: ast::DeleteStatement, btree: &BTree) -> Result<LogicalPla
     let table = resolve_table(&delete.table_name, btree)?;
 
     // Build column mapping: all table columns in order
-    let mut column_map = HashMap::new();
-    for (i, col) in table.columns.iter().enumerate() {
-        column_map.insert(col.name.clone(), i);
-    }
+    let column_map = table.column_name_map();
 
     // Create column resolver
     let resolver = SingleTableResolver {
