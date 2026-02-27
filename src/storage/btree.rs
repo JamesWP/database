@@ -834,6 +834,32 @@ impl BTree {
         }
     }
 
+    /// Find the name of the table with the given rootpage by scanning db_schema.
+    pub fn lookup_table_name_by_rootpage(&self, rootpage: u32) -> Option<String> {
+        let schema_root = self.schema_root_page()?;
+        let mut cursor = self.open(schema_root);
+        let mut c = cursor.open_readonly();
+        c.first();
+        loop {
+            let entry = c.get_entry();
+            match entry {
+                None => return None,
+                Some(mut reader) => {
+                    let values = reader.decode_as_array();
+                    if values.len() >= 4 {
+                        let obj_type = values[0].as_str().unwrap_or("");
+                        let name = values[1].as_str().unwrap_or("").to_string();
+                        let rp = values[3].as_u64().unwrap_or(0) as u32;
+                        if obj_type == "table" && rp == rootpage {
+                            return Some(name);
+                        }
+                    }
+                }
+            }
+            c.next();
+        }
+    }
+
     /// Look up all indexes for a table by scanning db_schema.
     pub fn lookup_indexes_for_table(&self, table_name: &str) -> Vec<IndexInfo> {
         let schema_root = match self.schema_root_page() {

@@ -7,7 +7,6 @@ use crate::storage::BTree;
 
 use schema::resolve_table;
 
-use super::optimizer::{can_elide_sort, try_index_scan};
 use super::resolver::{
     build_column_mapping, collect_columns, collect_columns_from_column_expr, convert_aggregate,
     convert_column_expr, convert_expr, convert_having_expr, extract_limit_value,
@@ -36,7 +35,7 @@ pub(super) fn output_width(plan: &LogicalPlan) -> usize {
     }
 }
 
-pub(super) fn plan_select(
+pub(crate) fn plan_select(
     select: ast::SelectStatement,
     btree: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
@@ -105,28 +104,17 @@ pub(super) fn plan_select(
                 )
         );
 
-    // 8. Build plan bottom-up: IndexScan | (Scan → Filter?) → Count/Aggregate/Project → Sort? → Limit?
+    // 8. Build naive plan bottom-up: Scan → Filter? → Count/Aggregate/Project → Sort? → Limit?
+    // Index selection and sort elision are handled by the optimizer pass.
     let mut plan = if let Some(ref filter) = select.filter {
-        if let Some(index_scan) = try_index_scan(
-            filter,
-            &table_name,
-            table.rootpage,
-            &mapping.scan_columns,
-            &table.columns,
-            btree,
-        ) {
-            index_scan
-        } else {
-            // Fall back to Scan + Filter
-            let scan = LogicalPlan::Scan {
-                rootpage: table.rootpage,
-                columns: mapping.scan_columns,
-                with_key: false,
-            };
-            LogicalPlan::Filter {
-                input: Box::new(scan),
-                predicate: convert_expr(filter, &resolver)?,
-            }
+        let scan = LogicalPlan::Scan {
+            rootpage: table.rootpage,
+            columns: mapping.scan_columns,
+            with_key: false,
+        };
+        LogicalPlan::Filter {
+            input: Box::new(scan),
+            predicate: convert_expr(filter, &resolver)?,
         }
     } else {
         LogicalPlan::Scan {
@@ -324,34 +312,11 @@ pub(super) fn plan_select(
 
             let sort_keys = sort_keys?;
 
-            // Sort elision: if there is exactly one ASC sort key that resolves to a
-            // table column already ordered by an IndexScan, skip the Sort node entirely.
-            let elide = if sort_keys.len() == 1 && !sort_keys[0].descending {
-                // Reverse-map projection index → scan column index
-                let proj_to_scan: HashMap<usize, usize> = scan_idx_to_proj_idx
-                    .iter()
-                    .map(|(&scan, &proj)| (proj, scan))
-                    .collect();
-
-                if let PlanExpr::ColumnRef(proj_idx) = sort_keys[0].expr {
-                    if let Some(&scan_col_idx) = proj_to_scan.get(&proj_idx) {
-                        can_elide_sort(&plan, scan_col_idx)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
+            // Always add Sort; optimizer pass will elide it when an IndexScan provides the order.
+            plan = LogicalPlan::Sort {
+                input: Box::new(plan),
+                sort_keys,
             };
-
-            if !elide {
-                plan = LogicalPlan::Sort {
-                    input: Box::new(plan),
-                    sort_keys,
-                };
-            }
 
             // If we added extra columns for ORDER BY, add a final projection to remove them
             if has_extra_order_columns {
