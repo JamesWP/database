@@ -7,12 +7,14 @@ use crate::frontend::ast::{self, Statement};
 use crate::storage::BTree;
 use schema::resolve_table;
 
-pub(crate) mod resolver;
 pub mod ddl;
 pub(super) mod dml;
-use dml::{plan_insert, plan_update, plan_delete};
+pub(crate) mod resolver;
+use dml::{plan_delete, plan_insert, plan_update};
 pub(super) mod select;
 use select::{plan_select, plan_select_with_joins};
+pub(super) mod optimizer;
+use optimizer::optimize;
 use resolver::ast_expr_name;
 
 // ============================================================================
@@ -326,24 +328,24 @@ pub fn extract_select_column_names(select: &ast::SelectStatement, btree: &BTree)
 
 /// Convert an AST Statement to a LogicalPlan by querying the db_schema catalog.
 pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
-    match statement {
+    let naive = match statement {
         Statement::Select(select) => {
             if select.joins.is_empty() {
-                plan_select(select, btree)
+                plan_select(select, btree)?
             } else {
-                plan_select_with_joins(select, btree)
+                plan_select_with_joins(select, btree)?
             }
         }
         Statement::CreateTable(_) | Statement::CreateIndex(_) | Statement::Drop(_) => {
-            Err(PlanError::UnsupportedStatement)
+            return Err(PlanError::UnsupportedStatement);
         }
-        Statement::Insert(insert) => plan_insert(insert, btree),
-        Statement::Update(update) => plan_update(update, btree),
-        Statement::Delete(delete) => plan_delete(delete, btree),
-        Statement::Explain(inner) => plan(*inner, btree),
-    }
+        Statement::Insert(insert) => plan_insert(insert, btree)?,
+        Statement::Update(update) => plan_update(update, btree)?,
+        Statement::Delete(delete) => plan_delete(delete, btree)?,
+        Statement::Explain(inner) => return plan(*inner, btree),
+    };
+    Ok(optimize(naive, btree))
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanError {
@@ -373,15 +375,15 @@ pub enum PlanError {
 
 #[cfg(test)]
 mod tests {
+    use super::resolver::{
+        build_column_mapping, collect_columns, collect_columns_from_column_expr, convert_expr,
+        SingleTableResolver,
+    };
+    use super::schema;
     use super::*;
     use crate::frontend::parse;
     use crate::test::TestDb;
     use std::collections::{HashMap, HashSet};
-    use super::resolver::{
-        build_column_mapping, collect_columns, collect_columns_from_column_expr,
-        convert_expr, SingleTableResolver,
-    };
-    use super::schema;
 
     // ========================================================================
     // Expression Converter Tests
