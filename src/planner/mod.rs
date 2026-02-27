@@ -8,6 +8,7 @@ use crate::storage::BTree;
 use schema::resolve_table;
 
 pub(crate) mod resolver;
+pub mod ddl;
 use resolver::{
     ast_expr_name, build_column_mapping, collect_columns, collect_columns_from_column_expr,
     convert_aggregate, convert_column_expr, convert_expr, convert_having_expr, eval_constant,
