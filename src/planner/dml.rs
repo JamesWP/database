@@ -9,26 +9,7 @@ use super::{
     schema, IndexMaintenanceInfo, Literal, LogicalPlan, PlanError, PlanExpr,
 };
 use super::resolver::{convert_expr, eval_constant, NoColumnResolver, SingleTableResolver};
-
-pub(super) fn output_width(plan: &LogicalPlan) -> usize {
-    match plan {
-        LogicalPlan::Project { columns, .. } => columns.len(),
-        LogicalPlan::Aggregate {
-            group_keys,
-            aggregates,
-            ..
-        } => group_keys.len() + aggregates.len(),
-        LogicalPlan::Count { .. } => 1,
-        LogicalPlan::Values { rows } => rows.first().map(|r| r.len()).unwrap_or(0),
-        LogicalPlan::Sort { input, .. }
-        | LogicalPlan::Limit { input, .. }
-        | LogicalPlan::Distinct { input, .. }
-        | LogicalPlan::Filter { input, .. }
-        | LogicalPlan::RowidLookup { input, .. } => output_width(input),
-        LogicalPlan::Scan { columns, .. } => columns.len(),
-        _ => 0,
-    }
-}
+use super::select::output_width;
 
 pub(super) fn plan_insert(
     insert: ast::InsertStatement,
