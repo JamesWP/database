@@ -43,6 +43,12 @@ macro_rules! body {
         $(body!($ctx; $($rest)*);)?
     };
 
+    // Zero-argument operation (e.g., Halt)
+    ($ctx:expr; $op:ident $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.emit(Operation::$op);
+        $(body!($ctx; $($rest)*);)?
+    };
+
     ($ctx:expr; $op:ident($($arg:expr),*) $(; $($rest:tt)*)?) => {
         $ctx.body_emitter.emit(Operation::$op($($arg),*));
         $(body!($ctx; $($rest)*);)?
