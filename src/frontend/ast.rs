@@ -54,11 +54,19 @@ pub struct CreateTableStatement {
     pub columns: Vec<ColumnDef>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColumnConstraint {
+    PrimaryKey,
+    Unique,
+    NotNull,
+}
+
 #[derive(Debug)]
 pub struct ColumnDef {
     pub name: String,
     #[allow(dead_code)]
     pub type_name: Option<DataType>,
+    pub constraints: Vec<ColumnConstraint>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
