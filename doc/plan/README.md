@@ -61,6 +61,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **X** | Compiler Index Codegen Cleanup | 1 | [phase-x-compiler-cleanup.md](completed/phase-x-compiler-cleanup.md) | Completed |
 | **Y** | Project Node Fusion | 2 | [phase-y-project-fusion.md](phase-y-project-fusion.md) | Planned |
 | **Z** | Unified SELECT Planner | 2 | [phase-z-unified-select.md](phase-z-unified-select.md) | Planned |
+| **AA** | Composite Index Predicate Pushdown & Sort Elision | 2 | [phase-aa-composite-index-pushdown.md](phase-aa-composite-index-pushdown.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 
