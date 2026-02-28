@@ -51,7 +51,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **N** | Index Maintenance & Sort Elision | 5 | [phase-n-index-maintenance.md](completed/phase-n-index-maintenance.md) | Completed |
 | **O** | HAVING Clause | 4 | [phase-o-having.md](completed/phase-o-having.md) | Completed |
 | **P** | Column Names in Query Output | 3 | [phase-p-column-names.md](completed/phase-p-column-names.md) | Completed |
-| **Q** | Macro-Based Bytecode Program Builder | 2 | [phase-q-program-macro.md](phase-q-program-macro.md) | Planned |
+| **Q** | Bytecode Emit Ergonomics | 2 | [phase-q-program-macro.md](phase-q-program-macro.md) | Planned |
 | **R** | PRIMARY KEY & UNIQUE Constraints | 6 | [phase-r-unique-constraints.md](phase-r-unique-constraints.md) | Planned |
 | **S** | JavaScript / WebAssembly Bindings | 4 | [phase-s-javascript.md](phase-s-javascript.md) | Planned |
 | **T** | INSERT INTO … SELECT | 3 | [phase-t-insert-select.md](completed/phase-t-insert-select.md) | Completed |

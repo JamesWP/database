@@ -1,13 +1,13 @@
-# Phase Q — Macro-Based Bytecode Program Builder
+# Phase Q — Bytecode Emit Ergonomics
 
-Replace manual `vec![Operation::...]` construction in engine tests with a concise `program!` declarative macro, making test programs readable and reducing boilerplate.
+Reduce boilerplate in `nodes.rs` by adding `label_here`/`bind_here` helpers to `BytecodeEmitter` and `init!`/`body!` macros that eliminate the `emit(Operation::` wrapper at every call site.
 
 ## Items
 
 | # | Track | Item | Depends on |
 |---|-------|------|------------|
-| 73 | 7 | Define `program!` macro in a test-only module | — |
-| 74 | 7 | Port existing engine unit tests to use the macro | 73 |
+| 73 | 7 | Add `label_here` and `bind_here` to `BytecodeEmitter` | — |
+| 74 | 7 | Add `init!` and `body!` macros; port `nodes.rs` | 73 |
 
 ---
 Important: Each item should be committed separately, follow 'Git Workflow' in CLAUDE.md
@@ -16,241 +16,270 @@ Important: Each item should be committed separately, follow 'Git Workflow' in CL
 
 ## Overview
 
-Engine unit tests build bytecode programs by hand:
+`src/compiler/nodes.rs` builds bytecode by calling `emitter.emit(Operation::Foo(...))` at every step. Two kinds of noise dominate:
 
+**Label management** — creating and immediately binding a label takes two lines:
 ```rust
-let mut harness = TestHarness::new(
-    &[
-        Operation::StoreValue(Reg::new(0), ScalarValue::Integer(42)),
-        Operation::AddValue(Reg::new(2), Reg::new(0), Reg::new(1)),
-        Operation::Yield(vec![Reg::new(2)]),
-        Operation::Halt,
-    ],
-    3,
-);
+let check_label = ctx.body_emitter.create_label();
+ctx.body_emitter.bind_label(check_label);
 ```
 
-This is verbose and noisy. A declarative macro cuts the ceremony:
-
+**Emit wrapper** — every operation is wrapped in `emit(Operation::...)`:
 ```rust
-let mut harness = program! {
-    store r0 = 42;
-    add r2 = r0 + r1;
-    yield r2;
-    halt;
-};
+ctx.body_emitter.emit(Operation::CanReadCursor(flag_reg, cursor_reg));
+ctx.body_emitter.emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
+ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
 ```
 
-The macro handles:
-- `r<N>` → `Reg::new(N)` conversion
-- `ScalarValue` literal inference from Rust literals
-- `num_registers` counting (max register index + 1)
-- Expansion to `TestHarness::new(&[...], N)`
+Two small additions eliminate most of this:
 
-The macro lives in `src/engine.rs` under `#[cfg(test)]` — no separate crate, no proc macro complexity. A standard `macro_rules!` macro is sufficient.
+1. `label_here()` / `bind_here()` on `BytecodeEmitter` — one-line label create-and-bind.
+2. `init!` / `body!` macros — collapse consecutive emit calls into a single block, with built-in support for goto ops and inline label binding.
+
+No Operation variants are renamed. No macro_rules complexity beyond straightforward recursive arm matching.
 
 ---
 
-## 73. Define `program!` Macro (Track 7)
+## 73. `label_here` and `bind_here` on `BytecodeEmitter` (Track 7)
 
 ### What Changes
 
-A `macro_rules! program` is added inside the `#[cfg(test)]` block of `src/engine.rs` (or a new `src/engine/test_macros.rs` imported only under `#[cfg(test)]`).
+Two new methods on `BytecodeEmitter` in `src/compiler/emitter.rs`:
 
-### Macro Grammar
+```rust
+/// Create a label and immediately bind it at the current position.
+pub fn label_here(&mut self) -> Label {
+    let label = self.create_label();
+    self.bind_label(label);
+    label
+}
 
-```
-program! {
-    <stmt>;
-    ...
+/// Bind a label at the current position (alias for bind_label with clearer intent).
+pub fn bind_here(&mut self, label: Label) {
+    self.bind_label(label);
 }
 ```
 
-Where `<stmt>` is one of:
+`bind_here` is a simple rename-alias. It reads better at call sites where the intent is "bind this label *here*, right now", as opposed to `bind_label` which sounds like it could take a position argument.
 
-| Syntax | Expands to |
-|--------|-----------|
-| `store rN = <int>` | `Operation::StoreValue(r(N), ScalarValue::Integer(<int>))` |
-| `store rN = <float>f` | `Operation::StoreValue(r(N), ScalarValue::Floating(<float>))` |
-| `store rN = "<str>"` | `Operation::StoreValue(r(N), ScalarValue::String("<str>".into()))` |
-| `store rN = null` | `Operation::StoreValue(r(N), ScalarValue::Null)` |
-| `add rN = rA + rB` | `Operation::AddValue(r(N), r(A), r(B))` |
-| `sub rN = rA - rB` | `Operation::SubtractValue(r(N), r(A), r(B))` |
-| `mul rN = rA * rB` | `Operation::MultiplyValue(r(N), r(A), r(B))` |
-| `div rN = rA / rB` | `Operation::DivideValue(r(N), r(A), r(B))` |
-| `eq rN = rA == rB` | `Operation::EqualsValue(r(N), r(A), r(B))` |
-| `lt rN = rA < rB` | `Operation::LessThanValue(r(N), r(A), r(B))` |
-| `gt rN = rA > rB` | `Operation::GreaterThanValue(r(N), r(A), r(B))` |
-| `and rN = rA && rB` | `Operation::AndValue(r(N), r(A), r(B))` |
-| `not rN = rA` | `Operation::NotValue(r(N), r(A))` |
-| `copy rN = rA` | `Operation::CopyValue(r(N), r(A))` |
-| `yield rA rB ...` | `Operation::Yield(vec![r(A), r(B), ...])` |
-| `halt` | `Operation::Halt` |
+### Background
 
-`num_registers` is computed as `max_register_index + 1` by scanning the expanded operations.
-
-### Implementation Approach
-
-Since computing `num_registers` at macro expansion time requires knowing all registers mentioned, the macro first collects all operations into a `Vec`, then scans for the maximum `Reg` index:
+The current pattern in `nodes.rs` for an immediate bind appears ~8 times:
 
 ```rust
-macro_rules! program {
-    ($($stmt:tt)*) => {{
-        let ops: Vec<crate::engine::program::Operation> = vec![
-            $(program_op!($stmt)),*
-        ];
-        let num_regs = ops.iter()
-            .flat_map(|op| op.registers())   // helper that yields all Reg refs
-            .map(|r| r.index() + 1)
-            .max()
-            .unwrap_or(1);
-        TestHarness::new_owned(ops, num_regs)
-    }};
-}
+let check_label = ctx.body_emitter.create_label();
+ctx.body_emitter.bind_label(check_label);
 ```
 
-`operation.registers()` is a helper method added to `Operation` that yields an iterator of all `Reg` values contained in a given operation. This avoids duplicating the register-scanning logic.
-
-Helper sub-macro `program_op!` handles individual statement forms:
+With `label_here()` this becomes one line:
 
 ```rust
-macro_rules! program_op {
-    (store $dst:ident = $val:literal) => {
-        Operation::StoreValue(reg!($dst), ScalarValue::Integer($val))
-    };
-    // ... other forms ...
-    (halt) => { Operation::Halt };
-}
+let check_label = ctx.body_emitter.label_here();
 ```
 
-And `reg!` converts `r0`, `r1`, etc.:
-
-```rust
-macro_rules! reg {
-    (r0) => { Reg::new(0) };
-    (r1) => { Reg::new(1) };
-    // etc. up to r15 or use a tt → literal trick
-}
-```
-
-A simpler alternative to the `reg!` helper: require callers to write `r!(0)` and define `macro_rules! r { ($n:expr) => { Reg::new($n) } }`. This is less pretty but trivially correct and avoids the `r0`/`r1` token-to-number mapping.
-
-For the initial implementation, use `r!(N)` syntax and focus on correctness:
-
-```rust
-let mut harness = program! {
-    store r!(0) = 42i64;
-    yield r!(0);
-    halt;
-};
-```
+Forward-ref labels (created before `codegen()` is called, bound later) keep the two-step `create_label` + `bind_here` pattern — no change needed there.
 
 ### Key Files
 
-- `src/engine.rs` — add inside `#[cfg(test)]` module
+- `src/compiler/emitter.rs` — add two methods to `BytecodeEmitter`
 
 ### Tests
 
-The macro is self-tested by compiling (macro expansion errors → compile errors). Add one explicit test:
+Existing emitter unit tests cover `create_label` + `bind_label`. Add two tests:
 
 ```rust
 #[test]
-fn test_program_macro_basic() {
-    let mut harness = program! {
-        store r!(0) = 7i64;
-        store r!(1) = 3i64;
-        add r!(2) = r!(0) + r!(1);
-        yield r!(2);
-        halt;
-    };
-    let rows = harness.run_to_completion();
-    assert_eq!(rows[0][0], ScalarValue::Integer(10));
+fn test_label_here() {
+    let mut emitter = BytecodeEmitter::new();
+    emitter.emit(Operation::Halt); // op 0
+    let label = emitter.label_here(); // should point to op 1
+    emitter.emit(Operation::Halt); // op 1
+    let ops = emitter.finalize();
+    assert_eq!(ops.len(), 2);
+    // label_here binds at position 1 — verify by using it as a goto target
+}
+
+#[test]
+fn test_bind_here() {
+    let mut emitter = BytecodeEmitter::new();
+    let label = emitter.create_label();
+    emitter.emit(Operation::Halt);
+    emitter.bind_here(label); // bind at position 1
+    // verify same as bind_label
 }
 ```
 
 ### Implementation Steps (1 commit)
 
-#### Step 73.1 — Define `program!` macro with basic operations
+#### Step 73.1 — Add `label_here` and `bind_here` to `BytecodeEmitter`
 
-Implement `program!`, `program_op!`, and `r!` macros in `src/engine.rs` under `#[cfg(test)]`. Add `Operation::registers()` helper. Add `TestHarness::new_owned` variant if needed. Add smoke test.
+Add both methods. Add tests. Run `cargo test`.
 
-**Commit:** Tests: add program! macro for building engine test programs
+**Commit:** `Refactor: add label_here and bind_here to BytecodeEmitter`
 
 ---
 
-## 74. Port Existing Engine Tests to `program!` (Track 7)
+## 74. `init!` / `body!` Macros and Port `nodes.rs` (Track 7)
 
 ### What Changes
 
-All engine unit tests in `src/engine.rs` that build `Operation` slices manually are converted to use `program!`. Each test is converted one-for-one; no logic changes.
+Two `macro_rules!` macros added to `src/compiler/mod.rs` (or a new `src/compiler/macros.rs` re-exported from `mod.rs`):
 
-### Background
+- `init!(ctx; Op(args); Op(args); ...)` — emits to `ctx.init_emitter`
+- `body!(ctx; Op(args); Op(args); ...)` — emits to `ctx.body_emitter`
 
-The engine unit tests (around lines 815–1100 in `src/engine.rs`) cover:
+Both support goto ops and inline label binding via `Bind(label)`.
 
-- `StoreValue`, `AddValue`, `SubtractValue`, arithmetic operations
-- `EqualsValue`, comparison chains
-- `GoToIfFalse` loops
-- `RowBuffer` / sort operations
-- `GroupTable` / aggregate operations
-- `WriteCursor` / `ReadCursor` / cursor operations
+All codegen functions in `src/compiler/nodes.rs` are ported to use the macros where consecutive emits appear.
 
-Cursor and RowBuffer operations are more complex (multi-register, enum args) and may not map cleanly to simple macro tokens. For those, keep the manual `vec!` form or extend the macro. The goal is to reduce boilerplate for the simple arithmetic/value tests, which make up the majority.
+### Implementation Approach
+
+The macros use recursive `macro_rules!` arms. Each arm matches one statement form, emits it, then recurses on the tail:
+
+```rust
+macro_rules! body {
+    // Base case
+    ($ctx:expr $(;)?) => {};
+
+    // Inline label bind: Bind(label)
+    ($ctx:expr; Bind($label:expr) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.bind_here($label);
+        $(body!($ctx; $($rest)*);)?
+    };
+
+    // GoTo — routes to emit_goto for label resolution
+    ($ctx:expr; GoTo($label:expr) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.emit_goto($label);
+        $(body!($ctx; $($rest)*);)?
+    };
+
+    // GoToIfFalse
+    ($ctx:expr; GoToIfFalse($label:expr, $reg:expr) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.emit_goto_if_false($label, $reg);
+        $(body!($ctx; $($rest)*);)?
+    };
+
+    // GoToIfEqualValue
+    ($ctx:expr; GoToIfEqualValue($label:expr, $a:expr, $b:expr) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.emit_goto_if_equal($label, $a, $b);
+        $(body!($ctx; $($rest)*);)?
+    };
+
+    // General Operation
+    ($ctx:expr; $op:ident($($arg:expr),*) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.emit(Operation::$op($($arg),*));
+        $(body!($ctx; $($rest)*);)?
+    };
+}
+```
+
+`init!` is identical with `init_emitter` substituted for `body_emitter` (and no goto arms, since init code never contains jumps).
+
+The goto arms must appear **before** the general `$op:ident(...)` arm — `macro_rules!` matches top-to-bottom and `GoTo` would otherwise be swallowed by the general arm.
 
 ### Conversion Example
 
-Before:
+`codegen_scan` body section, before:
 
 ```rust
-#[test]
-fn test_add_integers() {
-    let mut harness = TestHarness::new(
-        &[
-            Operation::StoreValue(Reg::new(0), ScalarValue::Integer(3)),
-            Operation::StoreValue(Reg::new(1), ScalarValue::Integer(4)),
-            Operation::AddValue(Reg::new(2), Reg::new(0), Reg::new(1)),
-            Operation::Yield(vec![Reg::new(2)]),
-            Operation::Halt,
-        ],
-        3,
-    );
-    // ...
+let check_label = ctx.body_emitter.create_label();
+ctx.body_emitter.bind_label(check_label);
+ctx.body_emitter.emit(Operation::CanReadCursor(flag_reg, cursor_reg));
+ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
+ctx.body_emitter.emit(Operation::ReadCursor(all_regs.clone(), cursor_reg));
+if let Some(kr) = key_reg {
+    ctx.body_emitter.emit(Operation::ReadKey(kr, cursor_reg));
 }
+ctx.body_emitter.emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
+ctx.body_emitter.emit_goto(cont.on_tuple);
 ```
 
 After:
 
 ```rust
-#[test]
-fn test_add_integers() {
-    let mut harness = program! {
-        store r!(0) = 3i64;
-        store r!(1) = 4i64;
-        add   r!(2) = r!(0) + r!(1);
-        yield r!(2);
-        halt;
-    };
-    // ...
+let check_label = ctx.body_emitter.label_here();
+body!(ctx;
+    CanReadCursor(flag_reg, cursor_reg);
+    GoToIfFalse(cont.on_done, flag_reg);
+    ReadCursor(all_regs.clone(), cursor_reg)
+);
+if let Some(kr) = key_reg {
+    body!(ctx; ReadKey(kr, cursor_reg));
 }
+body!(ctx;
+    MoveCursor(cursor_reg, MoveOperation::Next);
+    GoTo(cont.on_tuple)
+);
 ```
 
-Tests involving cursor ops, `MoveOperation` enums, or `AggregateSpec` structs are left in manual form with a comment (`// complex operation — manual construction`).
+`codegen_count` body section, before:
+
+```rust
+ctx.body_emitter.bind_label(child_on_tuple);
+ctx.body_emitter.emit(Operation::IncrementValue(counter_reg));
+ctx.body_emitter.emit_goto(child_output.next);
+ctx.body_emitter.bind_label(child_on_done);
+ctx.body_emitter.emit_goto(cont.on_tuple);
+let count_next = ctx.body_emitter.create_label();
+ctx.body_emitter.bind_label(count_next);
+ctx.body_emitter.emit_goto(cont.on_done);
+```
+
+After:
+
+```rust
+body!(ctx;
+    Bind(child_on_tuple);
+    IncrementValue(counter_reg);
+    GoTo(child_output.next);
+    Bind(child_on_done);
+    GoTo(cont.on_tuple)
+);
+let count_next = ctx.body_emitter.label_here();
+body!(ctx; GoTo(cont.on_done));
+```
 
 ### Key Files
 
-- `src/engine.rs` — `#[cfg(test)]` block, all test functions
+- `src/compiler/mod.rs` — add `init!` and `body!` macros (or new `src/compiler/macros.rs`)
+- `src/compiler/nodes.rs` — port all codegen functions
+- `src/compiler/emitter.rs` — already updated by item 73
 
 ### Tests
 
-`cargo test` must pass identically before and after. No test logic is changed.
+No behaviour changes — `cargo test` must pass identically before and after. The macro correctness is verified by the existing compiler node tests (38 tests). Add one explicit macro smoke test:
 
-### Implementation Steps (1 commit)
+```rust
+#[test]
+fn test_body_macro_basic() {
+    let mut ctx = CodegenContext::new();
+    let on_done = ctx.body_emitter.create_label();
+    let r0 = ctx.registers.alloc();
+    let r1 = ctx.registers.alloc();
+    init!(ctx; StoreValue(r0, ScalarValue::Integer(1)));
+    body!(ctx;
+        GoToIfFalse(on_done, r0);
+        StoreValue(r1, ScalarValue::Integer(42));
+        Bind(on_done)
+    );
+    let ops = ctx.finalize();
+    assert_eq!(ops.len(), 4); // GoTo(body) + GoToIfFalse + Store + Halt-ish
+}
+```
 
-#### Step 74.1 — Port engine unit tests to program! macro
+### Implementation Steps (2 commits)
 
-Convert all simple arithmetic/value tests. Leave complex cursor/aggregate tests in manual form. Verify `cargo test` passes.
+#### Step 74.1 — Define `init!` and `body!` macros
 
-**Commit:** Tests: port engine unit tests to program! macro
+Add macros to `src/compiler/mod.rs`. Add smoke test. Verify `cargo test` passes.
+
+**Commit:** `Refactor: add init! and body! macros to compiler`
+
+#### Step 74.2 — Port `nodes.rs` to use macros and `label_here`/`bind_here`
+
+Convert all codegen functions in `src/compiler/nodes.rs`. No logic changes. Verify `cargo test` passes identically.
+
+**Commit:** `Refactor: port nodes.rs to init!/body! macros and label_here/bind_here`
 
 ---
 
@@ -259,6 +288,5 @@ Convert all simple arithmetic/value tests. Leave complex cursor/aggregate tests 
 - [ ] Tests pass: `cargo test`
 - [ ] Zero warnings: `cargo fmt && cargo build 2>&1 | grep -i warning`
 - [ ] Each commit is independently testable
-- [ ] `program!` macro compiles with no warnings
-- [ ] Test count is unchanged (no tests removed, only reformatted)
-- [ ] `test_program_macro_basic` exercises arithmetic through the macro end-to-end
+- [ ] Test count unchanged — no tests removed, only implementation reformatted
+- [ ] `body!` macro smoke test exercises `Bind`, `GoTo`, `GoToIfFalse`, and general ops

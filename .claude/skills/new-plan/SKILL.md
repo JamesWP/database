@@ -24,6 +24,20 @@ Use AskUserQuestion to ask the user:
 
 Keep the question open-ended — the user may have given a description already in their prompt; if so, skip asking and use that.
 
+## Design Options During Planning
+
+While exploring the codebase and drafting the plan, you may discover that a key implementation decision has multiple viable approaches (e.g. DSL syntax style, storage layout, API shape). When this happens:
+
+**Stop and discuss with the user before writing the plan.**
+
+Use AskUserQuestion to present the options concisely:
+- Give each option a short label (e.g. "Option A — set with expressions")
+- Include a 1–2 line code or pseudocode example as the option description
+- Note the key trade-off for each (pro/con in one sentence)
+- Mark your recommendation as "(Recommended)" if you have one
+
+Only proceed to write the plan after the user has chosen an approach. This prevents writing a detailed plan around an approach the user dislikes. If the choice is clear-cut and there is only one reasonable approach, skip asking and document your reasoning in the plan's "Implementation Approach" section instead.
+
 ## Determine the Phase Identifier
 
 Pick the next available phase identifier following the existing sequence visible in `doc/plan/README.md`. Use a letter (e.g. `L`) or a numbered suffix (e.g. `G5`) depending on the context of the phase.
