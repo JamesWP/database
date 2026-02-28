@@ -26,8 +26,9 @@ A hobby implementation of a relational database similar to SQLite. It includes a
 | `SUM`, `MIN`, `MAX` aggregates | ✓ |
 | `DELETE FROM … WHERE` | ✓ |
 | `UPDATE … SET … WHERE` | ✓ |
-| `CREATE INDEX` (single-column `INTEGER`) | ✓ |
-| Index-accelerated equality scans | ✓ |
+| `CREATE INDEX` (single- and multi-column, `INTEGER` / `TEXT`) | ✓ |
+| Index-accelerated equality and range scans | ✓ |
+| Multi-column index prefix scans | ✓ |
 | `EXPLAIN` query plans | ✓ |
 | `DROP TABLE` | — |
 | `JOIN`s | — |
@@ -43,7 +44,7 @@ A hobby implementation of a relational database similar to SQLite. It includes a
 
 ### Testing
 
-- **343 tests** — unit, integration, and SQL end-to-end (`cargo test`)
+- Unit, integration, and SQL end-to-end tests (`cargo test`)
 - Inline SQL test harness: `.sql` files with `-- >` expected-output lines
 - Property-based tests for B-tree invariants (proptest)
 
@@ -75,7 +76,7 @@ sql> SELECT * FROM users WHERE age > 27 ORDER BY name
 ```bash
 cargo build              # Debug build
 cargo build --release    # Release build
-cargo test               # All 343 tests
+cargo test               # Run all tests
 cargo test test_sql_     # SQL integration tests only
 cargo run -- <db_file>   # Interactive REPL
 ```
