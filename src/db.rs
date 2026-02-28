@@ -24,13 +24,18 @@ pub struct QueryExecution {
 }
 
 impl QueryExecution {
-    fn new(mut engine: Engine, column_names: Vec<String>) -> Self {
-        let rows = engine.run();
-        QueryExecution {
+    fn new(mut engine: Engine, column_names: Vec<String>) -> Result<Self, ExecuteError> {
+        let rows = engine.run_result().map_err(|e| match e {
+            crate::engine::EngineError::ConstraintViolation(msg) => {
+                ExecuteError::ConstraintViolation(msg)
+            }
+            other => panic!("Engine error: {:?}", other),
+        })?;
+        Ok(QueryExecution {
             column_names,
             rows,
             pos: 0,
-        }
+        })
     }
 
     fn from_rows(rows: Vec<Vec<ScalarValue>>) -> Self {
@@ -61,6 +66,7 @@ pub enum ExecuteError {
     IndexAlreadyExists(String),
     ColumnNotFound { table: String, column: String },
     ColumnNotInteger { table: String, column: String },
+    ConstraintViolation(String),
 }
 
 impl std::fmt::Display for ExecuteError {
@@ -86,6 +92,9 @@ impl std::fmt::Display for ExecuteError {
                     "Column '{}' in table '{}' is not INTEGER (only INTEGER columns are supported for indexes)",
                     column, table
                 )
+            }
+            ExecuteError::ConstraintViolation(msg) => {
+                write!(f, "constraint violation: {}", msg)
             }
         }
     }
@@ -265,7 +274,7 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
             Ok(ExecuteResult::Query(QueryExecution::new(
                 engine,
                 compiled.column_names,
-            )))
+            )?))
         }
         Statement::Explain(_) => {
             let inner = match stmt {

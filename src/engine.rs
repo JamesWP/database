@@ -24,6 +24,7 @@ pub(crate) enum StepSuccess {
 pub(crate) enum EngineError {
     #[allow(dead_code)]
     RegisterTypeError(Reg, &'static str, RegisterValue),
+    ConstraintViolation(String),
 }
 
 pub(crate) struct Engine {
@@ -75,6 +76,20 @@ impl Engine {
             }
         }
         yields
+    }
+
+    /// Run the program to completion, returning an error instead of panicking on ConstraintViolation.
+    pub(crate) fn run_result(&mut self) -> Result<Vec<Vec<ScalarValue>>, EngineError> {
+        let mut yields = Vec::new();
+        loop {
+            match self.step() {
+                Ok(StepSuccess::Continue) => continue,
+                Ok(StepSuccess::Halt) => break,
+                Ok(StepSuccess::Yield(values)) => yields.push(values),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(yields)
     }
 
     /// Run the program with a maximum step limit to prevent infinite loops.
@@ -699,6 +714,26 @@ impl Engine {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readwrite();
                 cursor.insert_u64(key, bytes);
+            }
+            CheckUnique(cursor_reg, value_regs) => {
+                // Build the column-value prefix (no rowid suffix)
+                let mut prefix = Vec::new();
+                for value_reg in value_regs {
+                    let indexed_value = self.registers.get(value_reg).scalar().unwrap();
+                    prefix.extend_from_slice(&storage::encode_index_value(indexed_value));
+                }
+                // Position cursor at or near the prefix
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let mut c = cursor.open_readwrite();
+                c.find(&prefix);
+                // Check if current key starts with the prefix
+                if let Some(entry) = c.get_entry() {
+                    if entry.key().starts_with(&prefix) {
+                        return StepResult::Err(EngineError::ConstraintViolation(
+                            "unique constraint violated".to_string(),
+                        ));
+                    }
+                }
             }
             WriteIndex(cursor_reg, value_regs, pk_reg) => {
                 // Encode each indexed column value, concatenated in order
