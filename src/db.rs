@@ -2,7 +2,7 @@ use crate::compiler;
 use crate::engine::scalarvalue::ScalarValue;
 use crate::engine::Engine;
 use crate::explain::{ExplainSchema, IndexMeta, TableMeta};
-use crate::frontend::ast::{DataType, Statement};
+use crate::frontend::ast::{ColumnConstraint, DataType, Statement};
 use crate::frontend::{parse, ParseError};
 use crate::planner::{self, LogicalPlan, PlanError};
 use crate::storage::BTree;
@@ -110,6 +110,27 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
             let root_page = btree.create_tree();
             let ddl = sql.to_string();
             btree.insert_schema_entry("table", name, name, root_page, &ddl);
+
+            // Create implicit unique indexes for PRIMARY KEY and UNIQUE columns
+            for col in &ct.columns {
+                let is_pk = col.constraints.contains(&ColumnConstraint::PrimaryKey);
+                let is_uq = col.constraints.contains(&ColumnConstraint::Unique);
+                if is_pk || is_uq {
+                    let prefix = if is_pk { "_pk_" } else { "_uq_" };
+                    let index_name = format!("{}{}_{}", prefix, name, col.name);
+                    let index_rootpage = btree.create_tree();
+                    let index_sql =
+                        format!("CREATE INDEX {} ON {}({})", index_name, name, col.name);
+                    btree.insert_schema_entry(
+                        "index",
+                        &index_name,
+                        name,
+                        index_rootpage,
+                        &index_sql,
+                    );
+                }
+            }
+
             Ok(ExecuteResult::CreateTable {
                 table_name: name.clone(),
             })
