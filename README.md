@@ -84,7 +84,7 @@ cargo run -- <db_file>   # Interactive REPL
 
 ```mermaid
 flowchart TD
-    A[SQL Text] --> B["Lexer / Parser\nsrc/frontend/"]
+    A[SQL Text] --> B["Lexer / Parser<br/>src/frontend/"]
     B -->|AST| C["Planner\nsrc/planner.rs"]
     C -->|LogicalPlan| D["Compiler\nsrc/compiler/"]
     D -->|bytecode Program| E["Engine / VM\nsrc/engine/"]
