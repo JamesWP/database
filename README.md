@@ -85,10 +85,10 @@ cargo run -- <db_file>   # Interactive REPL
 ```mermaid
 flowchart TD
     A[SQL Text] --> B["Lexer / Parser<br/>src/frontend/"]
-    B -->|AST| C["Planner\nsrc/planner.rs"]
-    C -->|LogicalPlan| D["Compiler\nsrc/compiler/"]
-    D -->|bytecode Program| E["Engine / VM\nsrc/engine/"]
-    E -->|reads/writes| F["B-tree / Pager\nsrc/storage/"]
+    B -->|AST| C["Planner<br/>src/planner.rs"]
+    C -->|LogicalPlan| D["Compiler<br/>src/compiler/"]
+    D -->|bytecode Program| E["Engine / VM<br/>src/engine/"]
+    E -->|reads/writes| F["B-tree / Pager<br/>src/storage/"]
 ```
 
 **Frontend** (`src/frontend/`) tokenizes SQL and produces an AST. The **Planner** (`src/planner.rs`) converts the AST into a logical plan, choosing index scans over full-table scans when a usable index exists. The **Compiler** (`src/compiler/`) lowers the logical plan to a register-based bytecode program, and the **Engine** (`src/engine/`) executes it. The **B-tree / Pager** (`src/storage/`) persists rows in a 4 KB paged file using CBOR encoding with overflow chains for large values.
