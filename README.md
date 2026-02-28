@@ -1,150 +1,158 @@
 # database
 
-A single-file relational database library in Rust, similar to SQLite. Implements a complete database engine from scratch with SQL parsing, query planning, a bytecode virtual machine, and B-tree storage.
+> A single-file relational database engine written in Rust, built from scratch.
 
-## Build & Run
+![REPL — SQL session](doc/screenshots/repl-sql.gif)
+
+A hobby implementation of a relational database similar to SQLite. It includes a hand-written SQL parser, query planner, bytecode compiler, register-based virtual machine, and a custom B-tree storage engine with page-based file I/O. Data persists across restarts in a single `.db` file.
+
+## Features
+
+### SQL
+
+| Feature | Status |
+|---------|--------|
+| `CREATE TABLE` | ✓ |
+| `INSERT INTO … VALUES` (multi-row) | ✓ |
+| `INSERT INTO … SELECT` | ✓ |
+| `SELECT` with column list / `SELECT *` | ✓ |
+| `WHERE` (comparisons, `AND`, `OR`, `NOT`) | ✓ |
+| `ORDER BY` (`ASC` / `DESC`, multi-column) | ✓ |
+| `GROUP BY` | ✓ |
+| `HAVING` | ✓ |
+| `DISTINCT` | ✓ |
+| `LIMIT` | ✓ |
+| `COUNT(*)` / `COUNT(col)` aggregates | ✓ |
+| `SUM`, `MIN`, `MAX` aggregates | ✓ |
+| `DELETE FROM … WHERE` | ✓ |
+| `UPDATE … SET … WHERE` | ✓ |
+| `CREATE INDEX` (single-column `INTEGER`) | ✓ |
+| Index-accelerated equality scans | ✓ |
+| `EXPLAIN` query plans | ✓ |
+| `DROP TABLE` | — |
+| `JOIN`s | — |
+| `NULL` / `IS NULL` | — |
+| Subqueries | — |
+
+### Storage
+
+- Custom B-tree engine with CBOR-encoded rows
+- Page-based file format (4 KB pages), overflow chains for large values
+- Secondary indexes as separate B-trees
+- Persistent storage — survives process restart
+
+### Testing
+
+- **343 tests** — unit, integration, and SQL end-to-end (`cargo test`)
+- Inline SQL test harness: `.sql` files with `-- >` expected-output lines
+- Property-based tests for B-tree invariants (proptest)
+
+## Quick Start
+
+```bash
+git clone https://github.com/jameswp/database
+cd database
+cargo run -- mydb.db
+```
+
+```
+db> enter sql
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql> INSERT INTO users VALUES (1, 'alice', 30), (2, 'bob', 25), (3, 'carol', 35)
+3 rows inserted
+sql> SELECT * FROM users WHERE age > 27 ORDER BY name
+┌────┬───────┬─────┐
+│ id │ name  │ age │
+├────┼───────┼─────┤
+│ 1  │ alice │ 30  │
+│ 3  │ carol │ 35  │
+└────┴───────┴─────┘
+```
+
+## Build & Test
 
 ```bash
 cargo build              # Debug build
 cargo build --release    # Release build
-cargo test               # Run all tests
-cargo run -- <db_file>   # Run interactive CLI
+cargo test               # All 343 tests
+cargo test test_sql_     # SQL integration tests only
+cargo run -- <db_file>   # Interactive REPL
 ```
-
-## Testing
-
-The project includes comprehensive automated tests:
-
-- **Unit tests**: 201 tests embedded in source files
-- **SQL integration tests**: End-to-end tests in `tests/sql/` with `.sql` scripts and `.expected` output files
-
-**Run a single SQL test** (faster iteration during development):
-```bash
-SQL_TEST_FILE=where_clauses cargo test test_sql_scripts
-```
-
-**Test error cases**: The SQL test runner supports testing expected errors using `ERROR: <pattern>` syntax:
-```sql
--- error_cases.sql
-CREATE TABLE users (id INTEGER);
-CREATE TABLE users (id INTEGER);  -- Should error
-```
-```
--- error_cases.expected
-Table 'users' created
-ERROR: already exists
-```
-
-**See also**: [`manual_tests/`](manual_tests/) for manual end-to-end test scripts
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    A[SQL Text] --> B["Lexer / Parser\nsrc/frontend/"]
+    B -->|AST| C["Planner\nsrc/planner.rs"]
+    C -->|LogicalPlan| D["Compiler\nsrc/compiler/"]
+    D -->|bytecode Program| E["Engine / VM\nsrc/engine/"]
+    E -->|reads/writes| F["B-tree / Pager\nsrc/storage/"]
 ```
-SQL Input -> Frontend (Lexer/Parser/AST) -> Planner -> Compiler -> Engine (VM) -> Storage (BTree/Pager)
-```
 
-- **Frontend**: SQL tokenization and parsing to AST
-- **Planner**: Converts AST to logical query plans
-- **Compiler**: Compiles logical plans to bytecode
-- **Engine**: Register-based VM executing bytecode
-- **Storage**: Persistent B-tree with page-based I/O
+**Frontend** (`src/frontend/`) tokenizes SQL and produces an AST. The **Planner** (`src/planner.rs`) converts the AST into a logical plan, choosing index scans over full-table scans when a usable index exists. The **Compiler** (`src/compiler/`) lowers the logical plan to a register-based bytecode program, and the **Engine** (`src/engine/`) executes it. The **B-tree / Pager** (`src/storage/`) persists rows in a 4 KB paged file using CBOR encoding with overflow chains for large values.
 
-## Interactive CLI
+## Interactive REPL
 
-The REPL uses a mode-based architecture exposing different subsystems:
+### SQL mode (enter sql)
+
+![SQL session](doc/screenshots/repl-sql.gif)
 
 ```
-$ cargo run -- test.db
+db> SELECT name, age FROM users WHERE age > 20 ORDER BY age DESC
+┌───────┬─────┐
+│ name  │ age │
+├───────┼─────┤
+│ carol │ 35  │
+│ alice │ 30  │
+│ dave  │ 28  │
+└───────┴─────┘
+```
+
+### EXPLAIN and indexes
+
+![Index scan](doc/screenshots/repl-index.gif)
+
+The planner emits an `IndexScan` node when a `WHERE col = value` filter matches an available index:
+
+```
+sql> CREATE INDEX idx_age ON users (age)
+Index 'idx_age' created
+sql> EXPLAIN SELECT * FROM users WHERE age = 30
+0 │ "Project [id:0, name:1, age:2]"
+1 │ "  RowidLookup users [cols: id, name, age]"
+2 │ "    IndexScan via idx_age [= 30]"
+```
+
+### Debug modes
+
+```
 db> modes
 Available modes:
   btree    - B-tree storage operations
   parser   - SQL lexer and parser inspection
   planner  - Query planning and logical plans
   engine   - VM bytecode execution
-
-db> enter btree
-btree> create table users
-btree> open users
-btree:users> insert 1 alice
-btree:users> insert 2 bob
-btree:users> print data
-Entry: key=1, len=5 value=alice
-Entry: key=2, len=3 value=bob
-
-db> enter parser
-parser> parse SELECT id FROM users
-AST:
-Select(SelectStatement { ... })
-
-db> enter planner
-planner> mock schema
-planner> plan SELECT id FROM users
-LogicalPlan:
-Project { input: Scan { table: "users", ... }, ... }
-
-db> enter engine
-engine> compile SELECT id FROM users
-Compiled: 13 operations, 4 registers
-engine> program
-   0: Open(Reg(0), "users")
-   1: MoveCursor(Reg(0), First)
-   ...
 ```
 
-### Non-Interactive Mode
+| Mode | Purpose |
+|------|---------|
+| `btree` | Inspect B-tree pages, cursors, raw data |
+| `parser` | Tokenize and parse SQL; show AST |
+| `planner` | Show logical plan for a query |
+| `engine` | Compile to bytecode and inspect program |
 
-You can execute commands directly from the command line for scripting and debugging:
+### Non-interactive usage
 
 ```bash
-# List all tables in database
-cargo run -- test.db btree tables
-
-# Inspect raw page structure (useful for debugging CBOR serialization)
-cargo run -- test.db btree inspect page 0
-cargo run -- test.db btree inspect all
-
-# Quick SQL queries
-cargo run -- test.db sql "SELECT * FROM users"
-
-# Parse SQL to see AST
-cargo run -- test.db parser parse "SELECT id FROM users WHERE age > 18"
-
-# Generate query plan
-cargo run -- test.db planner plan "SELECT name FROM users WHERE id = 1"
+cargo run -- mydb.db sql "SELECT * FROM users"
+cargo run -- mydb.db parser parse "SELECT id FROM users WHERE age > 18"
+cargo run -- mydb.db planner plan "SELECT name FROM users WHERE id = 1"
+cargo run -- mydb.db btree inspect all
 ```
-
-**Debugging Commands** (useful during development):
-```bash
-# Check database format version and metadata
-cargo run -- test.db btree inspect page 0
-
-# View catalog structure
-cargo run -- test.db btree open db_schema
-cargo run -- test.db btree print data
-
-# Inspect specific table's B-tree pages
-cargo run -- test.db btree open users
-cargo run -- test.db btree print data
-
-# Verify B-tree integrity
-cargo run -- test.db btree open users
-cargo run -- test.db btree verify
-cargo run -- test.db btree verify all
-```
-
-## Manual Tests
-
-Manual test scripts complement automated tests by exercising the database through realistic end-to-end scenarios.
-
-**Location**: [`manual_tests/`](manual_tests/)
-
-**Available tests**:
-- SQL mode end-to-end test (3 tables, 16 rows, 10 queries)
-- More tests coming soon...
-
-**See**: [`manual_tests/README.md`](manual_tests/README.md) for complete documentation, how to run tests, and guidelines for adding new tests.
 
 ## References
 
 - B-tree design: https://cglab.ca/~abeinges/blah/rust-btree-case/
-- File format: https://www.sqlite.org/fileformat.html
+- SQLite file format: https://www.sqlite.org/fileformat.html
