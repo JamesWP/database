@@ -56,7 +56,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **S** | JavaScript / WebAssembly Bindings | 4 | [phase-s-javascript.md](phase-s-javascript.md) | Planned |
 | **T** | INSERT INTO … SELECT | 3 | [phase-t-insert-select.md](completed/phase-t-insert-select.md) | Completed |
 | **U** | UPDATE Index Maintenance | 3 | [phase-u-update-index-maintenance.md](completed/phase-u-update-index-maintenance.md) | Completed |
-| **V** | README Overhaul | 2 | [phase-v-readme-overhaul.md](phase-v-readme-overhaul.md) | Planned |
+| **V** | README Overhaul | 2 | [phase-v-readme-overhaul.md](completed/phase-v-readme-overhaul.md) | Completed |
 | **W** | Planner Architecture | 3 | [phase-w-planner-architecture.md](completed/phase-w-planner-architecture.md) | Completed |
 | **X** | Compiler Index Codegen Cleanup | 1 | [phase-x-compiler-cleanup.md](completed/phase-x-compiler-cleanup.md) | Completed |
 | **Y** | Project Node Fusion | 2 | [phase-y-project-fusion.md](phase-y-project-fusion.md) | Planned |
