@@ -59,6 +59,8 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **V** | README Overhaul | 2 | [phase-v-readme-overhaul.md](phase-v-readme-overhaul.md) | Planned |
 | **W** | Planner Architecture | 3 | [phase-w-planner-architecture.md](completed/phase-w-planner-architecture.md) | Completed |
 | **X** | Compiler Index Codegen Cleanup | 1 | [phase-x-compiler-cleanup.md](completed/phase-x-compiler-cleanup.md) | Completed |
+| **Y** | Project Node Fusion | 2 | [phase-y-project-fusion.md](phase-y-project-fusion.md) | Planned |
+| **Z** | Unified SELECT Planner | 2 | [phase-z-unified-select.md](phase-z-unified-select.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 

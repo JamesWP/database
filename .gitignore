@@ -4,3 +4,6 @@ test.dot
 test.svg
 big.db
 .vscode/settings.json
+doc/screenshots/demo*.db
+demo.db
+demo-preloaded.db
