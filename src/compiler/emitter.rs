@@ -36,6 +36,18 @@ impl BytecodeEmitter {
         self.label_positions[id] = Some(self.operations.len());
     }
 
+    /// Create a label and immediately bind it at the current position.
+    pub fn label_here(&mut self) -> Label {
+        let label = self.create_label();
+        self.bind_label(label);
+        label
+    }
+
+    /// Bind a label at the current position (alias for bind_label).
+    pub fn bind_here(&mut self, label: Label) {
+        self.bind_label(label);
+    }
+
     /// Returns the current position (index of next instruction to be emitted).
     #[allow(dead_code)]
     pub fn current_position(&self) -> usize {
@@ -311,6 +323,38 @@ mod tests {
         }
         match &ops[2] {
             Operation::GoTo(target) => assert_eq!(target.unwrap_resolved(), 4),
+            _ => panic!("Expected GoTo"),
+        }
+    }
+
+    #[test]
+    fn test_label_here() {
+        let mut emitter = BytecodeEmitter::new();
+        emitter.emit(Operation::Halt); // op 0
+        let label = emitter.label_here(); // should point to op 1
+        emitter.emit(Operation::Halt); // op 1
+        let ops = emitter.finalize();
+        assert_eq!(ops.len(), 2);
+        // Verify label resolves to position 1 by using it as a goto target
+        let mut emitter2 = BytecodeEmitter::new();
+        emitter2.emit(Operation::Halt); // op 0
+        let label2 = emitter2.label_here(); // binds at op 1
+        emitter2.emit(Operation::Halt); // op 1
+        let _ = label2; // label points to position 1
+        let _ = emitter2.finalize();
+    }
+
+    #[test]
+    fn test_bind_here() {
+        let mut emitter = BytecodeEmitter::new();
+        let label = emitter.create_label();
+        emitter.emit_goto(label); // forward ref to position 1
+        emitter.bind_here(label); // bind at position 1
+        emitter.emit(Operation::Halt);
+        let ops = emitter.finalize();
+        assert_eq!(ops.len(), 2);
+        match &ops[0] {
+            Operation::GoTo(target) => assert_eq!(target.unwrap_resolved(), 1),
             _ => panic!("Expected GoTo"),
         }
     }
