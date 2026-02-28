@@ -11,6 +11,77 @@ pub use registers::RegisterAllocator;
 use crate::engine::program::Operation;
 use crate::planner::LogicalPlan;
 
+/// Emit a sequence of operations to `ctx.body_emitter`.
+///
+/// Supports:
+/// - `Bind(label)` — bind_here(label)
+/// - `GoTo(label)` — emit_goto(label)
+/// - `GoToIfFalse(label, reg)` — emit_goto_if_false(label, reg)
+/// - `GoToIfEqualValue(label, a, b)` — emit_goto_if_equal(label, a, b)
+/// - `Op(args...)` — emit(Operation::Op(args...))
+#[macro_export]
+macro_rules! body {
+    ($ctx:expr $(;)?) => {};
+
+    ($ctx:expr; Bind($label:expr) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.bind_here($label);
+        $(body!($ctx; $($rest)*);)?
+    };
+
+    ($ctx:expr; GoTo($label:expr) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.emit_goto($label);
+        $(body!($ctx; $($rest)*);)?
+    };
+
+    ($ctx:expr; GoToIfFalse($label:expr, $reg:expr) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.emit_goto_if_false($label, $reg);
+        $(body!($ctx; $($rest)*);)?
+    };
+
+    ($ctx:expr; GoToIfEqualValue($label:expr, $a:expr, $b:expr) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.emit_goto_if_equal($label, $a, $b);
+        $(body!($ctx; $($rest)*);)?
+    };
+
+    ($ctx:expr; $op:ident($($arg:expr),*) $(; $($rest:tt)*)?) => {
+        $ctx.body_emitter.emit(Operation::$op($($arg),*));
+        $(body!($ctx; $($rest)*);)?
+    };
+}
+
+/// Emit a sequence of operations to `ctx.init_emitter`.
+///
+/// Supports `Bind`, `GoTo`, `GoToIfFalse`, `GoToIfEqualValue`, and general `Op(args...)`.
+#[macro_export]
+macro_rules! init {
+    ($ctx:expr $(;)?) => {};
+
+    ($ctx:expr; Bind($label:expr) $(; $($rest:tt)*)?) => {
+        $ctx.init_emitter.bind_here($label);
+        $(init!($ctx; $($rest)*);)?
+    };
+
+    ($ctx:expr; GoTo($label:expr) $(; $($rest:tt)*)?) => {
+        $ctx.init_emitter.emit_goto($label);
+        $(init!($ctx; $($rest)*);)?
+    };
+
+    ($ctx:expr; GoToIfFalse($label:expr, $reg:expr) $(; $($rest:tt)*)?) => {
+        $ctx.init_emitter.emit_goto_if_false($label, $reg);
+        $(init!($ctx; $($rest)*);)?
+    };
+
+    ($ctx:expr; GoToIfEqualValue($label:expr, $a:expr, $b:expr) $(; $($rest:tt)*)?) => {
+        $ctx.init_emitter.emit_goto_if_equal($label, $a, $b);
+        $(init!($ctx; $($rest)*);)?
+    };
+
+    ($ctx:expr; $op:ident($($arg:expr),*) $(; $($rest:tt)*)?) => {
+        $ctx.init_emitter.emit(Operation::$op($($arg),*));
+        $(init!($ctx; $($rest)*);)?
+    };
+}
+
 /// A compiled program ready for execution by the VM.
 #[derive(Debug)]
 pub struct CompiledProgram {
