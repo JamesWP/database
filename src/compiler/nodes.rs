@@ -1,6 +1,7 @@
 use crate::engine::program::{self, JumpTarget, Label, MoveOperation, Operation, Reg};
 use crate::engine::scalarvalue::ScalarValue;
 use crate::planner::{Literal, LogicalPlan, PlanExpr};
+use crate::{body, init};
 
 use super::{compile_expr, BytecodeEmitter, ExprContext, RegisterAllocator};
 
@@ -125,33 +126,30 @@ pub fn codegen_scan(
     };
 
     // INIT (init_emitter): Open cursor and move to first row
-    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
-    ctx.init_emitter
-        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
+    init!(ctx;
+        Open(cursor_reg, rootpage);
+        MoveCursor(cursor_reg, MoveOperation::First)
+    );
 
     // BODY (body_emitter):
     // CHECK: Label for iteration entry point
-    let check_label = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(check_label);
-    ctx.body_emitter
-        .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
-    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
-
-    // READ: Read current row into all registers (num_read values)
-    ctx.body_emitter
-        .emit(Operation::ReadCursor(all_regs.clone(), cursor_reg));
+    let check_label = ctx.body_emitter.label_here();
+    body!(ctx;
+        CanReadCursor(flag_reg, cursor_reg);
+        GoToIfFalse(cont.on_done, flag_reg);
+        ReadCursor(all_regs.clone(), cursor_reg)
+    );
 
     // KEY (optional): Read row key before advancing so callers can use it
     if let Some(kr) = key_reg {
-        ctx.body_emitter.emit(Operation::ReadKey(kr, cursor_reg));
+        body!(ctx; ReadKey(kr, cursor_reg));
     }
 
     // ADVANCE: Move cursor to next row (makes next row "pending")
-    ctx.body_emitter
-        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
-
-    // EMIT: Jump to tuple handler
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx;
+        MoveCursor(cursor_reg, MoveOperation::Next);
+        GoTo(cont.on_tuple)
+    );
 
     NodeOutput {
         next: check_label,
@@ -184,8 +182,7 @@ pub fn codegen_count(
     let counter_reg = ctx.registers.alloc();
 
     // INIT: initialize counter to 0
-    ctx.init_emitter
-        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
+    init!(ctx; StoreValue(counter_reg, ScalarValue::Integer(0)));
 
     // Create labels for child's continuations
     let child_on_tuple = ctx.body_emitter.create_label();
@@ -199,19 +196,17 @@ pub fn codegen_count(
     let child_output = codegen(input, &child_cont, ctx);
 
     // child_on_tuple: increment counter, get next from child
-    ctx.body_emitter.bind_label(child_on_tuple);
-    ctx.body_emitter
-        .emit(Operation::IncrementValue(counter_reg));
-    ctx.body_emitter.emit_goto(child_output.next);
-
-    // child_on_done: count is ready, signal our on_tuple
-    ctx.body_emitter.bind_label(child_on_done);
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx;
+        Bind(child_on_tuple);
+        IncrementValue(counter_reg);
+        GoTo(child_output.next);
+        Bind(child_on_done);
+        GoTo(cont.on_tuple)
+    );
 
     // count_next: after yielding once, we're done
-    let count_next = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(count_next);
-    ctx.body_emitter.emit_goto(cont.on_done);
+    let count_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(cont.on_done));
 
     NodeOutput {
         next: count_next,
@@ -247,9 +242,8 @@ pub fn codegen_values(
 
     // Handle empty values - just go to done immediately
     if num_rows == 0 {
-        let check_label = ctx.body_emitter.create_label();
-        ctx.body_emitter.bind_label(check_label);
-        ctx.body_emitter.emit_goto(cont.on_done);
+        let check_label = ctx.body_emitter.label_here();
+        body!(ctx; GoTo(cont.on_done));
         return NodeOutput {
             next: check_label,
             output_regs: vec![],
@@ -265,19 +259,16 @@ pub fn codegen_values(
     let cmp_reg = ctx.registers.alloc();
 
     // INIT: index = 0, num_rows = N
-    ctx.init_emitter
-        .emit(Operation::StoreValue(index_reg, ScalarValue::Integer(0)));
-    ctx.init_emitter.emit(Operation::StoreValue(
-        num_rows_reg,
-        ScalarValue::Integer(num_rows as i64),
-    ));
+    init!(ctx;
+        StoreValue(index_reg, ScalarValue::Integer(0));
+        StoreValue(num_rows_reg, ScalarValue::Integer(num_rows as i64))
+    );
 
     // Allocate constant registers for each row index (for dispatch comparison)
     let index_constants: Vec<Reg> = (0..num_rows)
         .map(|i| {
             let reg = ctx.registers.alloc();
-            ctx.init_emitter
-                .emit(Operation::StoreValue(reg, ScalarValue::Integer(i as i64)));
+            init!(ctx; StoreValue(reg, ScalarValue::Integer(i as i64)));
             reg
         })
         .collect();
@@ -290,36 +281,36 @@ pub fn codegen_values(
 
     // BODY:
     // CHECK: if index >= num_rows, goto on_done
-    let check_label = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(check_label);
-    ctx.body_emitter
-        .emit(Operation::LessThanValue(cmp_reg, index_reg, num_rows_reg));
-    ctx.body_emitter.emit_goto_if_false(cont.on_done, cmp_reg);
+    let check_label = ctx.body_emitter.label_here();
+    body!(ctx;
+        LessThanValue(cmp_reg, index_reg, num_rows_reg);
+        GoToIfFalse(cont.on_done, cmp_reg)
+    );
 
     // DISPATCH: for each row, check if index == i and jump to that row
     for (i, row_label) in row_labels.iter().enumerate() {
-        ctx.body_emitter
-            .emit_goto_if_equal(*row_label, index_reg, index_constants[i]);
+        body!(ctx; GoToIfEqualValue(*row_label, index_reg, index_constants[i]));
     }
 
     // Fallthrough safety: shouldn't reach here, but go to done
-    ctx.body_emitter.emit_goto(cont.on_done);
+    body!(ctx; GoTo(cont.on_done));
 
     // Emit each row's code
     for (i, row) in rows.iter().enumerate() {
-        ctx.body_emitter.bind_label(row_labels[i]);
+        ctx.body_emitter.bind_here(row_labels[i]);
         for (j, lit) in row.iter().enumerate() {
             let sv = literal_to_scalar(lit);
-            ctx.body_emitter
-                .emit(Operation::StoreValue(output_regs[j], sv.clone()));
+            body!(ctx; StoreValue(output_regs[j], sv.clone()));
         }
-        ctx.body_emitter.emit_goto(emit_label);
+        body!(ctx; GoTo(emit_label));
     }
 
     // EMIT: increment index, goto on_tuple
-    ctx.body_emitter.bind_label(emit_label);
-    ctx.body_emitter.emit(Operation::IncrementValue(index_reg));
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx;
+        Bind(emit_label);
+        IncrementValue(index_reg);
+        GoTo(cont.on_tuple)
+    );
 
     NodeOutput {
         next: check_label,
@@ -353,26 +344,21 @@ pub fn codegen_sequence(
     let output_reg = ctx.registers.alloc();
 
     // INIT: initialize value and end
-    ctx.init_emitter.emit(Operation::StoreValue(
-        value_reg,
-        ScalarValue::Integer(start),
-    ));
-    ctx.init_emitter
-        .emit(Operation::StoreValue(end_reg, ScalarValue::Integer(end)));
+    init!(ctx;
+        StoreValue(value_reg, ScalarValue::Integer(start));
+        StoreValue(end_reg, ScalarValue::Integer(end))
+    );
 
     // BODY:
     // CHECK: if value >= end, goto on_done
-    let check_label = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(check_label);
-    ctx.body_emitter
-        .emit(Operation::LessThanValue(flag_reg, value_reg, end_reg));
-    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
-
-    // EMIT: copy value to output, increment, goto on_tuple
-    ctx.body_emitter
-        .emit(Operation::CopyValue(output_reg, value_reg));
-    ctx.body_emitter.emit(Operation::IncrementValue(value_reg));
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    let check_label = ctx.body_emitter.label_here();
+    body!(ctx;
+        LessThanValue(flag_reg, value_reg, end_reg);
+        GoToIfFalse(cont.on_done, flag_reg);
+        CopyValue(output_reg, value_reg);
+        IncrementValue(value_reg);
+        GoTo(cont.on_tuple)
+    );
 
     NodeOutput {
         next: check_label,
@@ -417,7 +403,7 @@ pub fn codegen_filter(
     let child_output = codegen(input, &child_cont, ctx);
 
     // FILTER_CHECK: compile predicate and check
-    ctx.body_emitter.bind_label(filter_check);
+    ctx.body_emitter.bind_here(filter_check);
 
     // Compile the predicate expression
     let pred_reg = {
@@ -429,11 +415,10 @@ pub fn codegen_filter(
     };
 
     // If predicate is false, get next from child (reject)
-    ctx.body_emitter
-        .emit_goto_if_false(child_output.next, pred_reg);
-
-    // If predicate is true (fall through), emit the tuple
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx;
+        GoToIfFalse(child_output.next, pred_reg);
+        GoTo(cont.on_tuple)
+    );
 
     // Return: delegate to child for next, pass through output registers
     NodeOutput {
@@ -461,124 +446,93 @@ pub fn codegen_index_scan(
     let output_regs = vec![pk_reg];
 
     // INIT: Open index cursor
-    ctx.init_emitter
-        .emit(Operation::Open(index_cursor_reg, index_rootpage));
+    init!(ctx; Open(index_cursor_reg, index_rootpage));
 
     // Encode lower bound and position cursor
     if let Some((lower_lit, _lower_inclusive)) = lower_bound {
         let lower_key_reg = ctx.registers.alloc();
         let lower_scalar = literal_to_scalar(lower_lit);
-        ctx.init_emitter
-            .emit(Operation::StoreValue(lower_key_reg, lower_scalar));
-        ctx.init_emitter
-            .emit(Operation::EncodeIndexKey(lower_key_reg, lower_key_reg));
-        // Find first entry >= lower bound
-        ctx.init_emitter.emit(Operation::MoveCursor(
-            index_cursor_reg,
-            MoveOperation::Find(lower_key_reg),
-        ));
+        init!(ctx;
+            StoreValue(lower_key_reg, lower_scalar);
+            EncodeIndexKey(lower_key_reg, lower_key_reg);
+            MoveCursor(index_cursor_reg, MoveOperation::Find(lower_key_reg))
+        );
 
         // If exclusive lower bound, skip entries where key starts with the lower bound prefix.
         // TEXT values in encode_index_value are NUL-terminated ([0x03][bytes][0x00]), ensuring
         // that 'a' encoded as [0x03,0x61,0x00] is NOT a prefix of 'apple' [0x03,0x61,0x70,...].
         // So BlobStartsWith correctly identifies exact column-value matches.
         if !_lower_inclusive {
-            let skip_check = ctx.body_emitter.create_label();
-            ctx.body_emitter.bind_label(skip_check);
+            let skip_check = ctx.body_emitter.label_here();
             let can_read_reg = ctx.registers.alloc();
-            ctx.body_emitter
-                .emit(Operation::CanReadCursor(can_read_reg, index_cursor_reg));
-            ctx.body_emitter
-                .emit_goto_if_false(cont.on_done, can_read_reg);
             let key_blob = ctx.registers.alloc();
             let matches_lower = ctx.registers.alloc();
-            ctx.body_emitter
-                .emit(Operation::ReadCurrentKey(key_blob, index_cursor_reg));
-            ctx.body_emitter.emit(Operation::BlobStartsWith(
-                matches_lower,
-                key_blob,
-                lower_key_reg,
-            ));
-            // If key matches lower prefix, advance past it
             let after_skip = ctx.body_emitter.create_label();
-            ctx.body_emitter
-                .emit_goto_if_false(after_skip, matches_lower);
-            ctx.body_emitter
-                .emit(Operation::MoveCursor(index_cursor_reg, MoveOperation::Next));
-            ctx.body_emitter.emit_goto(skip_check);
-            ctx.body_emitter.bind_label(after_skip);
+            body!(ctx;
+                CanReadCursor(can_read_reg, index_cursor_reg);
+                GoToIfFalse(cont.on_done, can_read_reg);
+                ReadCurrentKey(key_blob, index_cursor_reg);
+                BlobStartsWith(matches_lower, key_blob, lower_key_reg);
+                GoToIfFalse(after_skip, matches_lower);
+                MoveCursor(index_cursor_reg, MoveOperation::Next);
+                GoTo(skip_check);
+                Bind(after_skip)
+            );
         }
     } else {
         // No lower bound: start from the beginning
-        ctx.init_emitter.emit(Operation::MoveCursor(
-            index_cursor_reg,
-            MoveOperation::First,
-        ));
+        init!(ctx; MoveCursor(index_cursor_reg, MoveOperation::First));
     }
 
     // Encode upper bound register if present
     let upper_key_reg = if let Some((upper_lit, _)) = upper_bound {
         let reg = ctx.registers.alloc();
         let upper_scalar = literal_to_scalar(upper_lit);
-        ctx.init_emitter
-            .emit(Operation::StoreValue(reg, upper_scalar));
-        ctx.init_emitter.emit(Operation::EncodeIndexKey(reg, reg));
+        init!(ctx;
+            StoreValue(reg, upper_scalar);
+            EncodeIndexKey(reg, reg)
+        );
         Some((reg, upper_bound.as_ref().unwrap().1))
     } else {
         None
     };
 
     // BODY: Check bounds and yield rows
-    let index_check = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(index_check);
-
-    ctx.body_emitter
-        .emit(Operation::CanReadCursor(flag_reg, index_cursor_reg));
-    ctx.body_emitter.emit_goto_if_false(cont.on_done, flag_reg);
+    let index_check = ctx.body_emitter.label_here();
+    body!(ctx;
+        CanReadCursor(flag_reg, index_cursor_reg);
+        GoToIfFalse(cont.on_done, flag_reg)
+    );
 
     // Read the current index key once; reused for bound check and rowid extraction
     let key_blob_reg = ctx.registers.alloc();
-    ctx.body_emitter
-        .emit(Operation::ReadCurrentKey(key_blob_reg, index_cursor_reg));
+    body!(ctx; ReadCurrentKey(key_blob_reg, index_cursor_reg));
 
     // Check upper bound: stop if key prefix exceeds bound
     if let Some((upper_reg, inclusive)) = upper_key_reg {
         let in_range_reg = ctx.registers.alloc();
         if inclusive {
-            // key_prefix <= bound → continue; key_prefix > bound → stop
-            ctx.body_emitter.emit(Operation::BlobPrefixLe(
-                in_range_reg,
-                key_blob_reg,
-                upper_reg,
-            ));
+            body!(ctx; BlobPrefixLe(in_range_reg, key_blob_reg, upper_reg));
         } else {
-            // key_prefix < bound → continue; key_prefix >= bound → stop
-            ctx.body_emitter.emit(Operation::BlobPrefixLt(
-                in_range_reg,
-                key_blob_reg,
-                upper_reg,
-            ));
+            body!(ctx; BlobPrefixLt(in_range_reg, key_blob_reg, upper_reg));
         }
-        ctx.body_emitter
-            .emit_goto_if_false(cont.on_done, in_range_reg);
+        body!(ctx; GoToIfFalse(cont.on_done, in_range_reg));
     }
 
     // Extract rowid from last 8 bytes of the index key (rowid is always the last 8 bytes)
     let pk_blob_reg = ctx.registers.alloc();
-    ctx.body_emitter
-        .emit(Operation::BlobSliceLast(pk_blob_reg, key_blob_reg, 8));
-    ctx.body_emitter
-        .emit(Operation::DecodeU64Key(pk_reg, pk_blob_reg));
-
-    // Yield the rowid to the parent RowidLookup node
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx;
+        BlobSliceLast(pk_blob_reg, key_blob_reg, 8);
+        DecodeU64Key(pk_reg, pk_blob_reg);
+        GoTo(cont.on_tuple)
+    );
 
     // INDEX_NEXT: advance
-    let index_next = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(index_next);
-    ctx.body_emitter
-        .emit(Operation::MoveCursor(index_cursor_reg, MoveOperation::Next));
-    ctx.body_emitter.emit_goto(index_check);
+    let index_next = ctx.body_emitter.label_here();
+    body!(ctx;
+        MoveCursor(index_cursor_reg, MoveOperation::Next);
+        GoTo(index_check)
+    );
 
     NodeOutput {
         next: index_next,
@@ -601,8 +555,7 @@ pub fn codegen_rowid_lookup(
     let output_regs = ctx.registers.alloc_block(columns.len());
 
     // INIT: Open the table cursor
-    ctx.init_emitter
-        .emit(Operation::Open(table_cursor_reg, table_rootpage));
+    init!(ctx; Open(table_cursor_reg, table_rootpage));
 
     // Wire: child's on_tuple → our lookup logic
     let lookup = ctx.body_emitter.create_label();
@@ -614,16 +567,13 @@ pub fn codegen_rowid_lookup(
     let child_output = codegen(input, &child_cont, ctx);
 
     // LOOKUP: child yielded a rowid in child_output.output_regs[0]
-    ctx.body_emitter.bind_label(lookup);
+    ctx.body_emitter.bind_here(lookup);
     let pk_reg = child_output.output_regs[0];
-
-    ctx.body_emitter.emit(Operation::MoveCursor(
-        table_cursor_reg,
-        MoveOperation::Find(pk_reg),
-    ));
-    ctx.body_emitter
-        .emit(Operation::ReadCursor(output_regs.clone(), table_cursor_reg));
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx;
+        MoveCursor(table_cursor_reg, MoveOperation::Find(pk_reg));
+        ReadCursor(output_regs.clone(), table_cursor_reg);
+        GoTo(cont.on_tuple)
+    );
 
     NodeOutput {
         next: child_output.next,
@@ -667,7 +617,7 @@ pub fn codegen_project(
     let child_output = codegen(input, &child_cont, ctx);
 
     // PROJECT_COMPUTE: compute each projection expression
-    ctx.body_emitter.bind_label(project_compute);
+    ctx.body_emitter.bind_here(project_compute);
 
     // Compile each expression into new output registers
     let output_regs: Vec<Reg> = columns
@@ -682,7 +632,7 @@ pub fn codegen_project(
         .collect();
 
     // Emit the transformed tuple
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx; GoTo(cont.on_tuple));
 
     // Return: delegate to child for next, but with new output registers
     NodeOutput {
@@ -723,12 +673,10 @@ pub fn codegen_limit(
     let zero_reg = ctx.registers.alloc();
 
     // INIT: initialize counter to count, zero to 0
-    ctx.init_emitter.emit(Operation::StoreValue(
-        counter_reg,
-        ScalarValue::Integer(count as i64),
-    ));
-    ctx.init_emitter
-        .emit(Operation::StoreValue(zero_reg, ScalarValue::Integer(0)));
+    init!(ctx;
+        StoreValue(counter_reg, ScalarValue::Integer(count as i64));
+        StoreValue(zero_reg, ScalarValue::Integer(0))
+    );
 
     // Create label for limit check
     let limit_check = ctx.body_emitter.create_label();
@@ -744,16 +692,12 @@ pub fn codegen_limit(
     let child_output = codegen(input, &child_cont, ctx);
 
     // LIMIT_CHECK: check if counter == 0
-    ctx.body_emitter.bind_label(limit_check);
-    ctx.body_emitter
-        .emit_goto_if_equal(cont.on_done, counter_reg, zero_reg);
-
-    // Decrement counter
-    ctx.body_emitter
-        .emit(Operation::DecrementValue(counter_reg));
-
-    // Emit the tuple
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    ctx.body_emitter.bind_here(limit_check);
+    body!(ctx;
+        GoToIfEqualValue(cont.on_done, counter_reg, zero_reg);
+        DecrementValue(counter_reg);
+        GoTo(cont.on_tuple)
+    );
 
     // Return: delegate to child for next, pass through output registers
     NodeOutput {
@@ -794,7 +738,7 @@ pub fn codegen_distinct(
     let table_reg = ctx.registers.alloc();
 
     // INIT: initialize empty group table
-    ctx.init_emitter.emit(Operation::InitGroupTable(table_reg));
+    init!(ctx; InitGroupTable(table_reg));
 
     // Create labels
     let collect_row = ctx.body_emitter.create_label();
@@ -810,16 +754,12 @@ pub fn codegen_distinct(
     let child_output = codegen(input, &child_cont, ctx);
 
     // collect_row: insert row into group table (deduplicates automatically)
-    ctx.body_emitter.bind_label(collect_row);
-    ctx.body_emitter.emit(Operation::UpdateGroup(
-        table_reg,
-        child_output.output_regs.clone(),
-        vec![], // no aggregates — pure dedup
-    ));
-    ctx.body_emitter.emit_goto(child_output.next);
-
-    // yield_from_groups: pop unique rows and yield
-    ctx.body_emitter.bind_label(yield_from_groups);
+    body!(ctx;
+        Bind(collect_row);
+        UpdateGroup(table_reg, child_output.output_regs.clone(), vec![]);
+        GoTo(child_output.next);
+        Bind(yield_from_groups)
+    );
 
     let num_outputs = child_output.output_regs.len();
     let output_regs: Vec<Reg> = (0..num_outputs).map(|_| ctx.registers.alloc()).collect();
@@ -829,11 +769,10 @@ pub fn codegen_distinct(
         table_reg,
         JumpTarget::Unresolved(cont.on_done),
     ));
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx; GoTo(cont.on_tuple));
 
-    let distinct_next = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(distinct_next);
-    ctx.body_emitter.emit_goto(yield_from_groups);
+    let distinct_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(yield_from_groups));
 
     NodeOutput {
         next: distinct_next,
@@ -874,7 +813,7 @@ pub fn codegen_sort(
     let buffer_reg = ctx.registers.alloc();
 
     // INIT: initialize empty buffer
-    ctx.init_emitter.emit(Operation::InitRowBuffer(buffer_reg));
+    init!(ctx; InitRowBuffer(buffer_reg));
 
     // Create labels
     let collect_row = ctx.body_emitter.create_label();
@@ -892,15 +831,14 @@ pub fn codegen_sort(
     let child_output = codegen(input, &child_cont, ctx);
 
     // collect_row: append row to buffer and continue
-    ctx.body_emitter.bind_label(collect_row);
-    ctx.body_emitter.emit(Operation::AppendToRowBuffer(
-        buffer_reg,
-        child_output.output_regs.clone(),
-    ));
-    ctx.body_emitter.emit_goto(child_output.next);
+    body!(ctx;
+        Bind(collect_row);
+        AppendToRowBuffer(buffer_reg, child_output.output_regs.clone());
+        GoTo(child_output.next)
+    );
 
     // sort_and_yield: sort the buffer, then fall through to yield loop
-    ctx.body_emitter.bind_label(sort_and_yield);
+    ctx.body_emitter.bind_here(sort_and_yield);
 
     // Convert PlanExpr sort keys to column-index-based sort keys
     // For now, we assume sort expressions are simple column references
@@ -919,25 +857,21 @@ pub fn codegen_sort(
         })
         .collect();
 
-    ctx.body_emitter
-        .emit(Operation::SortRowBuffer(buffer_reg, sort_key_specs));
-    ctx.body_emitter
-        .emit(Operation::RewindRowBuffer(buffer_reg));
-
-    // yield_loop: advance cursor and yield rows
-    ctx.body_emitter.bind_label(yield_loop);
+    body!(ctx;
+        SortRowBuffer(buffer_reg, sort_key_specs);
+        RewindRowBuffer(buffer_reg);
+        Bind(yield_loop)
+    );
     ctx.body_emitter.emit(Operation::NextFromRowBuffer(
         child_output.output_regs.clone(),
         buffer_reg,
         JumpTarget::Unresolved(cont.on_done),
     ));
-    // If NextFromRowBuffer succeeds (didn't jump to on_done), emit tuple
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx; GoTo(cont.on_tuple));
 
     // sort_next: after parent processes tuple, yield next row
-    let sort_next = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(sort_next);
-    ctx.body_emitter.emit_goto(yield_loop);
+    let sort_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(yield_loop));
 
     NodeOutput {
         next: sort_next,
@@ -983,7 +917,7 @@ pub fn codegen_aggregate(
     let table_reg = ctx.registers.alloc();
 
     // INIT: initialize empty group table
-    ctx.init_emitter.emit(Operation::InitGroupTable(table_reg));
+    init!(ctx; InitGroupTable(table_reg));
 
     // Create labels
     let update_group = ctx.body_emitter.create_label();
@@ -1000,7 +934,7 @@ pub fn codegen_aggregate(
     let child_output = codegen(input, &child_cont, ctx);
 
     // update_group: evaluate group keys, update group, continue
-    ctx.body_emitter.bind_label(update_group);
+    ctx.body_emitter.bind_here(update_group);
 
     // Evaluate group key expressions into registers
     let key_regs: Vec<Reg> = group_keys
@@ -1038,15 +972,11 @@ pub fn codegen_aggregate(
         })
         .collect();
 
-    ctx.body_emitter.emit(Operation::UpdateGroup(
-        table_reg,
-        key_regs.clone(),
-        agg_specs,
-    ));
-    ctx.body_emitter.emit_goto(child_output.next);
-
-    // yield_from_groups: pop groups and yield
-    ctx.body_emitter.bind_label(yield_from_groups);
+    body!(ctx;
+        UpdateGroup(table_reg, key_regs.clone(), agg_specs);
+        GoTo(child_output.next);
+        Bind(yield_from_groups)
+    );
 
     // Allocate output registers: group_keys + aggregates
     let num_outputs = group_keys.len() + aggregates.len();
@@ -1065,19 +995,14 @@ pub fn codegen_aggregate(
             registers: &mut ctx.registers,
         };
         let cond_reg = compile_expr(pred, &output_regs, &mut expr_ctx);
-        ctx.body_emitter.emit(Operation::GoToIfFalse(
-            JumpTarget::Unresolved(yield_from_groups),
-            cond_reg,
-        ));
+        body!(ctx; GoToIfFalse(yield_from_groups, cond_reg));
     }
 
-    // If YieldFromGroupTable succeeds (and HAVING passes), emit tuple
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx; GoTo(cont.on_tuple));
 
     // agg_next: after parent processes tuple, yield next group
-    let agg_next = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(agg_next);
-    ctx.body_emitter.emit_goto(yield_from_groups);
+    let agg_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(yield_from_groups));
 
     NodeOutput {
         next: agg_next,
@@ -1173,33 +1098,21 @@ pub fn codegen_insert(
     let index_cursor_regs = open_index_cursors(indexes, ctx);
 
     // INIT: Open cursor and discover next key
-    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
-    ctx.init_emitter
-        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Last));
-    ctx.init_emitter
-        .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
-
-    // Branch: if table is empty, go to @empty
     let empty_label = ctx.init_emitter.create_label();
     let init_done_label = ctx.init_emitter.create_label();
-
-    ctx.init_emitter.emit_goto_if_false(empty_label, flag_reg);
-
-    // Non-empty: read max key, increment
-    ctx.init_emitter
-        .emit(Operation::ReadKey(key_reg, cursor_reg));
-    ctx.init_emitter.emit(Operation::IncrementValue(key_reg));
-    ctx.init_emitter.emit_goto(init_done_label);
-
-    // @empty: start at key 1
-    ctx.init_emitter.bind_label(empty_label);
-    ctx.init_emitter
-        .emit(Operation::StoreValue(key_reg, ScalarValue::Integer(1)));
-
-    // @init_done: init counter
-    ctx.init_emitter.bind_label(init_done_label);
-    ctx.init_emitter
-        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
+    init!(ctx;
+        Open(cursor_reg, rootpage);
+        MoveCursor(cursor_reg, MoveOperation::Last);
+        CanReadCursor(flag_reg, cursor_reg);
+        GoToIfFalse(empty_label, flag_reg);
+        ReadKey(key_reg, cursor_reg);
+        IncrementValue(key_reg);
+        GoTo(init_done_label);
+        Bind(empty_label);
+        StoreValue(key_reg, ScalarValue::Integer(1));
+        Bind(init_done_label);
+        StoreValue(counter_reg, ScalarValue::Integer(0))
+    );
 
     // Create labels for child's continuations
     let child_on_tuple = ctx.body_emitter.create_label();
@@ -1213,7 +1126,7 @@ pub fn codegen_insert(
     let child_output = codegen(input, &child_cont, ctx);
 
     // child_on_tuple: write row, increment key and counter, get next
-    ctx.body_emitter.bind_label(child_on_tuple);
+    ctx.body_emitter.bind_here(child_on_tuple);
 
     // Reorder child output registers to match table column order
     // If table has columns [id, name, age] and user wrote INSERT(age,id,name)
@@ -1229,36 +1142,27 @@ pub fn codegen_insert(
 
         // Copy each value to its correct position
         for (i, &col_idx) in table_columns.iter().enumerate() {
-            ctx.body_emitter.emit(Operation::CopyValue(
-                reordered[col_idx],
-                child_output.output_regs[i],
-            ));
+            body!(ctx; CopyValue(reordered[col_idx], child_output.output_regs[i]));
         }
 
         reordered
     };
-    ctx.body_emitter.emit(Operation::WriteCursor(
-        cursor_reg,
-        key_reg,
-        reordered_regs.clone(),
-    ));
+    body!(ctx; WriteCursor(cursor_reg, key_reg, reordered_regs.clone()));
 
     // Write to each index
     emit_write_indexes(indexes, &index_cursor_regs, &reordered_regs, key_reg, ctx);
 
-    ctx.body_emitter.emit(Operation::IncrementValue(key_reg));
-    ctx.body_emitter
-        .emit(Operation::IncrementValue(counter_reg));
-    ctx.body_emitter.emit_goto(child_output.next);
-
-    // child_on_done: all rows consumed, yield the count
-    ctx.body_emitter.bind_label(child_on_done);
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx;
+        IncrementValue(key_reg);
+        IncrementValue(counter_reg);
+        GoTo(child_output.next);
+        Bind(child_on_done);
+        GoTo(cont.on_tuple)
+    );
 
     // insert_next: after yielding count, we're done
-    let insert_next = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(insert_next);
-    ctx.body_emitter.emit_goto(cont.on_done);
+    let insert_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(cont.on_done));
 
     NodeOutput {
         next: insert_next,
@@ -1302,26 +1206,21 @@ pub fn codegen_update(
     let index_cursor_regs = open_index_cursors(indexes, ctx);
 
     // INIT: open cursor, position to first, init key buffer and counter
-    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
-    ctx.init_emitter
-        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
-    ctx.init_emitter
-        .emit(Operation::InitRowBuffer(key_list_reg));
-    ctx.init_emitter
-        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
+    init!(ctx;
+        Open(cursor_reg, rootpage);
+        MoveCursor(cursor_reg, MoveOperation::First);
+        InitRowBuffer(key_list_reg);
+        StoreValue(counter_reg, ScalarValue::Integer(0))
+    );
 
     // PHASE 1: Collect keys
-    let collect_start = ctx.body_emitter.create_label();
     let phase2_start = ctx.body_emitter.create_label();
-
-    ctx.body_emitter.bind_label(collect_start);
-    ctx.body_emitter
-        .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
-    ctx.body_emitter.emit_goto_if_false(phase2_start, flag_reg);
-
-    // Read all columns (needed for filter evaluation)
-    ctx.body_emitter
-        .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
+    let collect_start = ctx.body_emitter.label_here();
+    body!(ctx;
+        CanReadCursor(flag_reg, cursor_reg);
+        GoToIfFalse(phase2_start, flag_reg);
+        ReadCursor(read_regs.clone(), cursor_reg)
+    );
 
     // Evaluate filter if present
     if let Some(filter_expr) = filter {
@@ -1333,40 +1232,36 @@ pub fn codegen_update(
             compile_expr(filter_expr, &read_regs, &mut expr_ctx)
         };
         let skip_label = ctx.body_emitter.create_label();
-        ctx.body_emitter.emit_goto_if_false(skip_label, filter_reg);
-
-        // Filter matched: collect this key
-        ctx.body_emitter
-            .emit(Operation::ReadKey(key_reg, cursor_reg));
-        ctx.body_emitter
-            .emit(Operation::AppendToRowBuffer(key_list_reg, vec![key_reg]));
-        ctx.body_emitter
-            .emit(Operation::IncrementValue(counter_reg));
-
-        ctx.body_emitter.bind_label(skip_label);
+        body!(ctx;
+            GoToIfFalse(skip_label, filter_reg);
+            ReadKey(key_reg, cursor_reg);
+            AppendToRowBuffer(key_list_reg, vec![key_reg]);
+            IncrementValue(counter_reg);
+            Bind(skip_label)
+        );
     } else {
         // No filter: collect all keys
-        ctx.body_emitter
-            .emit(Operation::ReadKey(key_reg, cursor_reg));
-        ctx.body_emitter
-            .emit(Operation::AppendToRowBuffer(key_list_reg, vec![key_reg]));
-        ctx.body_emitter
-            .emit(Operation::IncrementValue(counter_reg));
+        body!(ctx;
+            ReadKey(key_reg, cursor_reg);
+            AppendToRowBuffer(key_list_reg, vec![key_reg]);
+            IncrementValue(counter_reg)
+        );
     }
 
-    // Advance to next row
-    ctx.body_emitter
-        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
-    ctx.body_emitter.emit_goto(collect_start);
+    body!(ctx;
+        MoveCursor(cursor_reg, MoveOperation::Next);
+        GoTo(collect_start)
+    );
 
     // PHASE 2: Update collected keys
     let update_loop = ctx.body_emitter.create_label();
     let update_done = ctx.body_emitter.create_label();
 
-    ctx.body_emitter.bind_label(phase2_start);
-    ctx.body_emitter
-        .emit(Operation::RewindRowBuffer(key_list_reg));
-    ctx.body_emitter.bind_label(update_loop);
+    body!(ctx;
+        Bind(phase2_start);
+        RewindRowBuffer(key_list_reg);
+        Bind(update_loop)
+    );
 
     // Advance to next key, or jump to done if buffer is exhausted
     ctx.body_emitter.emit(Operation::NextFromRowBuffer(
@@ -1376,12 +1271,10 @@ pub fn codegen_update(
     ));
 
     // Seek to this key and re-read row values
-    ctx.body_emitter.emit(Operation::MoveCursor(
-        cursor_reg,
-        MoveOperation::Find(key_reg),
-    ));
-    ctx.body_emitter
-        .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
+    body!(ctx;
+        MoveCursor(cursor_reg, MoveOperation::Find(key_reg));
+        ReadCursor(read_regs.clone(), cursor_reg)
+    );
 
     // Delete stale index entries (old column values, before applying assignments)
     emit_delete_indexes(indexes, &index_cursor_regs, &read_regs, key_reg, ctx);
@@ -1396,26 +1289,22 @@ pub fn codegen_update(
             };
             compile_expr(expr, &read_regs, &mut expr_ctx)
         };
-        ctx.body_emitter
-            .emit(Operation::CopyValue(new_values[*col_idx], value_reg));
+        body!(ctx; CopyValue(new_values[*col_idx], value_reg));
     }
 
     // Write updated index entries (new column values, after applying assignments)
     emit_write_indexes(indexes, &index_cursor_regs, &new_values, key_reg, ctx);
 
-    // Write updated row
-    ctx.body_emitter
-        .emit(Operation::WriteCursor(cursor_reg, key_reg, new_values));
-    ctx.body_emitter.emit_goto(update_loop);
-
-    // Done: yield count
-    ctx.body_emitter.bind_label(update_done);
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx;
+        WriteCursor(cursor_reg, key_reg, new_values);
+        GoTo(update_loop);
+        Bind(update_done);
+        GoTo(cont.on_tuple)
+    );
 
     // After yielding, halt
-    let after_yield = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(after_yield);
-    ctx.body_emitter.emit_goto(cont.on_done);
+    let after_yield = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(cont.on_done));
 
     NodeOutput {
         next: after_yield,
@@ -1482,7 +1371,7 @@ pub fn codegen_join(
     // --- Phase 1: Materialize right side into buffer ---
 
     let buffer_reg = ctx.registers.alloc();
-    ctx.init_emitter.emit(Operation::InitRowBuffer(buffer_reg));
+    init!(ctx; InitRowBuffer(buffer_reg));
 
     // Compile right child via normal codegen
     // Its init code → init_emitter, body code → body_emitter
@@ -1495,17 +1384,14 @@ pub fn codegen_join(
     let right_output = codegen(right, &right_cont, ctx);
 
     // mat_on_tuple: append row to buffer, request next
-    ctx.body_emitter.bind_label(mat_on_tuple);
-    ctx.body_emitter.emit(Operation::AppendToRowBuffer(
-        buffer_reg,
-        right_output.output_regs.clone(),
-    ));
-    ctx.body_emitter.emit_goto(right_output.next);
-
-    // mat_on_done: materialization complete, jump to join loop
-    ctx.body_emitter.bind_label(mat_on_done);
     let join_loop_start = ctx.body_emitter.create_label(); // forward ref
-    ctx.body_emitter.emit_goto(join_loop_start);
+    body!(ctx;
+        Bind(mat_on_tuple);
+        AppendToRowBuffer(buffer_reg, right_output.output_regs.clone());
+        GoTo(right_output.next);
+        Bind(mat_on_done);
+        GoTo(join_loop_start)
+    );
 
     // --- Phase 2: Nested loop join ---
 
@@ -1518,8 +1404,10 @@ pub fn codegen_join(
     let left_output = codegen(left, &left_cont, ctx);
 
     // Bind join_loop_start: after materialization, start left iteration
-    ctx.body_emitter.bind_label(join_loop_start);
-    ctx.body_emitter.emit_goto(left_output.next);
+    body!(ctx;
+        Bind(join_loop_start);
+        GoTo(left_output.next)
+    );
 
     // Allocate registers for right-side rows read from buffer
     let right_read_regs = ctx.registers.alloc_block(right_output.output_regs.len());
@@ -1529,13 +1417,12 @@ pub fn codegen_join(
     combined_output.extend(right_read_regs.clone());
 
     // left_on_tuple: got a left row, iterate buffer
-    ctx.body_emitter.bind_label(left_on_tuple);
-    ctx.body_emitter
-        .emit(Operation::RewindRowBuffer(buffer_reg));
-
-    // INNER_CHECK: read next row from buffer
     let inner_check = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(inner_check);
+    body!(ctx;
+        Bind(left_on_tuple);
+        RewindRowBuffer(buffer_reg);
+        Bind(inner_check)
+    );
     // NextFromRowBuffer jumps to target when buffer is exhausted.
     // Use JumpTarget::Unresolved(label) — same pattern as YieldFromRowBuffer
     // in codegen_sort (see line ~640 of nodes.rs).
@@ -1554,13 +1441,14 @@ pub fn codegen_join(
             registers: &mut ctx.registers,
         },
     );
-    ctx.body_emitter.emit_goto_if_false(inner_check, pred_reg); // no match → next buffer row
-    ctx.body_emitter.emit_goto(cont.on_tuple); // match → emit row
+    body!(ctx;
+        GoToIfFalse(inner_check, pred_reg);
+        GoTo(cont.on_tuple)
+    );
 
     // JOIN_NEXT: parent calls this to get next matching row
-    let join_next = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(join_next);
-    ctx.body_emitter.emit_goto(inner_check);
+    let join_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(inner_check));
 
     NodeOutput {
         next: join_next,
@@ -1597,26 +1485,21 @@ pub fn codegen_delete(
     let index_cursor_regs = open_index_cursors(indexes, ctx);
 
     // INIT: open cursor, position to first, init key buffer and counter
-    ctx.init_emitter.emit(Operation::Open(cursor_reg, rootpage));
-    ctx.init_emitter
-        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::First));
-    ctx.init_emitter
-        .emit(Operation::InitRowBuffer(key_list_reg));
-    ctx.init_emitter
-        .emit(Operation::StoreValue(counter_reg, ScalarValue::Integer(0)));
+    init!(ctx;
+        Open(cursor_reg, rootpage);
+        MoveCursor(cursor_reg, MoveOperation::First);
+        InitRowBuffer(key_list_reg);
+        StoreValue(counter_reg, ScalarValue::Integer(0))
+    );
 
     // PHASE 1: Collect keys
-    let collect_start = ctx.body_emitter.create_label();
     let phase2_start = ctx.body_emitter.create_label();
-
-    ctx.body_emitter.bind_label(collect_start);
-    ctx.body_emitter
-        .emit(Operation::CanReadCursor(flag_reg, cursor_reg));
-    ctx.body_emitter.emit_goto_if_false(phase2_start, flag_reg);
-
-    // Read all columns (needed for filter evaluation)
-    ctx.body_emitter
-        .emit(Operation::ReadCursor(read_regs.clone(), cursor_reg));
+    let collect_start = ctx.body_emitter.label_here();
+    body!(ctx;
+        CanReadCursor(flag_reg, cursor_reg);
+        GoToIfFalse(phase2_start, flag_reg);
+        ReadCursor(read_regs.clone(), cursor_reg)
+    );
 
     // Evaluate filter if present
     if let Some(filter_expr) = filter {
@@ -1628,40 +1511,35 @@ pub fn codegen_delete(
             compile_expr(filter_expr, &read_regs, &mut expr_ctx)
         };
         let skip_label = ctx.body_emitter.create_label();
-        ctx.body_emitter.emit_goto_if_false(skip_label, filter_reg);
-
-        // Filter matched: collect this key
-        ctx.body_emitter
-            .emit(Operation::ReadKey(key_reg, cursor_reg));
-        ctx.body_emitter
-            .emit(Operation::AppendToRowBuffer(key_list_reg, vec![key_reg]));
-        ctx.body_emitter
-            .emit(Operation::IncrementValue(counter_reg));
-
-        ctx.body_emitter.bind_label(skip_label);
+        body!(ctx;
+            GoToIfFalse(skip_label, filter_reg);
+            ReadKey(key_reg, cursor_reg);
+            AppendToRowBuffer(key_list_reg, vec![key_reg]);
+            IncrementValue(counter_reg);
+            Bind(skip_label)
+        );
     } else {
         // No filter: collect all keys
-        ctx.body_emitter
-            .emit(Operation::ReadKey(key_reg, cursor_reg));
-        ctx.body_emitter
-            .emit(Operation::AppendToRowBuffer(key_list_reg, vec![key_reg]));
-        ctx.body_emitter
-            .emit(Operation::IncrementValue(counter_reg));
+        body!(ctx;
+            ReadKey(key_reg, cursor_reg);
+            AppendToRowBuffer(key_list_reg, vec![key_reg]);
+            IncrementValue(counter_reg)
+        );
     }
 
-    // Advance to next row
-    ctx.body_emitter
-        .emit(Operation::MoveCursor(cursor_reg, MoveOperation::Next));
-    ctx.body_emitter.emit_goto(collect_start);
+    body!(ctx;
+        MoveCursor(cursor_reg, MoveOperation::Next);
+        GoTo(collect_start)
+    );
 
     // PHASE 2: Delete collected keys
     let delete_loop = ctx.body_emitter.create_label();
     let delete_done = ctx.body_emitter.create_label();
-
-    ctx.body_emitter.bind_label(phase2_start);
-    ctx.body_emitter
-        .emit(Operation::RewindRowBuffer(key_list_reg));
-    ctx.body_emitter.bind_label(delete_loop);
+    body!(ctx;
+        Bind(phase2_start);
+        RewindRowBuffer(key_list_reg);
+        Bind(delete_loop)
+    );
 
     // Advance to next key, or jump to done if buffer is exhausted
     ctx.body_emitter.emit(Operation::NextFromRowBuffer(
@@ -1671,30 +1549,25 @@ pub fn codegen_delete(
     ));
 
     // Seek to this key and delete
-    ctx.body_emitter.emit(Operation::MoveCursor(
-        cursor_reg,
-        MoveOperation::Find(key_reg),
-    ));
+    body!(ctx; MoveCursor(cursor_reg, MoveOperation::Find(key_reg)));
 
     // For each secondary index: read indexed column values, then delete the index entry
     if !indexes.is_empty() {
         let phase2_read_regs = ctx.registers.alloc_block(table_columns.len());
-        ctx.body_emitter
-            .emit(Operation::ReadCursor(phase2_read_regs.clone(), cursor_reg));
+        body!(ctx; ReadCursor(phase2_read_regs.clone(), cursor_reg));
         emit_delete_indexes(indexes, &index_cursor_regs, &phase2_read_regs, key_reg, ctx);
     }
 
-    ctx.body_emitter.emit(Operation::DeleteCursor(cursor_reg));
-    ctx.body_emitter.emit_goto(delete_loop);
-
-    // Done: yield count
-    ctx.body_emitter.bind_label(delete_done);
-    ctx.body_emitter.emit_goto(cont.on_tuple);
+    body!(ctx;
+        DeleteCursor(cursor_reg);
+        GoTo(delete_loop);
+        Bind(delete_done);
+        GoTo(cont.on_tuple)
+    );
 
     // After yielding, halt
-    let after_yield = ctx.body_emitter.create_label();
-    ctx.body_emitter.bind_label(after_yield);
-    ctx.body_emitter.emit_goto(cont.on_done);
+    let after_yield = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(cont.on_done));
 
     NodeOutput {
         next: after_yield,
@@ -1734,8 +1607,7 @@ pub fn codegen_populate_index(
 ) -> NodeOutput {
     // Open index cursor in INIT (before the child scan opens the table cursor)
     let index_cursor = ctx.registers.alloc();
-    ctx.init_emitter
-        .emit(Operation::Open(index_cursor, index_rootpage));
+    init!(ctx; Open(index_cursor, index_rootpage));
 
     // Set up continuation labels for the child node
     let child_on_tuple = ctx.body_emitter.create_label();
@@ -1755,14 +1627,13 @@ pub fn codegen_populate_index(
     let pk_reg = *scan_out.output_regs.last().expect("key reg");
 
     // child_on_tuple: write one index entry, then advance to next row
-    ctx.body_emitter.bind_label(child_on_tuple);
-    ctx.body_emitter
-        .emit(Operation::WriteIndex(index_cursor, col_regs, pk_reg));
-    ctx.body_emitter.emit_goto(scan_out.next);
-
-    // child_on_done: all rows consumed, jump to cont.on_done (no rows yielded)
-    ctx.body_emitter.bind_label(child_on_done);
-    ctx.body_emitter.emit_goto(cont.on_done);
+    body!(ctx;
+        Bind(child_on_tuple);
+        WriteIndex(index_cursor, col_regs, pk_reg);
+        GoTo(scan_out.next);
+        Bind(child_on_done);
+        GoTo(cont.on_done)
+    );
 
     NodeOutput {
         next: scan_out.next,
@@ -1863,14 +1734,13 @@ pub fn compile_plan(plan: &LogicalPlan) -> (Vec<Operation>, usize) {
     let output = codegen(plan, &cont, &mut ctx);
 
     // on_tuple: yield the output registers, then get next
-    ctx.body_emitter.bind_label(on_tuple);
-    ctx.body_emitter
-        .emit(Operation::Yield(output.output_regs.clone()));
-    ctx.body_emitter.emit_goto(output.next);
-
-    // on_done: halt
-    ctx.body_emitter.bind_label(on_done);
-    ctx.body_emitter.emit(Operation::Halt);
+    body!(ctx;
+        Bind(on_tuple);
+        Yield(output.output_regs.clone());
+        GoTo(output.next);
+        Bind(on_done);
+        Halt
+    );
 
     let num_registers = ctx.registers.count();
     let ops = ctx.finalize();
