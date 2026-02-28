@@ -126,6 +126,10 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::Key, lexer::Type::Key) => {
+                self.advance();
+                Ok(())
+            }
             // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
@@ -171,6 +175,7 @@ pub enum Expect {
     Null,
     Join,
     On,
+    Key,
 }
 
 impl lexer::Type {
@@ -413,7 +418,32 @@ impl Parser {
     fn parse_column_def(&mut self) -> ParseResult<ast::ColumnDef> {
         let name = self.parse_identifier()?;
         let type_name = self.parse_optional_data_type();
-        Ok(ast::ColumnDef { name, type_name, constraints: vec![] })
+        let constraints = self.parse_column_constraints();
+        Ok(ast::ColumnDef { name, type_name, constraints })
+    }
+
+    fn parse_column_constraints(&mut self) -> Vec<ast::ColumnConstraint> {
+        let mut cs = Vec::new();
+        loop {
+            match self.input.peek() {
+                lexer::Type::Primary => {
+                    self.input.advance();
+                    self.input.expect(Expect::Key).ok();
+                    cs.push(ast::ColumnConstraint::PrimaryKey);
+                }
+                lexer::Type::Unique => {
+                    self.input.advance();
+                    cs.push(ast::ColumnConstraint::Unique);
+                }
+                lexer::Type::Not => {
+                    self.input.advance();
+                    self.input.expect(Expect::Null).ok();
+                    cs.push(ast::ColumnConstraint::NotNull);
+                }
+                _ => break,
+            }
+        }
+        cs
     }
 
     fn parse_optional_data_type(&mut self) -> Option<ast::DataType> {
@@ -1488,5 +1518,26 @@ mod test {
     #[test]
     fn test_parse_explain_nested_error() {
         assert!(parse("EXPLAIN EXPLAIN SELECT 1").is_err());
+    }
+
+    #[test]
+    fn test_parse_primary_key_constraint() {
+        let stmt = parse("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)").unwrap();
+        let ct = match stmt {
+            ast::Statement::CreateTable(ct) => ct,
+            _ => panic!("Expected CreateTable"),
+        };
+        assert!(ct.columns[0].constraints.contains(&ast::ColumnConstraint::PrimaryKey));
+        assert!(ct.columns[1].constraints.is_empty());
+    }
+
+    #[test]
+    fn test_parse_unique_constraint() {
+        let stmt = parse("CREATE TABLE t (email TEXT UNIQUE)").unwrap();
+        let ct = match stmt {
+            ast::Statement::CreateTable(ct) => ct,
+            _ => panic!("Expected CreateTable"),
+        };
+        assert!(ct.columns[0].constraints.contains(&ast::ColumnConstraint::Unique));
     }
 }
