@@ -1885,6 +1885,28 @@ mod tests {
     use crate::engine::Engine;
     use crate::planner::{BinaryOp, PlanExpr};
     use crate::test::TestDb;
+    use crate::{body, init};
+
+    #[test]
+    fn test_body_macro_basic() {
+        let mut ctx = CodegenContext::new();
+        let on_done = ctx.body_emitter.create_label();
+        let r0 = ctx.registers.alloc();
+        let r1 = ctx.registers.alloc();
+        init!(ctx; StoreValue(r0, ScalarValue::Integer(1)));
+        body!(ctx;
+            GoToIfFalse(on_done, r0);
+            StoreValue(r1, ScalarValue::Integer(42));
+            Bind(on_done)
+        );
+        // init: 1 op; body: GoToIfFalse + StoreValue (Bind adds no op)
+        // finalize combines: init_ops + GoTo(body_start) + body_ops
+        let ops = ctx.finalize();
+        // init: StoreValue(r0) = 1 op
+        // GoTo(body) = 1 op
+        // body: GoToIfFalse + StoreValue = 2 ops
+        assert_eq!(ops.len(), 4);
+    }
 
     /// Test that codegen_scan produces correct bytecode structure
     #[test]
