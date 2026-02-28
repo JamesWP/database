@@ -1052,6 +1052,21 @@ fn open_index_cursors(
         .collect()
 }
 
+fn emit_check_uniques(
+    indexes: &[crate::planner::IndexMaintenanceInfo],
+    cursor_regs: &[Reg],
+    row_regs: &[Reg],
+    ctx: &mut CodegenContext,
+) {
+    for (index, &cursor_reg) in indexes.iter().zip(cursor_regs) {
+        if index.unique {
+            let col_regs: Vec<Reg> = index.column_idxs.iter().map(|&c| row_regs[c]).collect();
+            ctx.body_emitter
+                .emit(Operation::CheckUnique(cursor_reg, col_regs));
+        }
+    }
+}
+
 fn emit_write_indexes(
     indexes: &[crate::planner::IndexMaintenanceInfo],
     cursor_regs: &[Reg],
@@ -1147,6 +1162,9 @@ pub fn codegen_insert(
 
         reordered
     };
+    // Check unique constraints before writing
+    emit_check_uniques(indexes, &index_cursor_regs, &reordered_regs, ctx);
+
     body!(ctx; WriteCursor(cursor_reg, key_reg, reordered_regs.clone()));
 
     // Write to each index
