@@ -146,6 +146,7 @@ pub enum Operation {
     ReadKey(Reg, Reg),         // ReadKey(dest, cursor): read btree key as integer
     WriteCursor(Reg, Reg, Vec<Reg>), // WriteCursor(cursor, key, values): insert row
     WriteIndex(Reg, Vec<Reg>, Reg), // WriteIndex(cursor, col_values, pk): insert into index
+    CheckUnique(Reg, Vec<Reg>), // CheckUnique(cursor, col_values): error if key already exists
     DeleteIndex(Reg, Vec<Reg>, Reg), // DeleteIndex(cursor, col_values, pk): remove from index
     DeleteCursor(Reg),         // DeleteCursor(cursor): delete row at current cursor position
     CanReadCursor(Reg, Reg),   // Reg = CanReadCursor(Reg)
@@ -395,6 +396,16 @@ impl std::fmt::Display for Operation {
                     cursor,
                     vals_str.join(", "),
                     pk
+                )
+            }
+            CheckUnique(cursor, vals) => {
+                let vals_str: Vec<String> = vals.iter().map(|r| format!("{}", r)).collect();
+                write!(
+                    f,
+                    "{:10} {}, [{}]",
+                    "CheckUniq".cyan().bold(),
+                    cursor,
+                    vals_str.join(", ")
                 )
             }
             DeleteIndex(cursor, vals, pk) => {
