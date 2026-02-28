@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::frontend::ast::Statement;
+use crate::frontend::ast::{ColumnConstraint, Statement};
 use crate::frontend::parse;
 use crate::storage::BTree;
 
@@ -23,7 +23,8 @@ pub struct Table {
 #[derive(Debug, Clone)]
 pub struct Column {
     pub name: String,
-    // Future: pub data_type: DataType,
+    pub primary_key: bool,
+    pub unique: bool,
 }
 
 impl Schema {
@@ -48,6 +49,42 @@ impl Table {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::execute;
+    use crate::test::TestDb;
+
+    #[test]
+    fn test_schema_loads_primary_key_flag() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+            &mut db.btree,
+        )
+        .unwrap();
+        let table = resolve_table("users", &db.btree).unwrap();
+        assert!(table.columns[0].primary_key);
+        assert!(table.columns[0].unique);
+        assert!(!table.columns[1].primary_key);
+        assert!(!table.columns[1].unique);
+    }
+
+    #[test]
+    fn test_schema_loads_unique_flag() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE emails (id INTEGER, addr TEXT UNIQUE)",
+            &mut db.btree,
+        )
+        .unwrap();
+        let table = resolve_table("emails", &db.btree).unwrap();
+        assert!(!table.columns[0].unique);
+        assert!(table.columns[1].unique);
+        assert!(!table.columns[1].primary_key);
+    }
+}
+
 pub fn resolve_table(table_name: &str, btree: &BTree) -> Result<Table, PlanError> {
     let (rootpage, sql) = btree
         .lookup_table(table_name)
@@ -63,7 +100,12 @@ pub fn resolve_table(table_name: &str, btree: &BTree) -> Result<Table, PlanError
     let columns = create
         .columns
         .into_iter()
-        .map(|col| Column { name: col.name })
+        .map(|col| Column {
+            name: col.name,
+            primary_key: col.constraints.contains(&ColumnConstraint::PrimaryKey),
+            unique: col.constraints.contains(&ColumnConstraint::Unique)
+                || col.constraints.contains(&ColumnConstraint::PrimaryKey),
+        })
         .collect();
 
     Ok(Table {
