@@ -51,6 +51,7 @@ pub struct IndexInfo {
     pub index_name: String,
     pub column_names: Vec<String>,
     pub rootpage: u32,
+    pub unique: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -889,10 +890,12 @@ impl BTree {
                             let sql = values[4].as_str().unwrap_or("");
                             let column_names = extract_columns_from_index_sql(sql);
 
+                            let unique = name.starts_with("_pk_") || name.starts_with("_uq_");
                             indexes.push(IndexInfo {
                                 index_name: name,
                                 column_names,
                                 rootpage,
+                                unique,
                             });
                         }
                     }

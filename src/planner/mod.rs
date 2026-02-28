@@ -88,6 +88,7 @@ pub struct SortKey {
 pub struct IndexMaintenanceInfo {
     pub rootpage: u32,
     pub column_idxs: Vec<usize>,
+    pub unique: bool,
 }
 
 /// Aggregate function types

@@ -88,6 +88,7 @@ pub(super) fn plan_insert(
         indexes.push(IndexMaintenanceInfo {
             rootpage: index_info.rootpage,
             column_idxs,
+            unique: index_info.unique,
         });
     }
 
@@ -152,6 +153,7 @@ pub(super) fn plan_update(
         indexes.push(IndexMaintenanceInfo {
             rootpage: index_info.rootpage,
             column_idxs,
+            unique: index_info.unique,
         });
     }
 
@@ -200,6 +202,7 @@ pub(super) fn plan_delete(
         indexes.push(IndexMaintenanceInfo {
             rootpage: index_info.rootpage,
             column_idxs,
+            unique: index_info.unique,
         });
     }
 
