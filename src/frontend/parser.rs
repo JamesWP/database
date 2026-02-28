@@ -413,7 +413,7 @@ impl Parser {
     fn parse_column_def(&mut self) -> ParseResult<ast::ColumnDef> {
         let name = self.parse_identifier()?;
         let type_name = self.parse_optional_data_type();
-        Ok(ast::ColumnDef { name, type_name })
+        Ok(ast::ColumnDef { name, type_name, constraints: vec![] })
     }
 
     fn parse_optional_data_type(&mut self) -> Option<ast::DataType> {

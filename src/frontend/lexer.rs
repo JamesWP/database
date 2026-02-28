@@ -86,6 +86,9 @@ pub enum Type {
     Index,
     Distinct,
     Explain,
+    Primary,
+    Key,
+    Unique,
 
     #[allow(dead_code)]
     Error(Error),
@@ -529,6 +532,7 @@ impl<'a> Lexer<'a> {
             'g' => match_reserved(ident, "group", Type::Group),
             'h' => match_reserved(ident, "having", Type::Having),
             'j' => match_reserved(ident, "join", Type::Join),
+            'k' => match_reserved(ident, "key", Type::Key),
             'i' => match ident.chars().nth(1) {
                 Some('n') => match ident.chars().nth(2) {
                     Some('s') => match_reserved(ident, "insert", Type::Insert),
@@ -565,6 +569,7 @@ impl<'a> Lexer<'a> {
                 Some('n') => match_reserved(ident, "on", Type::On),
                 _ => Type::Identifier(ident.to_owned()),
             },
+            'p' => match_reserved(ident, "primary", Type::Primary),
             'r' => match_reserved(ident, "real", Type::Real),
             't' => match ident.chars().nth(1) {
                 Some('r') => match_reserved(ident, "true", Type::True),
@@ -572,7 +577,11 @@ impl<'a> Lexer<'a> {
                 Some('e') => match_reserved(ident, "text", Type::Text),
                 _ => Type::Identifier(ident.to_owned()),
             },
-            'u' => match_reserved(ident, "update", Type::Update),
+            'u' => match ident.chars().nth(1) {
+                Some('p') => match_reserved(ident, "update", Type::Update),
+                Some('n') => match_reserved(ident, "unique", Type::Unique),
+                _ => Type::Identifier(ident.to_owned()),
+            },
             'v' => match_reserved(ident, "values", Type::Values),
             'w' => match_reserved(ident, "where", Type::Where),
             _ => Type::Identifier(ident.to_owned()),
