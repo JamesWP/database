@@ -17,9 +17,8 @@ SELECT id FROM events WHERE ts > 50 ORDER BY ts
 -- > 3
 -- > 1
 
--- EXPLAIN must show no Sort node
+-- EXPLAIN must show no Sort node; fuse_projects collapses the double Project
 EXPLAIN SELECT id FROM events WHERE ts > 50 ORDER BY ts
--- > 0, "Project [id:0:0]"
--- > 1, "  Project [id:0, ts:1]"
--- > 2, "    RowidLookup events [cols: id, ts]"
--- > 3, "      IndexScan via idx_ts [> 50]"
+-- > 0, "Project [id:0]"
+-- > 1, "  RowidLookup events [cols: id, ts]"
+-- > 2, "    IndexScan via idx_ts [> 50]"

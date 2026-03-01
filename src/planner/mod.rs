@@ -14,7 +14,7 @@ use dml::{plan_delete, plan_insert, plan_update};
 pub(super) mod select;
 use select::{plan_select, plan_select_with_joins};
 pub(super) mod optimizer;
-use optimizer::optimize;
+use optimizer::{fuse_projects, optimize};
 use resolver::ast_expr_name;
 
 // ============================================================================
@@ -345,7 +345,7 @@ pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanErro
         Statement::Delete(delete) => plan_delete(delete, btree)?,
         Statement::Explain(inner) => return plan(*inner, btree),
     };
-    Ok(optimize(naive, btree))
+    Ok(fuse_projects(optimize(naive, btree)))
 }
 
 #[derive(Debug, Clone, PartialEq)]
