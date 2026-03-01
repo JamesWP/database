@@ -65,6 +65,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AB** | REPL Polish & Parallel-Slice Refactor | 4 | [phase-ab-repl-and-refactor.md](phase-ab-repl-and-refactor.md) | Planned |
 | **AC** | Non-Correlated Subqueries | 4 | [phase-ac-subqueries.md](phase-ac-subqueries.md) | Planned |
 | **AD** | Covering Index Optimization | 4 | [phase-ad-covering-index.md](phase-ad-covering-index.md) | Planned |
+| **AE** | CLAUDE.md Review | 4 | [phase-ae-claude-md-review.md](phase-ae-claude-md-review.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 
