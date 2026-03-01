@@ -35,5 +35,5 @@ SELECT orders.id, users.name FROM orders JOIN users ON orders.user_id = users.id
 EXPLAIN SELECT orders.id, users.name FROM orders JOIN users ON orders.user_id = users.id ORDER BY orders.id
 -- > 0, "Sort [id:0:0 ASC]"
 -- > 1, "  Project [id:0, name:4]"
--- > 2, "    IndexJoin users via idx_users_id [left_key=1]"
+-- > 2, "    IndexJoin users via idx_users_id [left_key=user_id:1, cols: id, name]"
 -- > 3, "      Scan orders [cols: id, user_id, amount]"

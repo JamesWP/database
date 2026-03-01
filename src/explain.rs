@@ -184,6 +184,7 @@ fn collect_rows(
             cols.extend(node_output_cols(right, schema));
             cols
         }
+        LogicalPlan::IndexJoin { left, .. } => node_output_cols(left, schema),
         _ => vec![],
     };
 
@@ -256,12 +257,19 @@ fn collect_rows(
         LogicalPlan::IndexJoin {
             index_rootpage,
             right_table_rootpage,
+            right_columns,
             left_key_col_idx,
             ..
         } => {
             let index = schema.index_name(*index_rootpage);
             let table = schema.table_name(*right_table_rootpage);
-            format!("{indent}IndexJoin {table} via {index} [left_key={left_key_col_idx}]")
+            let key = if let Some(name) = input_cols.get(*left_key_col_idx) {
+                format!("{name}:{left_key_col_idx}")
+            } else {
+                format!("col:{left_key_col_idx}")
+            };
+            let right_cols = resolve_cols(schema, *right_table_rootpage, right_columns);
+            format!("{indent}IndexJoin {table} via {index} [left_key={key}, cols: {right_cols}]")
         }
         LogicalPlan::Distinct { .. } => format!("{indent}Distinct"),
         LogicalPlan::Insert { rootpage, .. } => {
