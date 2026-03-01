@@ -231,15 +231,16 @@ cargo run -- test.db btree verify all
 ## Indexes
 
 Each secondary index is a separate B-tree with its own root page.
-- **V1 Restriction**: Single-column, `INTEGER` only, equality filters only.
 - **Index Catalog**: Stored in `db_schema` with `type='index'`.
-- **Key Encoding**: Composite key: `[encoded_column_value][encoded_rowid]`.
-  - Column Value: Big-endian `i64` with sign bit flipped (preserves sort order).
-  - Rowid: Big-endian `u64`.
-- **Value Encoding**: Stored as `[primary_key]` in the index B-tree value (for simplicity).
-- **Maintenance**: INSERT updates all indexes for the table.
-- **Query Optimization**: Planner detects applicable indexes for `WHERE col = literal` and generates `IndexScan` bytecode.
-- **Prefix Matching**: Uses `MoveCursor(Find)` to position at the first candidate and `KeyMatchesPrefix` to verify.
+- **Supported**: Multi-column indexes, INTEGER and TEXT column types, equality and range predicates on the first indexed column.
+- **Key Encoding**: `[tag][col0_bytes][tag][col1_bytes]...[8-byte rowid_be_u64]`
+  - Tag `0x00` = NULL, `0x01` = INTEGER (8 bytes, sign-flipped big-endian), `0x02` = REAL (8 bytes, sortable IEEE 754), `0x03` = TEXT (UTF-8 + NUL terminator).
+  - Encoding preserves sort order so range scans work correctly.
+  - Rowid: Big-endian `u64` appended as the final 8 bytes.
+- **Value Encoding**: Stored as `[primary_key]` in the index B-tree value.
+- **Maintenance**: INSERT, UPDATE, DELETE all update every index on the table.
+- **Query Optimization**: Planner detects applicable indexes for `WHERE col = literal` or range predicates on the first column of an index and generates `IndexScan` + `RowidLookup` bytecode. Also rewrites eligible `Join` nodes to `IndexJoin` when an index exists on the right table's join column.
+- **Prefix Matching**: Uses `MoveCursor(Find)` to position at the first candidate and `KeyMatchesPrefix` to verify the column prefix before yielding.
 
 ## Makefile Targets
 
