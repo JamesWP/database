@@ -1378,6 +1378,114 @@ pub fn codegen_update(
 ///     JOIN_NEXT:                                → parent calls here for next row
 ///       GoTo(INNER_CHECK)                       → continue buffer iteration
 /// ```
+/// Generate bytecode for an IndexJoin node (index nested-loop join).
+///
+/// For each left row, probes `index_rootpage` with the left join-key value, then
+/// fetches the matching right rows by rowid from `right_table_rootpage`.
+///
+/// ```text
+/// INIT:
+///   Open(left_cursor, left)
+///   Open(index_cursor, index_rootpage)
+///   Open(right_cursor, right_table_rootpage)
+///
+/// LEFT_LOOP:
+///   [left child emits rows → LEFT_ON_TUPLE]
+///   on_done → cont.on_done
+///
+/// LEFT_ON_TUPLE:
+///   EncodeIndexKey(key_reg, left_regs[left_key_col_idx])
+///   MoveCursor(index_cursor, Find(key_reg))
+///
+/// INDEX_CHECK:
+///   CanReadCursor(can_read, index_cursor)  → if false, GoTo LEFT_NEXT
+///   ReadCurrentKey(key_blob, index_cursor)
+///   BlobStartsWith(matches, key_blob, key_reg)  → if false, GoTo LEFT_NEXT
+///   BlobSliceLast(pk_blob, key_blob, 8)
+///   DecodeU64Key(pk_reg, pk_blob)
+///   MoveCursor(right_cursor, Find(pk_reg))
+///   ReadCursor(right_regs, right_cursor)
+///   GoTo cont.on_tuple
+///
+/// INDEX_NEXT (= next returned by this node):
+///   MoveCursor(index_cursor, Next)
+///   GoTo INDEX_CHECK
+///
+/// LEFT_NEXT: call left.next
+/// ```
+pub fn codegen_index_join(
+    left: &LogicalPlan,
+    index_rootpage: u32,
+    right_table_rootpage: u32,
+    right_columns: &[usize],
+    left_key_col_idx: usize,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // Allocate cursors.
+    let index_cursor_reg = ctx.registers.alloc();
+    let right_cursor_reg = ctx.registers.alloc();
+
+    init!(ctx;
+        Open(index_cursor_reg, index_rootpage);
+        Open(right_cursor_reg, right_table_rootpage)
+    );
+
+    // Compile left child.
+    let left_on_tuple = ctx.body_emitter.create_label();
+    let left_cont = NodeContinuation {
+        on_tuple: left_on_tuple,
+        on_done: cont.on_done,
+    };
+    let left_output = codegen(left, &left_cont, ctx);
+
+    // Allocate right output registers.
+    let right_regs = ctx.registers.alloc_block(right_columns.len());
+
+    // Combined output.
+    let mut combined = left_output.output_regs.clone();
+    combined.extend(right_regs.clone());
+
+    // Registers used in probe loop.
+    let key_reg = ctx.registers.alloc();
+    let can_read_reg = ctx.registers.alloc();
+    let key_blob_reg = ctx.registers.alloc();
+    let matches_reg = ctx.registers.alloc();
+    let pk_blob_reg = ctx.registers.alloc();
+    let pk_reg = ctx.registers.alloc();
+
+    // LEFT_ON_TUPLE: encode the join key, probe the index.
+    let index_check = ctx.body_emitter.create_label();
+    body!(ctx;
+        Bind(left_on_tuple);
+        EncodeIndexKey(key_reg, left_output.output_regs[left_key_col_idx]);
+        MoveCursor(index_cursor_reg, MoveOperation::Find(key_reg));
+        Bind(index_check);
+        CanReadCursor(can_read_reg, index_cursor_reg);
+        GoToIfFalse(left_output.next, can_read_reg);
+        ReadCurrentKey(key_blob_reg, index_cursor_reg);
+        BlobStartsWith(matches_reg, key_blob_reg, key_reg);
+        GoToIfFalse(left_output.next, matches_reg);
+        BlobSliceLast(pk_blob_reg, key_blob_reg, 8);
+        DecodeU64Key(pk_reg, pk_blob_reg);
+        MoveCursor(right_cursor_reg, MoveOperation::Find(pk_reg));
+        ReadCursor(right_regs.clone(), right_cursor_reg);
+        GoTo(cont.on_tuple)
+    );
+
+    // INDEX_NEXT: parent calls this to request the next match.
+    let index_next = ctx.body_emitter.label_here();
+    body!(ctx;
+        MoveCursor(index_cursor_reg, MoveOperation::Next);
+        GoTo(index_check)
+    );
+
+    NodeOutput {
+        next: index_next,
+        output_regs: combined,
+    }
+}
+
 pub fn codegen_join(
     left: &LogicalPlan,
     right: &LogicalPlan,
@@ -1729,9 +1837,22 @@ pub fn codegen(
             on_condition,
             left_column_count,
         } => codegen_join(left, right, on_condition, *left_column_count, cont, ctx),
-        LogicalPlan::IndexJoin { .. } => {
-            unimplemented!("IndexJoin codegen not yet implemented")
-        }
+        LogicalPlan::IndexJoin {
+            left,
+            index_rootpage,
+            right_table_rootpage,
+            right_columns,
+            left_key_col_idx,
+            left_col_count: _,
+        } => codegen_index_join(
+            left,
+            *index_rootpage,
+            *right_table_rootpage,
+            right_columns,
+            *left_key_col_idx,
+            cont,
+            ctx,
+        ),
         LogicalPlan::Distinct { input } => codegen_distinct(input, cont, ctx),
         LogicalPlan::PopulateIndex {
             input,
