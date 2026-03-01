@@ -332,7 +332,7 @@ mod tests {
     fn test_label_here() {
         let mut emitter = BytecodeEmitter::new();
         emitter.emit(Operation::Halt); // op 0
-        let label = emitter.label_here(); // should point to op 1
+        let _label = emitter.label_here(); // should point to op 1
         emitter.emit(Operation::Halt); // op 1
         let ops = emitter.finalize();
         assert_eq!(ops.len(), 2);

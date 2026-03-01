@@ -553,9 +553,8 @@ pub(super) fn plan_select_with_joins(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::frontend::{ast, parse};
-    use crate::planner::{plan, BinaryOp, Literal, LogicalPlan, PlanError, PlanExpr, SortKey};
+    use crate::planner::{plan, BinaryOp, Literal, LogicalPlan, PlanError, PlanExpr};
     use crate::test::TestDb;
 
     /// Create a test database with a "users" table (id, name, age) registered in the catalog.
