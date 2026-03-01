@@ -642,4 +642,66 @@ mod tests {
         let result = fuse_projects(project.clone());
         assert_eq!(result, project);
     }
+
+    #[test]
+    fn fuse_projects_substitutes_compound_expressions() {
+        // Inner: Project(Scan, [c0+1, c1, c2+2, c3+3])
+        //   inner[0] = col0 + 1
+        //   inner[1] = col1
+        //   inner[2] = col2 + 2
+        //   inner[3] = col3 + 3
+        //
+        // Outer: Project(Inner, [c0+1, c1, c2+c3])
+        //   outer[0] = inner[0] + 1  →  (col0+1)+1
+        //   outer[1] = inner[1]      →  col1
+        //   outer[2] = inner[2] + inner[3]  →  (col2+2)+(col3+3)
+        let lit = |n: i64| PlanExpr::Literal(Literal::Integer(n));
+        let col = |i: usize| PlanExpr::ColumnRef(i);
+        let add = |l: PlanExpr, r: PlanExpr| PlanExpr::BinaryOp {
+            op: BinaryOp::Add,
+            left: Box::new(l),
+            right: Box::new(r),
+        };
+
+        let scan = LogicalPlan::Scan {
+            rootpage: 1,
+            columns: vec![0, 1, 2, 3],
+            with_key: false,
+        };
+
+        let inner = LogicalPlan::Project {
+            input: Box::new(scan),
+            columns: vec![
+                add(col(0), lit(1)), // inner[0] = col0 + 1
+                col(1),              // inner[1] = col1
+                add(col(2), lit(2)), // inner[2] = col2 + 2
+                add(col(3), lit(3)), // inner[3] = col3 + 3
+            ],
+        };
+
+        let outer = LogicalPlan::Project {
+            input: Box::new(inner),
+            columns: vec![
+                add(col(0), lit(1)), // (inner[0]) + 1
+                col(1),              // inner[1]
+                add(col(2), col(3)), // inner[2] + inner[3]
+            ],
+        };
+
+        let fused = fuse_projects(outer);
+
+        let expected_cols = vec![
+            add(add(col(0), lit(1)), lit(1)),              // (col0+1)+1
+            col(1),                                        // col1
+            add(add(col(2), lit(2)), add(col(3), lit(3))), // (col2+2)+(col3+3)
+        ];
+
+        assert!(
+            matches!(&fused, LogicalPlan::Project { columns, input }
+                if columns == &expected_cols
+                && matches!(input.as_ref(), LogicalPlan::Scan { .. })),
+            "unexpected fused plan: {:?}",
+            fused
+        );
+    }
 }
