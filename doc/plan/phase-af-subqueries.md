@@ -1,4 +1,4 @@
-# Phase AC — Non-Correlated Subqueries
+# Phase AF — Non-Correlated Subqueries
 
 Add non-correlated subquery support: FROM-clause derived tables, IN (literal list), IN (subquery), and scalar subqueries in SELECT/WHERE. All subqueries compile into a single flat bytecode program using RowBuffer materialization — no nested program execution.
 

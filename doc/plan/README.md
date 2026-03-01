@@ -63,9 +63,10 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **Z** | Unified SELECT Planner | 2 | [phase-z-unified-select.md](completed/phase-z-unified-select.md) | Completed |
 | **AA** | Composite Index Predicate Pushdown & Sort Elision | 2 | [phase-aa-composite-index-pushdown.md](phase-aa-composite-index-pushdown.md) | Planned |
 | **AB** | REPL Polish & Parallel-Slice Refactor | 4 | [phase-ab-repl-and-refactor.md](phase-ab-repl-and-refactor.md) | Planned |
-| **AC** | Non-Correlated Subqueries | 4 | [phase-ac-subqueries.md](phase-ac-subqueries.md) | Planned |
+| **AC** | IndexJoin Refactor + Multi-Key Join Support | 3 | [phase-ac-indexjoin-refactor.md](phase-ac-indexjoin-refactor.md) | Planned |
 | **AD** | Covering Index Optimization | 4 | [phase-ad-covering-index.md](phase-ad-covering-index.md) | Planned |
 | **AE** | CLAUDE.md Review | 4 | [phase-ae-claude-md-review.md](phase-ae-claude-md-review.md) | Planned |
+| **AF** | Non-Correlated Subqueries | 4 | [phase-af-subqueries.md](phase-af-subqueries.md) | Planned |
 
 ## Current Test Coverage (161 tests)
 

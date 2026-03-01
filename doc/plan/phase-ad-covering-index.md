@@ -1,4 +1,4 @@
-# Phase AC — Covering Index Optimization
+# Phase AD — Covering Index Optimization
 
 Eliminate redundant table B-tree lookups when all required columns are already encoded in the index key.
 

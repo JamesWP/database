@@ -1,4 +1,4 @@
-# Phase AD — CLAUDE.md Review
+# Phase AE — CLAUDE.md Review
 
 Documentation-only phase: verify every claim in CLAUDE.md against the actual source files and correct what is wrong or missing.
 
