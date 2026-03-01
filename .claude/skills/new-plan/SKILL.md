@@ -38,6 +38,25 @@ Use AskUserQuestion to present the options concisely:
 
 Only proceed to write the plan after the user has chosen an approach. This prevents writing a detailed plan around an approach the user dislikes. If the choice is clear-cut and there is only one reasonable approach, skip asking and document your reasoning in the plan's "Implementation Approach" section instead.
 
+### Extend vs. Create New
+
+Whenever the plan requires adding capability to the codebase — a new plan node, VM instruction, register type, storage helper, submodule, etc. — consider whether to extend something existing or introduce something new. The right choice depends on the complexity vs. duplication trade-off:
+
+**Prefer extending when:**
+- The new behaviour shares the same core logic and only differs at one step (e.g. same scan loop, different yield).
+- The variation is naturally expressed as a small enum (2–3 named variants) or a single field — not a boolean flag where `true` and `false` have unclear meaning at the call site.
+- Extending requires only mechanical, low-risk changes to existing constructor sites.
+
+**Prefer creating new when:**
+- The structure is genuinely different: different children, fields, or lifecycle — not just a mode switch.
+- Extending would require multiple co-dependent fields that create invalid-state combinations.
+- The new case would need meaningfully different logic in most match arms anyway, making a new variant more explicit than a hidden branch inside an existing one.
+- The existing type is already complex; adding more to it makes it harder to reason about.
+
+This applies across the codebase at every level: plan nodes, VM instructions, register/scalar types, storage helpers, engine modules, submodules. In each case, ask: *is this genuinely the same thing with a mode, or is it a new thing that happens to share some code?*
+
+When the answer is unclear, present both options to the user with a short before/after sketch and the key trade-off.
+
 ## Determine the Phase Identifier
 
 Pick the next available phase identifier following the existing sequence visible in `doc/plan/README.md`. Use a letter (e.g. `L`) or a numbered suffix (e.g. `G5`) depending on the context of the phase.
