@@ -35,6 +35,102 @@ pub(super) fn output_width(plan: &LogicalPlan) -> usize {
     }
 }
 
+/// Wrap `plan` (which does NOT yet have a Project node) with:
+/// 1. A Project node (using `project_exprs`, extended with any ORDER BY extra columns)
+/// 2. A Sort node for the ORDER BY keys
+/// 3. An optional trim-Project to drop the extra ORDER BY columns
+///
+/// `has_wildcard` and `select_columns` are used to decide whether an ORDER BY column
+/// is already covered by the SELECT list. If `has_wildcard` is true, every column is
+/// already covered and no extras are ever appended.
+fn apply_order_by(
+    mut plan: LogicalPlan,
+    order_by: &[ast::OrderByClause],
+    project_exprs: Vec<PlanExpr>,
+    select_col_count: usize,
+    resolver: &impl super::resolver::ColumnResolver,
+    has_wildcard: bool,
+    select_columns: &[ast::ColumnExpression],
+) -> Result<LogicalPlan, PlanError> {
+    let mut project_exprs = project_exprs;
+
+    // Collect ORDER BY columns that are not already in the SELECT list.
+    let mut extra_order_columns = Vec::new();
+    for clause in order_by {
+        if let ast::Expression::Value(ast::ScalarValue::Identifier(col_name)) = &clause.expression {
+            let already_in_select = has_wildcard
+                || select_columns.iter().any(|col_expr| match col_expr {
+                    ast::ColumnExpression::Anonyomous(expr) => {
+                        matches!(
+                            expr.as_ref(),
+                            ast::Expression::Value(ast::ScalarValue::Identifier(name))
+                                if name == col_name
+                        )
+                    }
+                    ast::ColumnExpression::Named { expression, .. } => {
+                        matches!(
+                            expression.as_ref(),
+                            ast::Expression::Value(ast::ScalarValue::Identifier(name))
+                                if name == col_name
+                        )
+                    }
+                    ast::ColumnExpression::Wildcard => false,
+                });
+
+            if !already_in_select {
+                let order_col_expr = convert_expr(&clause.expression, resolver)?;
+                extra_order_columns.push(order_col_expr);
+            }
+        }
+    }
+
+    let has_extra_order_columns = !extra_order_columns.is_empty();
+    project_exprs.extend(extra_order_columns);
+
+    plan = LogicalPlan::Project {
+        input: Box::new(plan),
+        columns: project_exprs.clone(),
+    };
+
+    // Build a map from scan column index → projection index for sort key remapping.
+    let mut scan_idx_to_proj_idx: HashMap<usize, usize> = HashMap::new();
+    for (proj_idx, expr) in project_exprs.iter().enumerate() {
+        if let PlanExpr::ColumnRef(column_idx) = expr {
+            scan_idx_to_proj_idx.insert(*column_idx, proj_idx);
+        }
+    }
+
+    let sort_keys: Result<Vec<SortKey>, _> = order_by
+        .iter()
+        .map(|clause| {
+            let scan_expr = convert_expr(&clause.expression, resolver)?;
+            let proj_expr = remap_column_indices(&scan_expr, &scan_idx_to_proj_idx)?;
+            Ok(SortKey {
+                expr: proj_expr,
+                descending: clause.direction == ast::OrderDirection::Desc,
+            })
+        })
+        .collect();
+
+    plan = LogicalPlan::Sort {
+        input: Box::new(plan),
+        sort_keys: sort_keys?,
+    };
+
+    // If we added extra columns for ORDER BY, add a final projection to strip them.
+    if has_extra_order_columns {
+        let final_project: Vec<PlanExpr> = (0..select_col_count)
+            .map(|idx| PlanExpr::ColumnRef(idx))
+            .collect();
+        plan = LogicalPlan::Project {
+            input: Box::new(plan),
+            columns: final_project,
+        };
+    }
+
+    Ok(plan)
+}
+
 pub(crate) fn plan_select(
     select: ast::SelectStatement,
     btree: &BTree,
@@ -215,7 +311,7 @@ pub(crate) fn plan_select(
         };
     } else {
         // Regular SELECT - add Project
-        let mut project_exprs: Vec<PlanExpr> = select
+        let project_exprs: Vec<PlanExpr> = select
             .columns
             .iter()
             .flat_map(|col_expr| {
@@ -236,105 +332,27 @@ pub(crate) fn plan_select(
 
         let select_column_count = project_exprs.len();
 
-        // If there's ORDER BY, check if any ORDER BY columns are not in SELECT
-        // If so, add them to the projection so they're available for sorting
         let has_wildcard = select
             .columns
             .iter()
             .any(|c| matches!(c, ast::ColumnExpression::Wildcard));
-        let mut extra_order_columns = Vec::new();
+
+        // Add Project + Sort (+ optional trim-Project) via shared helper.
         if let Some(ref order_by) = select.order_by {
-            for clause in order_by {
-                // Check if this is a simple column reference
-                if let ast::Expression::Value(ast::ScalarValue::Identifier(col_name)) =
-                    &clause.expression
-                {
-                    // Check if this column is already in the SELECT list.
-                    // A wildcard expands to all table columns, so any ORDER BY column is covered.
-                    let already_in_select = has_wildcard
-                        || select.columns.iter().any(|col_expr| match col_expr {
-                            ast::ColumnExpression::Anonyomous(expr) => {
-                                matches!(
-                                    expr.as_ref(),
-                                    ast::Expression::Value(ast::ScalarValue::Identifier(name))
-                                        if name == col_name
-                                )
-                            }
-                            ast::ColumnExpression::Named { expression, .. } => {
-                                matches!(
-                                    expression.as_ref(),
-                                    ast::Expression::Value(ast::ScalarValue::Identifier(name))
-                                        if name == col_name
-                                )
-                            }
-                            ast::ColumnExpression::Wildcard => false,
-                        });
-
-                    if !already_in_select {
-                        // Add this column to the projection
-                        let order_col_expr = convert_expr(&clause.expression, &resolver)?;
-                        extra_order_columns.push(order_col_expr);
-                    }
-                }
-            }
-        }
-
-        let has_extra_order_columns = !extra_order_columns.is_empty();
-        project_exprs.extend(extra_order_columns);
-
-        plan = LogicalPlan::Project {
-            input: Box::new(plan),
-            columns: project_exprs.clone(),
-        };
-
-        // Add Sort if ORDER BY clause exists
-        if let Some(ref order_by) = select.order_by {
-            // Build a map from scan column index to projection index
-            // This tells us where each scan column ended up in the projection
-            let mut scan_idx_to_proj_idx: HashMap<usize, usize> = HashMap::new();
-            for (proj_idx, expr) in project_exprs.iter().enumerate() {
-                if let PlanExpr::ColumnRef(column_idx) = expr {
-                    scan_idx_to_proj_idx.insert(*column_idx, proj_idx);
-                }
-            }
-
-            // Convert ORDER BY expressions using the original scan context,
-            // then remap the column indices to projection indices
-            let sort_keys: Result<Vec<SortKey>, _> = order_by
-                .iter()
-                .map(|clause| {
-                    // First, resolve against scan columns (this handles case-insensitive lookup)
-                    let scan_expr = convert_expr(&clause.expression, &resolver)?;
-
-                    // Remap scan column indices to projection indices
-                    let proj_expr = remap_column_indices(&scan_expr, &scan_idx_to_proj_idx)?;
-
-                    Ok(SortKey {
-                        expr: proj_expr,
-                        descending: clause.direction == ast::OrderDirection::Desc,
-                    })
-                })
-                .collect();
-
-            let sort_keys = sort_keys?;
-
-            // Always add Sort; optimizer pass will elide it when an IndexScan provides the order.
-            plan = LogicalPlan::Sort {
+            plan = apply_order_by(
+                plan,
+                order_by,
+                project_exprs,
+                select_column_count,
+                &resolver,
+                has_wildcard,
+                &select.columns,
+            )?;
+        } else {
+            plan = LogicalPlan::Project {
                 input: Box::new(plan),
-                sort_keys,
+                columns: project_exprs,
             };
-
-            // If we added extra columns for ORDER BY, add a final projection to remove them
-            if has_extra_order_columns {
-                let final_project: Vec<PlanExpr> = (0..select_column_count)
-                    .map(|idx| PlanExpr::ColumnRef(idx))
-                    .collect();
-
-                plan = LogicalPlan::Project {
-                    input: Box::new(plan),
-                    columns: final_project,
-                };
-            }
         }
     }
 
