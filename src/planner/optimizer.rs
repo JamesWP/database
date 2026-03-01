@@ -91,6 +91,21 @@ pub(super) fn fuse_projects(plan: LogicalPlan) -> LogicalPlan {
             on_condition,
             left_column_count,
         },
+        LogicalPlan::IndexJoin {
+            left,
+            index_rootpage,
+            right_table_rootpage,
+            right_columns,
+            left_key_col_idx,
+            left_col_count,
+        } => LogicalPlan::IndexJoin {
+            left: Box::new(fuse_projects(*left)),
+            index_rootpage,
+            right_table_rootpage,
+            right_columns,
+            left_key_col_idx,
+            left_col_count,
+        },
         // Leaf and DML nodes: no change.
         other => other,
     }
@@ -214,18 +229,50 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
             column_idxs,
         },
 
-        // Two-child node.
+        // IndexJoin: recurse into left only (right is embedded as rootpages).
+        LogicalPlan::IndexJoin {
+            left,
+            index_rootpage,
+            right_table_rootpage,
+            right_columns,
+            left_key_col_idx,
+            left_col_count,
+        } => LogicalPlan::IndexJoin {
+            left: Box::new(optimize(*left, btree)),
+            index_rootpage,
+            right_table_rootpage,
+            right_columns,
+            left_key_col_idx,
+            left_col_count,
+        },
+
+        // Rule 3: Join with equality on an indexed right column → IndexJoin.
         LogicalPlan::Join {
             left,
             right,
             on_condition,
             left_column_count,
-        } => LogicalPlan::Join {
-            left: Box::new(optimize(*left, btree)),
-            right: Box::new(optimize(*right, btree)),
-            on_condition,
-            left_column_count,
-        },
+        } => {
+            let opt_left = optimize(*left, btree);
+            let opt_right = optimize(*right, btree);
+
+            if let Some(index_join) = try_index_join(
+                &opt_left,
+                &opt_right,
+                &on_condition,
+                left_column_count,
+                btree,
+            ) {
+                return index_join;
+            }
+
+            LogicalPlan::Join {
+                left: Box::new(opt_left),
+                right: Box::new(opt_right),
+                on_condition,
+                left_column_count,
+            }
+        }
 
         // Leaf and DML nodes: no optimization.
         other => other,
@@ -282,6 +329,91 @@ fn try_index_scan_plan(
         table_rootpage,
         columns: scan_columns.to_vec(),
     })
+}
+
+/// Try to rewrite `Join(left, right, on_condition)` as an `IndexJoin` when:
+/// 1. `on_condition` is `Eq(ColumnRef(L), ColumnRef(R))` with L in left and R in right
+/// 2. The right side is a plain `Scan`
+/// 3. An index exists on the right table's join column
+fn try_index_join(
+    left: &LogicalPlan,
+    right: &LogicalPlan,
+    on_condition: &PlanExpr,
+    left_col_count: usize,
+    btree: &BTree,
+) -> Option<LogicalPlan> {
+    // 1. on_condition must be Eq(ColumnRef(L), ColumnRef(R)) or Eq(ColumnRef(R), ColumnRef(L))
+    let (left_col_idx, right_col_idx) = extract_join_equality(on_condition, left_col_count)?;
+
+    // 2. Right side must be a plain Scan (no filters/projections).
+    let (right_rootpage, right_columns) = match right {
+        LogicalPlan::Scan {
+            rootpage, columns, ..
+        } => (*rootpage, columns.clone()),
+        _ => return None,
+    };
+
+    // 3. Map right output index (relative to joined output) to physical column index.
+    let right_physical_col_idx = right_col_idx.checked_sub(left_col_count)?;
+    let right_physical_col = *right_columns.get(right_physical_col_idx)?;
+
+    // 4. Look up an index on that physical column of the right table.
+    let index = find_index_for_column(right_rootpage, right_physical_col, btree)?;
+
+    Some(LogicalPlan::IndexJoin {
+        left: Box::new(left.clone()),
+        index_rootpage: index,
+        right_table_rootpage: right_rootpage,
+        right_columns,
+        left_key_col_idx: left_col_idx,
+        left_col_count,
+    })
+}
+
+/// Extract `(left_col_idx, right_col_idx)` from an equality join condition.
+/// Returns `None` if `on_condition` is not `Eq(ColumnRef, ColumnRef)`.
+/// `left_col_count` is used to decide which side is left and which is right.
+fn extract_join_equality(on_condition: &PlanExpr, left_col_count: usize) -> Option<(usize, usize)> {
+    if let PlanExpr::BinaryOp {
+        op: BinaryOp::Equals,
+        left,
+        right,
+    } = on_condition
+    {
+        if let (PlanExpr::ColumnRef(a), PlanExpr::ColumnRef(b)) = (left.as_ref(), right.as_ref()) {
+            // a is left, b is right
+            if *a < left_col_count && *b >= left_col_count {
+                return Some((*a, *b));
+            }
+            // b is left, a is right
+            if *b < left_col_count && *a >= left_col_count {
+                return Some((*b, *a));
+            }
+        }
+    }
+    None
+}
+
+/// Return the rootpage of an index on `table_rootpage` whose first column is `col_idx`.
+/// Returns `None` if no such index exists.
+fn find_index_for_column(table_rootpage: u32, col_idx: usize, btree: &BTree) -> Option<u32> {
+    let table_name = btree.lookup_table_name_by_rootpage(table_rootpage)?;
+    let table_sql = btree.lookup_table(&table_name).map(|(_, sql)| sql)?;
+    let table_cols: Vec<String> = match crate::frontend::parse(&table_sql).ok()? {
+        crate::frontend::ast::Statement::CreateTable(ct) => {
+            ct.columns.iter().map(|c| c.name.clone()).collect()
+        }
+        _ => return None,
+    };
+    let target_col_name = table_cols.get(col_idx)?;
+
+    let indexes = btree.lookup_indexes_for_table(&table_name);
+    for index in &indexes {
+        if index.column_names.first().map(|s| s.as_str()) == Some(target_col_name.as_str()) {
+            return Some(index.rootpage);
+        }
+    }
+    None
 }
 
 /// Extract (column_index, lower_bound, upper_bound) from a PlanExpr filter predicate.
@@ -702,6 +834,143 @@ mod tests {
                 && matches!(input.as_ref(), LogicalPlan::Scan { .. })),
             "unexpected fused plan: {:?}",
             fused
+        );
+    }
+
+    // ========================================================================
+    // IndexJoin tests
+    // ========================================================================
+
+    /// Build a two-table DB: orders(id, user_id) + users(id, name); index on users.id
+    fn make_join_db_with_index() -> (TestDb, u32, u32, u32) {
+        let mut db = TestDb::default();
+
+        let users_root = db.btree.create_tree();
+        db.btree.insert_schema_entry(
+            "table",
+            "users",
+            "users",
+            users_root,
+            "CREATE TABLE users (id INTEGER, name TEXT)",
+        );
+        let idx_root = db.btree.create_tree();
+        db.btree.insert_schema_entry(
+            "index",
+            "idx_users_id",
+            "users",
+            idx_root,
+            "CREATE INDEX idx_users_id ON users (id)",
+        );
+        let orders_root = db.btree.create_tree();
+        db.btree.insert_schema_entry(
+            "table",
+            "orders",
+            "orders",
+            orders_root,
+            "CREATE TABLE orders (id INTEGER, user_id INTEGER)",
+        );
+
+        (db, orders_root, users_root, idx_root)
+    }
+
+    fn plan_contains_index_join(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::IndexJoin { .. } => true,
+            LogicalPlan::Project { input, .. }
+            | LogicalPlan::Filter { input, .. }
+            | LogicalPlan::Sort { input, .. }
+            | LogicalPlan::Limit { input, .. }
+            | LogicalPlan::Distinct { input, .. } => plan_contains_index_join(input),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn optimizer_rewrites_join_to_index_join_when_index_available() {
+        let (db, orders_root, users_root, idx_root) = make_join_db_with_index();
+
+        // Manually build: Join(Scan(orders), Scan(users), orders.user_id = users.id)
+        // orders columns: [0=id, 1=user_id]; users columns: [0=id, 1=name]
+        // In joined output: orders.id=0, orders.user_id=1, users.id=2, users.name=3
+        let left = LogicalPlan::Scan {
+            rootpage: orders_root,
+            columns: vec![0, 1],
+            with_key: false,
+        };
+        let right = LogicalPlan::Scan {
+            rootpage: users_root,
+            columns: vec![0, 1],
+            with_key: false,
+        };
+        let on_condition = PlanExpr::BinaryOp {
+            op: BinaryOp::Equals,
+            left: Box::new(PlanExpr::ColumnRef(1)), // orders.user_id
+            right: Box::new(PlanExpr::ColumnRef(2)), // users.id
+        };
+        let join = LogicalPlan::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            on_condition,
+            left_column_count: 2,
+        };
+
+        let optimized = optimize(join, &db.btree);
+        assert!(
+            plan_contains_index_join(&optimized),
+            "Expected IndexJoin in plan, got: {optimized:?}"
+        );
+
+        // Check the IndexJoin fields
+        if let LogicalPlan::IndexJoin {
+            index_rootpage,
+            right_table_rootpage,
+            left_key_col_idx,
+            left_col_count,
+            ..
+        } = &optimized
+        {
+            assert_eq!(*index_rootpage, idx_root);
+            assert_eq!(*right_table_rootpage, users_root);
+            assert_eq!(*left_key_col_idx, 1); // orders.user_id is col 1
+            assert_eq!(*left_col_count, 2);
+        }
+    }
+
+    #[test]
+    fn optimizer_keeps_nested_loop_join_when_no_index() {
+        let (db, orders_root, users_root, _idx_root) = make_join_db_with_index();
+
+        // Join on orders.user_id = users.name (col 1 of users, no index)
+        let left = LogicalPlan::Scan {
+            rootpage: orders_root,
+            columns: vec![0, 1],
+            with_key: false,
+        };
+        let right = LogicalPlan::Scan {
+            rootpage: users_root,
+            columns: vec![0, 1],
+            with_key: false,
+        };
+        let on_condition = PlanExpr::BinaryOp {
+            op: BinaryOp::Equals,
+            left: Box::new(PlanExpr::ColumnRef(1)), // orders.user_id
+            right: Box::new(PlanExpr::ColumnRef(3)), // users.name (col 1 in users, no index)
+        };
+        let join = LogicalPlan::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            on_condition,
+            left_column_count: 2,
+        };
+
+        let optimized = optimize(join, &db.btree);
+        assert!(
+            !plan_contains_index_join(&optimized),
+            "Expected plain Join, not IndexJoin"
+        );
+        assert!(
+            matches!(optimized, LogicalPlan::Join { .. }),
+            "Expected Join node"
         );
     }
 }
