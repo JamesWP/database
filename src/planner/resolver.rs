@@ -43,7 +43,8 @@ impl ColumnResolver for SingleTableResolver<'_> {
     }
 }
 
-/// JOIN resolver (handles qualified and ambiguous columns)
+/// JOIN resolver (handles qualified and ambiguous columns; used in tests)
+#[allow(dead_code)]
 pub(super) struct JoinResolver<'a> {
     pub(super) qualified: &'a HashMap<(String, String), usize>,
     pub(super) unqualified: &'a HashMap<String, Option<usize>>,
@@ -69,6 +70,16 @@ impl ColumnResolver for JoinResolver<'_> {
                 table: table.to_string(),
                 column: column.to_string(),
             })
+    }
+}
+
+/// Allow `&dyn ColumnResolver` to be used wherever `impl ColumnResolver` is expected.
+impl<T: ColumnResolver + ?Sized> ColumnResolver for &T {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError> {
+        (**self).resolve_identifier(name)
+    }
+    fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError> {
+        (**self).resolve_qualified(table, column)
     }
 }
 
@@ -98,7 +109,7 @@ impl ColumnResolver for NoColumnResolver {
 /// Convert an AST Expression to a PlanExpr using a column resolution strategy
 pub(super) fn convert_expr(
     expr: &ast::Expression,
-    resolver: &impl ColumnResolver,
+    resolver: &dyn ColumnResolver,
 ) -> Result<PlanExpr, PlanError> {
     match expr {
         ast::Expression::Value(scalar) => convert_scalar(scalar, resolver),
@@ -143,7 +154,7 @@ pub(super) fn convert_expr(
 
 pub(super) fn convert_scalar(
     scalar: &ast::ScalarValue,
-    resolver: &impl ColumnResolver,
+    resolver: &dyn ColumnResolver,
 ) -> Result<PlanExpr, PlanError> {
     match scalar {
         ast::ScalarValue::IntegerNumber(n) => Ok(PlanExpr::Literal(Literal::Integer(*n))),
@@ -173,7 +184,7 @@ pub(super) fn extract_identifier(expr: &ast::Expression) -> Result<String, PlanE
 /// Convert a ColumnExpression to a PlanExpr
 pub(super) fn convert_column_expr(
     col_expr: &ast::ColumnExpression,
-    resolver: &impl ColumnResolver,
+    resolver: &dyn ColumnResolver,
 ) -> Result<PlanExpr, PlanError> {
     match col_expr {
         ast::ColumnExpression::Named { expression, .. } => convert_expr(expression, resolver),
@@ -247,7 +258,7 @@ pub(super) fn has_aggregate(col_expr: &ast::ColumnExpression) -> bool {
 /// Convert aggregate function to AggregateExpr
 pub(super) fn convert_aggregate(
     expr: &ast::Expression,
-    resolver: &impl ColumnResolver,
+    resolver: &dyn ColumnResolver,
 ) -> Result<AggregateExpr, PlanError> {
     match expr {
         ast::Expression::FunctionCall { name, args } => {
@@ -290,7 +301,7 @@ pub(super) fn convert_having_expr(
     expr: &ast::Expression,
     group_keys: &[PlanExpr],
     aggregates: &mut Vec<AggregateExpr>,
-    resolver: &impl ColumnResolver,
+    resolver: &dyn ColumnResolver,
 ) -> Result<PlanExpr, PlanError> {
     if is_aggregate_function(expr) {
         let agg = convert_aggregate(expr, resolver)?;
