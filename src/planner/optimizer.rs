@@ -6,6 +6,120 @@ use crate::storage::BTree;
 
 use super::{BinaryOp, Literal, LogicalPlan, PlanExpr, UnaryOp};
 
+/// Collapse consecutive Project(Project(inner, inner_cols), outer_cols) into a single Project.
+///
+/// Applied bottom-up so that chains of three or more Projects are fully reduced.
+pub(super) fn fuse_projects(plan: LogicalPlan) -> LogicalPlan {
+    match plan {
+        LogicalPlan::Project { input, columns } => {
+            let input = fuse_projects(*input);
+            if let LogicalPlan::Project {
+                input: inner_input,
+                columns: inner_cols,
+            } = input
+            {
+                let fused = columns
+                    .into_iter()
+                    .map(|expr| substitute_column_refs(expr, &inner_cols))
+                    .collect();
+                LogicalPlan::Project {
+                    input: inner_input,
+                    columns: fused,
+                }
+            } else {
+                LogicalPlan::Project {
+                    input: Box::new(input),
+                    columns,
+                }
+            }
+        }
+        LogicalPlan::Filter { input, predicate } => LogicalPlan::Filter {
+            input: Box::new(fuse_projects(*input)),
+            predicate,
+        },
+        LogicalPlan::Sort { input, sort_keys } => LogicalPlan::Sort {
+            input: Box::new(fuse_projects(*input)),
+            sort_keys,
+        },
+        LogicalPlan::Limit { input, count } => LogicalPlan::Limit {
+            input: Box::new(fuse_projects(*input)),
+            count,
+        },
+        LogicalPlan::Count { input } => LogicalPlan::Count {
+            input: Box::new(fuse_projects(*input)),
+        },
+        LogicalPlan::Aggregate {
+            input,
+            group_keys,
+            aggregates,
+            having,
+        } => LogicalPlan::Aggregate {
+            input: Box::new(fuse_projects(*input)),
+            group_keys,
+            aggregates,
+            having,
+        },
+        LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
+            input: Box::new(fuse_projects(*input)),
+        },
+        LogicalPlan::RowidLookup {
+            input,
+            table_rootpage,
+            columns,
+        } => LogicalPlan::RowidLookup {
+            input: Box::new(fuse_projects(*input)),
+            table_rootpage,
+            columns,
+        },
+        LogicalPlan::PopulateIndex {
+            input,
+            index_rootpage,
+            column_idxs,
+        } => LogicalPlan::PopulateIndex {
+            input: Box::new(fuse_projects(*input)),
+            index_rootpage,
+            column_idxs,
+        },
+        LogicalPlan::Join {
+            left,
+            right,
+            on_condition,
+            left_column_count,
+        } => LogicalPlan::Join {
+            left: Box::new(fuse_projects(*left)),
+            right: Box::new(fuse_projects(*right)),
+            on_condition,
+            left_column_count,
+        },
+        // Leaf and DML nodes: no change.
+        other => other,
+    }
+}
+
+/// Substitute ColumnRef(i) → inner_cols[i] recursively within an expression.
+fn substitute_column_refs(expr: PlanExpr, inner_cols: &[PlanExpr]) -> PlanExpr {
+    match expr {
+        PlanExpr::ColumnRef(i) => inner_cols.get(i).cloned().unwrap_or(PlanExpr::ColumnRef(i)),
+        PlanExpr::BinaryOp { op, left, right } => PlanExpr::BinaryOp {
+            op,
+            left: Box::new(substitute_column_refs(*left, inner_cols)),
+            right: Box::new(substitute_column_refs(*right, inner_cols)),
+        },
+        PlanExpr::UnaryOp { op, operand } => PlanExpr::UnaryOp {
+            op,
+            operand: Box::new(substitute_column_refs(*operand, inner_cols)),
+        },
+        PlanExpr::FunctionCall { name, args } => PlanExpr::FunctionCall {
+            name,
+            args: args
+                .into_iter()
+                .map(|a| substitute_column_refs(a, inner_cols))
+                .collect(),
+        },
+        other => other,
+    }
+}
+
 /// Apply optimization rules to a naive LogicalPlan.
 ///
 /// Rule 1: Filter(predicate, Scan) → IndexScan+RowidLookup when a matching index exists.
@@ -482,5 +596,50 @@ mod tests {
             "expected Sort to remain when no index, got: {:?}",
             optimized
         );
+    }
+
+    #[test]
+    fn fuse_projects_collapses_double_project() {
+        // Project(Project(Scan, [col0, col1, col0]), [col0, col1]) → Project(Scan, [col0, col1])
+        let scan = LogicalPlan::Scan {
+            rootpage: 1,
+            columns: vec![0, 1, 2],
+            with_key: false,
+        };
+        let inner = LogicalPlan::Project {
+            input: Box::new(scan),
+            columns: vec![
+                PlanExpr::ColumnRef(0),
+                PlanExpr::ColumnRef(1),
+                PlanExpr::ColumnRef(0),
+            ],
+        };
+        let outer = LogicalPlan::Project {
+            input: Box::new(inner),
+            columns: vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)],
+        };
+        let fused = fuse_projects(outer);
+        assert!(
+            matches!(&fused, LogicalPlan::Project { columns, input }
+                if columns == &vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)]
+                && matches!(input.as_ref(), LogicalPlan::Scan { .. })),
+            "expected single Project over Scan, got: {:?}",
+            fused
+        );
+    }
+
+    #[test]
+    fn fuse_projects_leaves_single_project_unchanged() {
+        let scan = LogicalPlan::Scan {
+            rootpage: 1,
+            columns: vec![0, 1],
+            with_key: false,
+        };
+        let project = LogicalPlan::Project {
+            input: Box::new(scan),
+            columns: vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)],
+        };
+        let result = fuse_projects(project.clone());
+        assert_eq!(result, project);
     }
 }
