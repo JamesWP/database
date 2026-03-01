@@ -109,7 +109,9 @@ where
                 let (leaf_page_idx, cell_index) = *leaf;
                 let page: NodePage = self.pager.get_and_decode(leaf_page_idx);
                 match &page {
-                    NodePage::Leaf(leaf) => Some(leaf.get_key(cell_index)),
+                    NodePage::Leaf(leaf) if cell_index < leaf.num_items() => {
+                        Some(leaf.get_key(cell_index))
+                    }
                     _ => None,
                 }
             }
