@@ -419,7 +419,11 @@ impl Parser {
         let name = self.parse_identifier()?;
         let type_name = self.parse_optional_data_type();
         let constraints = self.parse_column_constraints();
-        Ok(ast::ColumnDef { name, type_name, constraints })
+        Ok(ast::ColumnDef {
+            name,
+            type_name,
+            constraints,
+        })
     }
 
     fn parse_column_constraints(&mut self) -> Vec<ast::ColumnConstraint> {
@@ -1527,7 +1531,9 @@ mod test {
             ast::Statement::CreateTable(ct) => ct,
             _ => panic!("Expected CreateTable"),
         };
-        assert!(ct.columns[0].constraints.contains(&ast::ColumnConstraint::PrimaryKey));
+        assert!(ct.columns[0]
+            .constraints
+            .contains(&ast::ColumnConstraint::PrimaryKey));
         assert!(ct.columns[1].constraints.is_empty());
     }
 
@@ -1538,6 +1544,8 @@ mod test {
             ast::Statement::CreateTable(ct) => ct,
             _ => panic!("Expected CreateTable"),
         };
-        assert!(ct.columns[0].constraints.contains(&ast::ColumnConstraint::Unique));
+        assert!(ct.columns[0]
+            .constraints
+            .contains(&ast::ColumnConstraint::Unique));
     }
 }
