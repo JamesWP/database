@@ -60,7 +60,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **W** | Planner Architecture | 3 | [phase-w-planner-architecture.md](completed/phase-w-planner-architecture.md) | Completed |
 | **X** | Compiler Index Codegen Cleanup | 1 | [phase-x-compiler-cleanup.md](completed/phase-x-compiler-cleanup.md) | Completed |
 | **Y** | Project Node Fusion | 2 | [phase-y-project-fusion.md](completed/phase-y-project-fusion.md) | Completed |
-| **Z** | Unified SELECT Planner | 2 | [phase-z-unified-select.md](phase-z-unified-select.md) | Planned |
+| **Z** | Unified SELECT Planner | 2 | [phase-z-unified-select.md](completed/phase-z-unified-select.md) | Completed |
 | **AA** | Composite Index Predicate Pushdown & Sort Elision | 2 | [phase-aa-composite-index-pushdown.md](phase-aa-composite-index-pushdown.md) | Planned |
 | **AB** | REPL Polish & Parallel-Slice Refactor | 4 | [phase-ab-repl-and-refactor.md](phase-ab-repl-and-refactor.md) | Planned |
 | **AC** | Non-Correlated Subqueries | 4 | [phase-ac-subqueries.md](phase-ac-subqueries.md) | Planned |
