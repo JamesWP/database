@@ -238,6 +238,10 @@ pub(crate) fn plan_select(
 
         // If there's ORDER BY, check if any ORDER BY columns are not in SELECT
         // If so, add them to the projection so they're available for sorting
+        let has_wildcard = select
+            .columns
+            .iter()
+            .any(|c| matches!(c, ast::ColumnExpression::Wildcard));
         let mut extra_order_columns = Vec::new();
         if let Some(ref order_by) = select.order_by {
             for clause in order_by {
@@ -245,24 +249,26 @@ pub(crate) fn plan_select(
                 if let ast::Expression::Value(ast::ScalarValue::Identifier(col_name)) =
                     &clause.expression
                 {
-                    // Check if this column is already in the SELECT list
-                    let already_in_select = select.columns.iter().any(|col_expr| match col_expr {
-                        ast::ColumnExpression::Anonyomous(expr) => {
-                            matches!(
-                                expr.as_ref(),
-                                ast::Expression::Value(ast::ScalarValue::Identifier(name))
-                                    if name == col_name
-                            )
-                        }
-                        ast::ColumnExpression::Named { expression, .. } => {
-                            matches!(
-                                expression.as_ref(),
-                                ast::Expression::Value(ast::ScalarValue::Identifier(name))
-                                    if name == col_name
-                            )
-                        }
-                        ast::ColumnExpression::Wildcard => false,
-                    });
+                    // Check if this column is already in the SELECT list.
+                    // A wildcard expands to all table columns, so any ORDER BY column is covered.
+                    let already_in_select = has_wildcard
+                        || select.columns.iter().any(|col_expr| match col_expr {
+                            ast::ColumnExpression::Anonyomous(expr) => {
+                                matches!(
+                                    expr.as_ref(),
+                                    ast::Expression::Value(ast::ScalarValue::Identifier(name))
+                                        if name == col_name
+                                )
+                            }
+                            ast::ColumnExpression::Named { expression, .. } => {
+                                matches!(
+                                    expression.as_ref(),
+                                    ast::Expression::Value(ast::ScalarValue::Identifier(name))
+                                        if name == col_name
+                                )
+                            }
+                            ast::ColumnExpression::Wildcard => false,
+                        });
 
                     if !already_in_select {
                         // Add this column to the projection
