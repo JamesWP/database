@@ -1729,6 +1729,9 @@ pub fn codegen(
             on_condition,
             left_column_count,
         } => codegen_join(left, right, on_condition, *left_column_count, cont, ctx),
+        LogicalPlan::IndexJoin { .. } => {
+            unimplemented!("IndexJoin codegen not yet implemented")
+        }
         LogicalPlan::Distinct { input } => codegen_distinct(input, cont, ctx),
         LogicalPlan::PopulateIndex {
             input,

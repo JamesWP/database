@@ -116,6 +116,20 @@ fn node_output_cols(plan: &LogicalPlan, schema: &ExplainSchema) -> Vec<String> {
             cols.extend(node_output_cols(right, schema));
             cols
         }
+        LogicalPlan::IndexJoin {
+            left,
+            right_table_rootpage,
+            right_columns,
+            ..
+        } => {
+            let mut cols = node_output_cols(left, schema);
+            cols.extend(
+                right_columns
+                    .iter()
+                    .map(|&c| schema.column_name(*right_table_rootpage, c)),
+            );
+            cols
+        }
         LogicalPlan::IndexScan { .. } => vec!["rowid".to_string()],
         LogicalPlan::Values { rows } => rows
             .first()
@@ -239,6 +253,16 @@ fn collect_rows(
                 format_expr_with_names(on_condition, &input_cols)
             )
         }
+        LogicalPlan::IndexJoin {
+            index_rootpage,
+            right_table_rootpage,
+            left_key_col_idx,
+            ..
+        } => {
+            let index = schema.index_name(*index_rootpage);
+            let table = schema.table_name(*right_table_rootpage);
+            format!("{indent}IndexJoin {table} via {index} [left_key={left_key_col_idx}]")
+        }
         LogicalPlan::Distinct { .. } => format!("{indent}Distinct"),
         LogicalPlan::Insert { rootpage, .. } => {
             format!("{indent}Insert [{}]", schema.table_name(*rootpage))
@@ -281,6 +305,7 @@ fn plan_children(plan: &LogicalPlan) -> Vec<&LogicalPlan> {
         | LogicalPlan::RowidLookup { input, .. }
         | LogicalPlan::PopulateIndex { input, .. } => vec![input],
         LogicalPlan::Join { left, right, .. } => vec![left, right],
+        LogicalPlan::IndexJoin { left, .. } => vec![left],
         _ => vec![],
     }
 }

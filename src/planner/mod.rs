@@ -259,6 +259,24 @@ pub enum LogicalPlan {
         left_column_count: usize, // for register offset calculation
     },
 
+    /// Index nested-loop join: for each row from `left`, probe `index_rootpage` on the right
+    /// table using the left join-key column, then fetch the matching right row by rowid.
+    /// O(M × log N) vs the O(M × N) nested-loop `Join`.
+    /// Output: left columns followed by right columns.
+    IndexJoin {
+        left: Box<LogicalPlan>,
+        /// Root page of the right-side index B-tree.
+        index_rootpage: u32,
+        /// Root page of the right-side data B-tree (for rowid lookup).
+        right_table_rootpage: u32,
+        /// Physical column indices to read from the right table.
+        right_columns: Vec<usize>,
+        /// Column index in the *left* output row that carries the join key value.
+        left_key_col_idx: usize,
+        /// Number of columns from the left side (for output layout).
+        left_col_count: usize,
+    },
+
     /// Deduplicate rows from input (1 input)
     /// Materializes all rows, removes duplicates, yields unique rows.
     /// Output: same columns as input.
