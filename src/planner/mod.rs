@@ -12,7 +12,7 @@ pub(super) mod dml;
 pub(crate) mod resolver;
 use dml::{plan_delete, plan_insert, plan_update};
 pub(super) mod select;
-use select::{plan_select, plan_select_with_joins};
+use select::plan_select;
 pub(super) mod optimizer;
 use optimizer::{fuse_projects, optimize};
 use resolver::ast_expr_name;
@@ -330,13 +330,7 @@ pub fn extract_select_column_names(select: &ast::SelectStatement, btree: &BTree)
 /// Convert an AST Statement to a LogicalPlan by querying the db_schema catalog.
 pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
     let naive = match statement {
-        Statement::Select(select) => {
-            if select.joins.is_empty() {
-                plan_select(select, btree)?
-            } else {
-                plan_select_with_joins(select, btree)?
-            }
-        }
+        Statement::Select(select) => plan_select(select, btree)?,
         Statement::CreateTable(_) | Statement::CreateIndex(_) | Statement::Drop(_) => {
             return Err(PlanError::UnsupportedStatement);
         }
