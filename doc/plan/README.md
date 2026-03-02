@@ -61,29 +61,15 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **X** | Compiler Index Codegen Cleanup | 1 | [phase-x-compiler-cleanup.md](completed/phase-x-compiler-cleanup.md) | Completed |
 | **Y** | Project Node Fusion | 2 | [phase-y-project-fusion.md](completed/phase-y-project-fusion.md) | Completed |
 | **Z** | Unified SELECT Planner | 2 | [phase-z-unified-select.md](phase-z-unified-select.md) | Planned |
-| **AA** | Composite Index Predicate Pushdown & Sort Elision | 2 | [phase-aa-composite-index-pushdown.md](phase-aa-composite-index-pushdown.md) | Planned |
-| **AB** | REPL Polish & Parallel-Slice Refactor | 4 | [phase-ab-repl-and-refactor.md](phase-ab-repl-and-refactor.md) | Planned |
-| **AC** | Non-Correlated Subqueries | 4 | [phase-ac-subqueries.md](phase-ac-subqueries.md) | Planned |
+| **AA** | REPL Polish & Parallel-Slice Refactor | 4 | [phase-aa-repl-and-refactor.md](phase-aa-repl-and-refactor.md) | Planned |
+| **AB** | Non-Correlated Subqueries | 4 | [phase-ab-subqueries.md](phase-ab-subqueries.md) | Planned |
 
-## Current Test Coverage (161 tests)
+## Future
 
-| Subsystem | Tests | Assessment |
-|-----------|-------|------------|
-| Planner | 33 | Excellent |
-| Compiler nodes | 38 | Very good |
-| Engine/VM | 24 | Good |
-| B-tree | 15 + 1 proptest | Reasonable |
-| Parser | 9 | Moderate |
-| Compiler expr | 8 | Moderate |
-| Compiler emitter | 7 | Good for scope |
-| Node | 7 + 2 proptests | Good |
-| DB integration | 6 | Good |
-| ScalarValue | 6 | Moderate |
-| Compiler registers | 5 | Good for scope |
-| Lexer | 4 | Minimal |
-| Pager | 2 | Minimal |
-| Cell / CellReader | 0 | **None** |
-| REPL | 0 | **None** |
+* rename join -> hashjoin
+* support multi column joins in hashjoin
+* support covering indexes
+* support using indexes in joins
 
 ## Verification (all phases)
 

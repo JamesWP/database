@@ -1,4 +1,4 @@
-# Phase AB — REPL Polish & Parallel-Slice Refactor
+# Phase AA — REPL Polish & Parallel-Slice Refactor
 
 Four developer-experience improvements: merge parallel index slices into a paired struct, add step-by-step bytecode execution to the engine REPL mode, overhaul the Graphviz dot exporter to show real cell data, and embed a demo GIF of the colorful bytecode listing in the README.
 
