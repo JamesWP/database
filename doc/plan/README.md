@@ -70,6 +70,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 * support multi column joins in hashjoin
 * support covering indexes
 * support using indexes in joins
+* support aggregation for joins
 
 ## Verification (all phases)
 
