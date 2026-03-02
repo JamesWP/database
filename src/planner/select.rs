@@ -122,14 +122,7 @@ fn plan_select_single(
         columns: mapping.scan_columns,
         with_key: false,
     };
-    let base_plan = if let Some(ref filter) = select.filter {
-        LogicalPlan::Filter {
-            input: Box::new(scan),
-            predicate: convert_expr(filter, &resolver)?,
-        }
-    } else {
-        scan
-    };
+    let base_plan = apply_filter(scan, select.filter.as_ref(), &resolver)?;
 
     // 6. Build the rest of the plan using the shared body.
     // COUNT(*) and aggregation are only available on single-table queries.
@@ -209,14 +202,7 @@ fn plan_select_joined(
         on_condition,
         left_column_count: left_col_count,
     };
-    let base_plan = if let Some(ref filter) = select.filter {
-        LogicalPlan::Filter {
-            input: Box::new(join_plan),
-            predicate: convert_expr(filter, &resolver)?,
-        }
-    } else {
-        join_plan
-    };
+    let base_plan = apply_filter(join_plan, select.filter.as_ref(), &resolver)?;
 
     // 6. Build the rest of the plan using the shared body.
     let wildcard_col_count = left_col_count + right_col_count;
@@ -273,94 +259,9 @@ fn plan_select_body(
             input: Box::new(plan),
         };
     } else if use_aggregation {
-        let group_keys: Vec<PlanExpr> = if let Some(ref group_by) = select.group_by {
-            group_by
-                .iter()
-                .map(|expr| convert_expr(expr, &resolver))
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            vec![]
-        };
-
-        let mut aggregates: Vec<AggregateExpr> = Vec::new();
-        let mut projection_indices: Vec<usize> = Vec::new();
-
-        for col_expr in &select.columns {
-            let expr = match col_expr {
-                ast::ColumnExpression::Named { expression, .. } => expression.as_ref(),
-                ast::ColumnExpression::Anonyomous(expression) => expression.as_ref(),
-                ast::ColumnExpression::Wildcard => continue,
-            };
-
-            if is_aggregate_function(expr) {
-                let agg_index_in_output = group_keys.len() + aggregates.len();
-                projection_indices.push(agg_index_in_output);
-                aggregates.push(convert_aggregate(expr, &resolver)?);
-            } else {
-                let group_expr = convert_expr(expr, &resolver)?;
-                let group_key_index = group_keys
-                    .iter()
-                    .position(|gk| gk == &group_expr)
-                    .ok_or(PlanError::UnsupportedStatement)?;
-                projection_indices.push(group_key_index);
-            }
-        }
-
-        let having = if let Some(having_expr) = select.having {
-            Some(convert_having_expr(
-                &having_expr,
-                &group_keys,
-                &mut aggregates,
-                &resolver,
-            )?)
-        } else {
-            None
-        };
-
-        plan = LogicalPlan::Aggregate {
-            input: Box::new(plan),
-            group_keys,
-            aggregates,
-            having,
-        };
-
-        let project_exprs: Vec<PlanExpr> = projection_indices
-            .into_iter()
-            .map(PlanExpr::ColumnRef)
-            .collect();
-        plan = LogicalPlan::Project {
-            input: Box::new(plan),
-            columns: project_exprs,
-        };
+        plan = apply_aggregate(plan, &select, &resolver)?;
     } else {
-        // Regular SELECT — build projection exprs, then apply ORDER BY if present
-        let project_exprs: Vec<PlanExpr> = select
-            .columns
-            .iter()
-            .flat_map(|col_expr| match col_expr {
-                ast::ColumnExpression::Wildcard => (0..wildcard_col_count)
-                    .map(|idx| Ok(PlanExpr::ColumnRef(idx)))
-                    .collect::<Vec<_>>(),
-                _ => vec![convert_column_expr(col_expr, &resolver)],
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let select_column_count = project_exprs.len();
-
-        if let Some(ref order_by) = select.order_by {
-            plan = apply_order_by(
-                plan,
-                order_by,
-                project_exprs,
-                select_column_count,
-                &resolver,
-            )?;
-        } else {
-            plan = LogicalPlan::Project {
-                input: Box::new(plan),
-                columns: project_exprs,
-            };
-        }
+        plan = apply_project(plan, &select, wildcard_col_count, &resolver)?;
     }
 
     // DISTINCT
@@ -380,6 +281,125 @@ fn plan_select_body(
     }
 
     Ok(plan)
+}
+
+// ============================================================================
+// Shared plan-building helpers
+// ============================================================================
+
+/// Optionally wrap `plan` with a Filter node if `filter` is Some.
+fn apply_filter(
+    plan: LogicalPlan,
+    filter: Option<&ast::Expression>,
+    resolver: &impl ColumnResolver,
+) -> Result<LogicalPlan, PlanError> {
+    if let Some(expr) = filter {
+        Ok(LogicalPlan::Filter {
+            input: Box::new(plan),
+            predicate: convert_expr(expr, resolver)?,
+        })
+    } else {
+        Ok(plan)
+    }
+}
+
+/// Build the Aggregate + Project plan for GROUP BY / aggregate-function queries.
+fn apply_aggregate(
+    plan: LogicalPlan,
+    select: &ast::SelectStatement,
+    resolver: &impl ColumnResolver,
+) -> Result<LogicalPlan, PlanError> {
+    let group_keys: Vec<PlanExpr> = if let Some(ref group_by) = select.group_by {
+        group_by
+            .iter()
+            .map(|expr| convert_expr(expr, resolver))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![]
+    };
+
+    let mut aggregates: Vec<AggregateExpr> = Vec::new();
+    let mut projection_indices: Vec<usize> = Vec::new();
+
+    for col_expr in &select.columns {
+        let expr = match col_expr {
+            ast::ColumnExpression::Named { expression, .. } => expression.as_ref(),
+            ast::ColumnExpression::Anonyomous(expression) => expression.as_ref(),
+            ast::ColumnExpression::Wildcard => continue,
+        };
+
+        if is_aggregate_function(expr) {
+            let agg_index_in_output = group_keys.len() + aggregates.len();
+            projection_indices.push(agg_index_in_output);
+            aggregates.push(convert_aggregate(expr, resolver)?);
+        } else {
+            let group_expr = convert_expr(expr, resolver)?;
+            let group_key_index = group_keys
+                .iter()
+                .position(|gk| gk == &group_expr)
+                .ok_or(PlanError::UnsupportedStatement)?;
+            projection_indices.push(group_key_index);
+        }
+    }
+
+    let having = if let Some(ref having_expr) = select.having {
+        Some(convert_having_expr(
+            having_expr,
+            &group_keys,
+            &mut aggregates,
+            resolver,
+        )?)
+    } else {
+        None
+    };
+
+    let agg_plan = LogicalPlan::Aggregate {
+        input: Box::new(plan),
+        group_keys,
+        aggregates,
+        having,
+    };
+
+    let project_exprs: Vec<PlanExpr> = projection_indices
+        .into_iter()
+        .map(PlanExpr::ColumnRef)
+        .collect();
+    Ok(LogicalPlan::Project {
+        input: Box::new(agg_plan),
+        columns: project_exprs,
+    })
+}
+
+/// Build the Project (and optional Sort) plan for regular non-aggregate SELECT.
+///
+/// `wildcard_col_count` is the number of columns produced by the base plan, used to expand `*`.
+fn apply_project(
+    plan: LogicalPlan,
+    select: &ast::SelectStatement,
+    wildcard_col_count: usize,
+    resolver: &impl ColumnResolver,
+) -> Result<LogicalPlan, PlanError> {
+    let project_exprs: Vec<PlanExpr> = select
+        .columns
+        .iter()
+        .flat_map(|col_expr| match col_expr {
+            ast::ColumnExpression::Wildcard => (0..wildcard_col_count)
+                .map(|idx| Ok(PlanExpr::ColumnRef(idx)))
+                .collect::<Vec<_>>(),
+            _ => vec![convert_column_expr(col_expr, resolver)],
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let select_column_count = project_exprs.len();
+
+    if let Some(ref order_by) = select.order_by {
+        apply_order_by(plan, order_by, project_exprs, select_column_count, resolver)
+    } else {
+        Ok(LogicalPlan::Project {
+            input: Box::new(plan),
+            columns: project_exprs,
+        })
+    }
 }
 
 // ============================================================================
