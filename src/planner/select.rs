@@ -1,4 +1,4 @@
-//! SELECT planning: plan_select, plan_select_with_joins, and supporting helpers.
+//! SELECT planning: unified plan_select, context builders, and shared helpers.
 
 use std::collections::{HashMap, HashSet};
 
@@ -35,7 +35,41 @@ pub(super) fn output_width(plan: &LogicalPlan) -> usize {
     }
 }
 
+/// Unified resolver that works for both single-table and join queries.
+enum SelectResolver<'a> {
+    Single(SingleTableResolver<'a>),
+    Join(JoinResolver<'a>),
+}
+
+impl ColumnResolver for SelectResolver<'_> {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError> {
+        match self {
+            Self::Single(r) => r.resolve_identifier(name),
+            Self::Join(r) => r.resolve_identifier(name),
+        }
+    }
+
+    fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError> {
+        match self {
+            Self::Single(r) => r.resolve_qualified(table, column),
+            Self::Join(r) => r.resolve_qualified(table, column),
+        }
+    }
+}
+
 pub(crate) fn plan_select(
+    select: ast::SelectStatement,
+    btree: &BTree,
+) -> Result<LogicalPlan, PlanError> {
+    if select.joins.is_empty() {
+        plan_select_single(select, btree)
+    } else {
+        plan_select_joined(select, btree)
+    }
+}
+
+/// Plan a SELECT with no joins (single-table path).
+fn plan_select_single(
     select: ast::SelectStatement,
     btree: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
@@ -45,13 +79,7 @@ pub(crate) fn plan_select(
     // 2. Look up table in catalog
     let table = resolve_table(&table_name, btree)?;
 
-    // 3. Detect if this query uses aggregation
-    let is_distinct = select.distinct;
-    let has_group_by = select.group_by.is_some();
-    let has_aggregates = select.columns.iter().any(|col| has_aggregate(col));
-    let use_aggregation = has_group_by || has_aggregates;
-
-    // 4. Collect all column references from SELECT, WHERE, GROUP BY, and ORDER BY
+    // 3. Collect all column references from SELECT, WHERE, GROUP BY, and ORDER BY
     let mut columns_needed = HashSet::new();
     let has_wildcard = select
         .columns
@@ -59,7 +87,6 @@ pub(crate) fn plan_select(
         .any(|col| matches!(col, ast::ColumnExpression::Wildcard));
 
     if has_wildcard {
-        // If SELECT *, include all columns from the table
         for col in &table.columns {
             columns_needed.insert(col.name.clone());
         }
@@ -82,17 +109,145 @@ pub(crate) fn plan_select(
         }
     }
 
-    // 5. Build column mapping
+    // 4. Build column mapping and resolver
     let mapping = build_column_mapping(&columns_needed, &table, &table_ref)?;
-
-    // 6. Build column resolver
-    let resolver = SingleTableResolver {
+    let resolver = SelectResolver::Single(SingleTableResolver {
         table_ref: &table_ref,
         columns: &mapping.column_map,
+    });
+
+    // 5. Build base plan: Scan → optional Filter
+    let scan = LogicalPlan::Scan {
+        rootpage: table.rootpage,
+        columns: mapping.scan_columns,
+        with_key: false,
+    };
+    let base_plan = if let Some(ref filter) = select.filter {
+        LogicalPlan::Filter {
+            input: Box::new(scan),
+            predicate: convert_expr(filter, &resolver)?,
+        }
+    } else {
+        scan
     };
 
-    // 7. Check for COUNT(*) special case (only if no GROUP BY)
-    let is_count_star = !has_group_by
+    // 6. Build the rest of the plan using the shared body.
+    // COUNT(*) and aggregation are only available on single-table queries.
+    let wildcard_col_count = table.columns.len();
+    plan_select_body(
+        select,
+        base_plan,
+        resolver,
+        wildcard_col_count,
+        true, // supports_aggregation
+    )
+}
+
+/// Plan a SELECT with one or more JOINs.
+fn plan_select_joined(
+    select: ast::SelectStatement,
+    btree: &BTree,
+) -> Result<LogicalPlan, PlanError> {
+    // Support exactly one join for now
+    if select.joins.len() != 1 {
+        return Err(PlanError::UnsupportedStatement);
+    }
+
+    // 1. Resolve left table (FROM clause)
+    let (left_name, left_ref) = extract_table_info(&select.from)?;
+    let left_table = resolve_table(&left_name, btree)?;
+    let left_col_count = left_table.columns.len();
+
+    // 2. Resolve right table (first join clause)
+    let join_clause = &select.joins[0];
+    let (right_name, right_ref) = extract_table_info(&join_clause.table)?;
+    let right_table = resolve_table(&right_name, btree)?;
+    let right_col_count = right_table.columns.len();
+
+    // 3. Build join column resolution maps
+    let mut qualified = HashMap::new();
+    let mut unqualified = HashMap::new();
+
+    for (idx, col) in left_table.columns.iter().enumerate() {
+        qualified.insert((left_ref.clone(), col.name.clone()), idx);
+        unqualified
+            .entry(col.name.clone())
+            .and_modify(|e| *e = None)
+            .or_insert(Some(idx));
+    }
+    for (idx, col) in right_table.columns.iter().enumerate() {
+        let combined_idx = left_col_count + idx;
+        qualified.insert((right_ref.clone(), col.name.clone()), combined_idx);
+        unqualified
+            .entry(col.name.clone())
+            .and_modify(|e| *e = None)
+            .or_insert(Some(combined_idx));
+    }
+
+    let resolver = SelectResolver::Join(JoinResolver {
+        qualified: &qualified,
+        unqualified: &unqualified,
+    });
+
+    // 4. Build scan plans (read ALL columns from each table)
+    let left_scan = LogicalPlan::Scan {
+        rootpage: left_table.rootpage,
+        columns: (0..left_col_count).collect(),
+        with_key: false,
+    };
+    let right_scan = LogicalPlan::Scan {
+        rootpage: right_table.rootpage,
+        columns: (0..right_col_count).collect(),
+        with_key: false,
+    };
+
+    // 5. Build Join plan, then optional WHERE filter
+    let on_condition = convert_expr(&join_clause.on_condition, &resolver)?;
+    let join_plan = LogicalPlan::Join {
+        left: Box::new(left_scan),
+        right: Box::new(right_scan),
+        on_condition,
+        left_column_count: left_col_count,
+    };
+    let base_plan = if let Some(ref filter) = select.filter {
+        LogicalPlan::Filter {
+            input: Box::new(join_plan),
+            predicate: convert_expr(filter, &resolver)?,
+        }
+    } else {
+        join_plan
+    };
+
+    // 6. Build the rest of the plan using the shared body.
+    let wildcard_col_count = left_col_count + right_col_count;
+    plan_select_body(
+        select,
+        base_plan,
+        resolver,
+        wildcard_col_count,
+        false, // joins don't support aggregation yet
+    )
+}
+
+/// Shared body: builds Project → Sort? → Distinct? → Limit? on top of `base_plan`.
+///
+/// `wildcard_col_count` is the total number of columns produced by `base_plan`, used to
+/// expand `SELECT *`. `supports_aggregation` gates COUNT(*) and GROUP BY support.
+fn plan_select_body(
+    select: ast::SelectStatement,
+    base_plan: LogicalPlan,
+    resolver: SelectResolver<'_>,
+    wildcard_col_count: usize,
+    supports_aggregation: bool,
+) -> Result<LogicalPlan, PlanError> {
+    let is_distinct = select.distinct;
+    let has_group_by = select.group_by.is_some();
+    let has_aggregates = select.columns.iter().any(|col| has_aggregate(col));
+    let use_aggregation = has_group_by || has_aggregates;
+
+    // COUNT(*) fast path (single-table only)
+    let is_count_star = supports_aggregation
+        && !has_group_by
         && select.columns.len() == 1
         && matches!(
             &select.columns[0],
@@ -104,51 +259,29 @@ pub(crate) fn plan_select(
                 )
         );
 
-    // 8. Build naive plan bottom-up: Scan → Filter? → Count/Aggregate/Project → Sort? → Limit?
-    // Index selection and sort elision are handled by the optimizer pass.
-    let mut plan = if let Some(ref filter) = select.filter {
-        let scan = LogicalPlan::Scan {
-            rootpage: table.rootpage,
-            columns: mapping.scan_columns,
-            with_key: false,
-        };
-        LogicalPlan::Filter {
-            input: Box::new(scan),
-            predicate: convert_expr(filter, &resolver)?,
-        }
-    } else {
-        LogicalPlan::Scan {
-            rootpage: table.rootpage,
-            columns: mapping.scan_columns,
-            with_key: false,
-        }
-    };
-
-    // Add aggregation, count, or projection
-    // Validate: HAVING without GROUP BY or aggregates is an error
+    // Validate HAVING
     if select.having.is_some() && !use_aggregation && !is_count_star {
         return Err(PlanError::InvalidHaving(
             "HAVING requires GROUP BY or aggregate functions".into(),
         ));
     }
 
+    let mut plan = base_plan;
+
     if is_count_star {
-        // SELECT COUNT(*) without GROUP BY - use simple Count node
         plan = LogicalPlan::Count {
             input: Box::new(plan),
         };
     } else if use_aggregation {
-        // GROUP BY or aggregates in SELECT - use Aggregate node
         let group_keys: Vec<PlanExpr> = if let Some(ref group_by) = select.group_by {
             group_by
                 .iter()
                 .map(|expr| convert_expr(expr, &resolver))
                 .collect::<Result<Vec<_>, _>>()?
         } else {
-            vec![] // No GROUP BY = one big group
+            vec![]
         };
 
-        // Process SELECT columns: track both aggregates and projection mapping
         let mut aggregates: Vec<AggregateExpr> = Vec::new();
         let mut projection_indices: Vec<usize> = Vec::new();
 
@@ -156,34 +289,24 @@ pub(crate) fn plan_select(
             let expr = match col_expr {
                 ast::ColumnExpression::Named { expression, .. } => expression.as_ref(),
                 ast::ColumnExpression::Anonyomous(expression) => expression.as_ref(),
-                ast::ColumnExpression::Wildcard => continue, // Skip wildcards for now
+                ast::ColumnExpression::Wildcard => continue,
             };
 
             if is_aggregate_function(expr) {
-                // This SELECT column is an aggregate
-                // It will appear in the Aggregate output after all group keys
                 let agg_index_in_output = group_keys.len() + aggregates.len();
                 projection_indices.push(agg_index_in_output);
                 aggregates.push(convert_aggregate(expr, &resolver)?);
             } else {
-                // This SELECT column is a non-aggregate (must be a group key)
                 let group_expr = convert_expr(expr, &resolver)?;
-                // Find which group key this matches
                 let group_key_index = group_keys
                     .iter()
                     .position(|gk| gk == &group_expr)
-                    .ok_or_else(|| PlanError::UnsupportedStatement)?; // Non-aggregate not in GROUP BY
+                    .ok_or(PlanError::UnsupportedStatement)?;
                 projection_indices.push(group_key_index);
             }
         }
 
-        // Convert HAVING expression (after building group_keys and aggregates)
         let having = if let Some(having_expr) = select.having {
-            if !use_aggregation {
-                return Err(PlanError::InvalidHaving(
-                    "HAVING requires GROUP BY or aggregate functions".into(),
-                ));
-            }
             Some(convert_having_expr(
                 &having_expr,
                 &group_keys,
@@ -201,36 +324,24 @@ pub(crate) fn plan_select(
             having,
         };
 
-        // Add projection to select only the SELECT columns in the correct order
-        // Aggregate outputs: [group_key_0, group_key_1, ..., agg_0, agg_1, ...]
-        // We project the indices that correspond to SELECT columns
         let project_exprs: Vec<PlanExpr> = projection_indices
             .into_iter()
-            .map(|idx| PlanExpr::ColumnRef(idx))
+            .map(PlanExpr::ColumnRef)
             .collect();
-
         plan = LogicalPlan::Project {
             input: Box::new(plan),
             columns: project_exprs,
         };
     } else {
-        // Regular SELECT - add Project
+        // Regular SELECT — build projection exprs, then apply ORDER BY if present
         let project_exprs: Vec<PlanExpr> = select
             .columns
             .iter()
-            .flat_map(|col_expr| {
-                match col_expr {
-                    ast::ColumnExpression::Wildcard => {
-                        // Expand wildcard to all columns in table order
-                        table
-                            .columns
-                            .iter()
-                            .enumerate()
-                            .map(|(idx, _col)| Ok(PlanExpr::ColumnRef(idx)))
-                            .collect::<Vec<_>>()
-                    }
-                    _ => vec![convert_column_expr(col_expr, &resolver)],
-                }
+            .flat_map(|col_expr| match col_expr {
+                ast::ColumnExpression::Wildcard => (0..wildcard_col_count)
+                    .map(|idx| Ok(PlanExpr::ColumnRef(idx)))
+                    .collect::<Vec<_>>(),
+                _ => vec![convert_column_expr(col_expr, &resolver)],
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -252,204 +363,14 @@ pub(crate) fn plan_select(
         }
     }
 
-    // Add Distinct if SELECT DISTINCT
+    // DISTINCT
     if is_distinct {
         plan = LogicalPlan::Distinct {
             input: Box::new(plan),
         };
     }
 
-    // Add Limit if LIMIT clause exists
-    if let Some(ref limit_expr) = select.limit {
-        let count = extract_limit_value(limit_expr)?;
-        plan = LogicalPlan::Limit {
-            input: Box::new(plan),
-            count,
-        };
-    }
-
-    Ok(plan)
-}
-
-pub(super) fn plan_select_with_joins(
-    select: ast::SelectStatement,
-    btree: &BTree,
-) -> Result<LogicalPlan, PlanError> {
-    // Support single join for now
-    if select.joins.len() != 1 {
-        return Err(PlanError::UnsupportedStatement);
-    }
-
-    // 1. Resolve left table (FROM clause)
-    let (left_name, left_ref) = extract_table_info(&select.from)?;
-    let left_table = resolve_table(&left_name, btree)?;
-    let left_col_count = left_table.columns.len();
-
-    // 2. Resolve right table (first join clause)
-    let join_clause = &select.joins[0];
-    let (right_name, right_ref) = extract_table_info(&join_clause.table)?;
-    let right_table = resolve_table(&right_name, btree)?;
-    let right_col_count = right_table.columns.len();
-
-    // 3. Build join column resolution maps
-    let mut qualified = HashMap::new();
-    let mut unqualified = HashMap::new();
-
-    // Add left table columns (positions 0..left_col_count)
-    for (idx, col) in left_table.columns.iter().enumerate() {
-        qualified.insert((left_ref.clone(), col.name.clone()), idx);
-        unqualified
-            .entry(col.name.clone())
-            .and_modify(|e| *e = None) // Mark as ambiguous if already exists
-            .or_insert(Some(idx));
-    }
-
-    // Add right table columns (positions left_col_count..)
-    for (idx, col) in right_table.columns.iter().enumerate() {
-        let combined_idx = left_col_count + idx;
-        qualified.insert((right_ref.clone(), col.name.clone()), combined_idx);
-        unqualified
-            .entry(col.name.clone())
-            .and_modify(|e| *e = None) // Mark as ambiguous if already exists
-            .or_insert(Some(combined_idx));
-    }
-
-    let join_resolver = JoinResolver {
-        qualified: &qualified,
-        unqualified: &unqualified,
-    };
-
-    // 4. Build scan plans (read ALL columns from each table)
-    let left_scan = LogicalPlan::Scan {
-        rootpage: left_table.rootpage,
-        columns: (0..left_col_count).collect(),
-        with_key: false,
-    };
-    let right_scan = LogicalPlan::Scan {
-        rootpage: right_table.rootpage,
-        columns: (0..right_col_count).collect(),
-        with_key: false,
-    };
-
-    // 5. Convert ON condition using join resolver
-    let on_condition = convert_expr(&join_clause.on_condition, &join_resolver)?;
-
-    // 6. Build Join plan
-    let mut plan = LogicalPlan::Join {
-        left: Box::new(left_scan),
-        right: Box::new(right_scan),
-        on_condition,
-        left_column_count: left_col_count,
-    };
-
-    // 7. Add WHERE filter if present (also uses join resolver)
-    if let Some(ref filter) = select.filter {
-        let predicate = convert_expr(filter, &join_resolver)?;
-        plan = LogicalPlan::Filter {
-            input: Box::new(plan),
-            predicate,
-        };
-    }
-
-    // 8. Project SELECT columns
-    let mut project_columns: Vec<PlanExpr> = Vec::new();
-    for col_expr in &select.columns {
-        match col_expr {
-            ast::ColumnExpression::Wildcard => {
-                // Expand to all columns from both tables
-                for idx in 0..(left_col_count + right_col_count) {
-                    project_columns.push(PlanExpr::ColumnRef(idx));
-                }
-            }
-            ast::ColumnExpression::Named { expression, .. } => {
-                project_columns.push(convert_expr(expression, &join_resolver)?);
-            }
-            ast::ColumnExpression::Anonyomous(expression) => {
-                project_columns.push(convert_expr(expression, &join_resolver)?);
-            }
-        }
-    }
-
-    let select_column_count = project_columns.len();
-
-    plan = LogicalPlan::Project {
-        input: Box::new(plan),
-        columns: project_columns.clone(),
-    };
-
-    // 9. ORDER BY (if present) - similar to plan_select
-    if let Some(ref order_by) = select.order_by {
-        // Build a map from join output index to projection index
-        let mut join_idx_to_proj_idx: HashMap<usize, usize> = HashMap::new();
-        for (proj_idx, expr) in project_columns.iter().enumerate() {
-            if let PlanExpr::ColumnRef(column_idx) = expr {
-                join_idx_to_proj_idx.insert(*column_idx, proj_idx);
-            }
-        }
-
-        // Check if any ORDER BY columns are not in the SELECT list
-        let mut extra_order_columns = Vec::new();
-        for clause in order_by.iter() {
-            let order_expr = convert_expr(&clause.expression, &join_resolver)?;
-
-            // Check if this column is already in the projection
-            let already_in_select = project_columns.iter().any(|e| e == &order_expr);
-
-            if !already_in_select {
-                extra_order_columns.push(order_expr);
-            }
-        }
-
-        let has_extra_order_columns = !extra_order_columns.is_empty();
-        if has_extra_order_columns {
-            project_columns.extend(extra_order_columns);
-            plan = LogicalPlan::Project {
-                input: Box::new(plan),
-                columns: project_columns.clone(),
-            };
-
-            // Rebuild the index map with the extended projection
-            join_idx_to_proj_idx.clear();
-            for (proj_idx, expr) in project_columns.iter().enumerate() {
-                if let PlanExpr::ColumnRef(column_idx) = expr {
-                    join_idx_to_proj_idx.insert(*column_idx, proj_idx);
-                }
-            }
-        }
-
-        // Convert ORDER BY expressions and remap column indices
-        let sort_keys: Result<Vec<SortKey>, _> = order_by
-            .iter()
-            .map(|clause| {
-                let join_expr = convert_expr(&clause.expression, &join_resolver)?;
-                let proj_expr = remap_column_indices(&join_expr, &join_idx_to_proj_idx)?;
-
-                Ok(SortKey {
-                    expr: proj_expr,
-                    descending: clause.direction == ast::OrderDirection::Desc,
-                })
-            })
-            .collect();
-
-        plan = LogicalPlan::Sort {
-            input: Box::new(plan),
-            sort_keys: sort_keys?,
-        };
-
-        // If we added extra columns for ORDER BY, add a final projection to remove them
-        if has_extra_order_columns {
-            let final_project: Vec<PlanExpr> = (0..select_column_count)
-                .map(|idx| PlanExpr::ColumnRef(idx))
-                .collect();
-
-            plan = LogicalPlan::Project {
-                input: Box::new(plan),
-                columns: final_project,
-            };
-        }
-    }
-
-    // 10. LIMIT (if present)
+    // LIMIT
     if let Some(ref limit_expr) = select.limit {
         let count = extract_limit_value(limit_expr)?;
         plan = LogicalPlan::Limit {
@@ -1397,6 +1318,95 @@ mod tests {
         assert!(
             plan_contains_sort(&plan),
             "non-indexed column should not be elided"
+        );
+    }
+
+    // ========================================================================
+    // Join tests: LIMIT, DISTINCT, ORDER BY (previously unsupported via the
+    // now-deleted plan_select_with_joins path)
+    // ========================================================================
+
+    fn make_join_db() -> (TestDb, u32, u32) {
+        let mut test = TestDb::default();
+        let orders_root = test.btree.create_tree();
+        test.btree.insert_schema_entry(
+            "table",
+            "orders",
+            "orders",
+            orders_root,
+            "CREATE TABLE orders (id INTEGER, user_id INTEGER, amount INTEGER)",
+        );
+        let users_root = test.btree.create_tree();
+        test.btree.insert_schema_entry(
+            "table",
+            "users",
+            "users",
+            users_root,
+            "CREATE TABLE users (id INTEGER, name TEXT)",
+        );
+        (test, orders_root, users_root)
+    }
+
+    #[test]
+    fn join_with_limit() {
+        let (test, orders_root, users_root) = make_join_db();
+        let stmt = parse_sql(
+            "SELECT orders.id FROM orders JOIN users ON orders.user_id = users.id LIMIT 5",
+        );
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        // Top-level node must be Limit
+        match result {
+            LogicalPlan::Limit { count, input } => {
+                assert_eq!(count, 5);
+                // Input must be Project over Join
+                match *input {
+                    LogicalPlan::Project { input, .. } => {
+                        match *input {
+                            LogicalPlan::Join {
+                                left_column_count, ..
+                            } => {
+                                // orders has 3 columns, users has 2 — left_column_count = 3
+                                assert_eq!(left_column_count, 3);
+                                let _ = (orders_root, users_root); // suppress unused warnings
+                            }
+                            other => panic!("Expected Join, got {other:?}"),
+                        }
+                    }
+                    other => panic!("Expected Project, got {other:?}"),
+                }
+            }
+            other => panic!("Expected Limit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn join_with_distinct() {
+        let (test, _orders_root, _users_root) = make_join_db();
+        let stmt = parse_sql(
+            "SELECT DISTINCT orders.user_id FROM orders JOIN users ON orders.user_id = users.id",
+        );
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        // Top-level node must be Distinct
+        assert!(
+            matches!(result, LogicalPlan::Distinct { .. }),
+            "Expected Distinct, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn join_with_order_by() {
+        let (test, _orders_root, _users_root) = make_join_db();
+        let stmt = parse_sql(
+            "SELECT orders.id, users.name FROM orders JOIN users ON orders.user_id = users.id ORDER BY orders.id",
+        );
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        // Top-level node must be Sort
+        assert!(
+            matches!(result, LogicalPlan::Sort { .. }),
+            "Expected Sort, got {result:?}"
         );
     }
 }
