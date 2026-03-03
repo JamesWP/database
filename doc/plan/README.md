@@ -63,11 +63,13 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **Z** | Unified SELECT Planner | 2 | [phase-z-unified-select.md](completed/phase-z-unified-select.md) | Completed |
 | **AA** | REPL Polish & Parallel-Slice Refactor | 4 | [phase-aa-repl-and-refactor.md](phase-aa-repl-and-refactor.md) | Planned |
 | **AB** | Non-Correlated Subqueries | 4 | [phase-ab-subqueries.md](phase-ab-subqueries.md) | Planned |
+| **AC** | Join Improvements | 6 | [phase-ac-join-improvements.md](phase-ac-join-improvements.md) | Planned |
 
 ## Future
 
-* support covering indexes
+* support covering indexes — satisfy a query entirely from an index without touching the primary B-tree
 * support aggregation for joins
+* multi-column joins — extend planner and JoinResolver to support multiple JOIN clauses and multi-column ON conditions (a.x = b.x AND a.y = b.y)
 
 ## Verification (all phases)
 
