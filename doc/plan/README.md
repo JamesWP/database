@@ -66,10 +66,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 
 ## Future
 
-* rename join -> hashjoin
-* support multi column joins in hashjoin
 * support covering indexes
-* support using indexes in joins
 * support aggregation for joins
 
 ## Verification (all phases)
@@ -79,12 +76,3 @@ Each feature should follow TDD per CLAUDE.md:
 - Implement the feature
 - Run `cargo test --bin database` to confirm all tests pass
 - `cargo fmt && cargo build 2>&1 | grep warning` before committing
-
-## Example prompt
-
-```txt
-in a new branch
-implement the plan in @doc/plan/phase-b-sql-wins.md
-overall plan structure in @doc/plan/README.md       
-of course, follow general project guidance in @CLAUDE.md especially Git Workflow
-```
