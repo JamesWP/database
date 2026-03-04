@@ -235,8 +235,8 @@ Each secondary index is a separate B-tree with its own root page.
 - **Index Catalog**: Stored in `db_schema` with `type='index'`.
 - **Key Encoding**: Composite key: `[encoded_column_value][encoded_rowid]`.
   - Column Value: Big-endian `i64` with sign bit flipped (preserves sort order).
-  - Rowid: Big-endian `u64`.
-- **Value Encoding**: Stored as `[primary_key]` in the index B-tree value (for simplicity).
+  - Rowid: Big-endian `u64` (raw `to_be_bytes()`).
+- **Value Encoding**: Empty (`vec![]`). The rowid is encoded in the key suffix, not the value.
 - **Maintenance**: INSERT updates all indexes for the table.
 - **Query Optimization**: Planner detects applicable indexes for `WHERE col = literal` and generates `IndexScan` bytecode.
 - **Prefix Matching**: Uses `MoveCursor(Find)` to position at the first candidate and `KeyMatchesPrefix` to verify.
