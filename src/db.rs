@@ -303,11 +303,17 @@ fn build_explain_schema(btree: &BTree) -> ExplainSchema {
                 }
             }
             "index" => {
+                let column_names = if let Ok(Statement::CreateIndex(ci)) = parse(&sql) {
+                    ci.column_names
+                } else {
+                    vec![]
+                };
                 schema.indexes.insert(
                     rootpage,
                     IndexMeta {
                         name,
                         table_name: tbl_name,
+                        column_names,
                     },
                 );
             }

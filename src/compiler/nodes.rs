@@ -565,6 +565,85 @@ pub fn codegen_index_scan(
     }
 }
 
+/// Generate bytecode for an IndexProbe node.
+///
+/// Dynamic-key counterpart to IndexScan. For each reset (called by the enclosing
+/// NestedLoop join once per left row), evaluates `key_expr` against the left row's
+/// registers (via `ctx.outer_regs`), probes the index at that key, and yields
+/// matching rowids. Column fetching is delegated to a RowidLookup node above.
+///
+/// `ctx.outer_regs` holds the left row's registers, already populated by the
+/// enclosing left loop. The reset label re-evaluates `key_expr` and re-probes
+/// the index for the current left row. Only rowids are yielded.
+pub fn codegen_index_probe(
+    index_rootpage: u32,
+    key_expr: &PlanExpr,
+    _index_col_idx: usize,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    let outer_regs = ctx
+        .outer_regs
+        .clone()
+        .expect("codegen_index_probe: ctx.outer_regs must be set by enclosing NestedLoop join");
+
+    let index_cursor_reg = ctx.registers.alloc();
+    let flag_reg = ctx.registers.alloc();
+    let pk_reg = ctx.registers.alloc();
+    // key_reg is allocated once and reused across resets
+    let key_reg = ctx.registers.alloc();
+
+    // INIT: Open index cursor (no positioning — reset does that)
+    init!(ctx; Open(index_cursor_reg, index_rootpage));
+
+    // BODY:
+    // RESET: jumped to by NestedLoop join once per left row. Evaluates key_expr
+    // against outer_regs (left row) and positions the index cursor at the probe key.
+    let reset_label = ctx.body_emitter.label_here();
+    let key_compiled = compile_expr(
+        key_expr,
+        &outer_regs,
+        &mut ExprContext {
+            emitter: &mut ctx.body_emitter,
+            registers: &mut ctx.registers,
+        },
+    );
+    body!(ctx;
+        CopyValue(key_reg, key_compiled);
+        EncodeIndexKey(key_reg, key_reg);
+        MoveCursor(index_cursor_reg, MoveOperation::Find(key_reg))
+    );
+
+    // CHECK: entered from reset (fall-through) and from INDEX_NEXT
+    let check_label = ctx.body_emitter.label_here();
+    let key_blob_reg = ctx.registers.alloc();
+    let matches_reg = ctx.registers.alloc();
+    let pk_blob_reg = ctx.registers.alloc();
+    body!(ctx;
+        CanReadCursor(flag_reg, index_cursor_reg);
+        GoToIfFalse(cont.on_done, flag_reg);
+        ReadCurrentKey(key_blob_reg, index_cursor_reg);
+        BlobStartsWith(matches_reg, key_blob_reg, key_reg);
+        GoToIfFalse(cont.on_done, matches_reg);
+        BlobSliceLast(pk_blob_reg, key_blob_reg, 8);
+        DecodeU64Key(pk_reg, pk_blob_reg);
+        GoTo(cont.on_tuple)
+    );
+
+    // INDEX_NEXT: advance cursor, loop back to CHECK
+    let index_next = ctx.body_emitter.label_here();
+    body!(ctx;
+        MoveCursor(index_cursor_reg, MoveOperation::Next);
+        GoTo(check_label)
+    );
+
+    NodeOutput {
+        next: index_next,
+        reset: Some(reset_label),
+        output_regs: vec![pk_reg],
+    }
+}
+
 /// Generate bytecode for a RowidLookup node.
 ///
 /// Pulls rowids from its child (typically IndexScan), uses each to seek
@@ -1876,6 +1955,11 @@ pub fn codegen(
                 codegen_join_nested_loop(left, right, on_condition, *left_column_count, cont, ctx)
             }
         },
+        LogicalPlan::IndexProbe {
+            index_rootpage,
+            key_expr,
+            index_col_idx,
+        } => codegen_index_probe(*index_rootpage, key_expr, *index_col_idx, cont, ctx),
         LogicalPlan::Distinct { input } => codegen_distinct(input, cont, ctx),
         LogicalPlan::PopulateIndex {
             input,
@@ -3020,7 +3104,7 @@ mod tests {
     }
 
     fn on_true() -> PlanExpr {
-        PlanExpr::Literal(Literal::Integer(1))
+        PlanExpr::Literal(Literal::Bool(true))
     }
 
     /// Run a plan that requires btree access.
@@ -3182,5 +3266,134 @@ mod tests {
 
         let yields = run_plan_with_btree(&plan, btree);
         assert_eq!(yields.len(), 0);
+    }
+
+    /// Insert index entries for a table with rows (user_id, amount) where index is on user_id.
+    /// Index key format: [encode_index_value(user_id)][rowid as be_u64]
+    fn insert_index_entries(
+        btree: &mut crate::storage::BTree,
+        index_root: u32,
+        rows: &[(i64, u64)], // (user_id, rowid)
+    ) {
+        use crate::engine::scalarvalue::ScalarValue;
+        use crate::storage::encode_index_value;
+        let mut cursor = btree.open(index_root);
+        let mut c = cursor.open_readwrite();
+        for (i, (user_id, rowid)) in rows.iter().enumerate() {
+            let col_bytes = encode_index_value(&ScalarValue::Integer(*user_id));
+            let rowid_bytes = rowid.to_be_bytes();
+            let mut key = col_bytes;
+            key.extend_from_slice(&rowid_bytes);
+            // Index value is just the primary key (rowid)
+            c.insert_u64(i as u64, key);
+        }
+    }
+
+    #[test]
+    fn nested_loop_join_index_probe_right() {
+        // users(id, name): [(1,"alice"),(2,"bob")]
+        // orders(user_id, amount): [(1,100),(1,200),(2,300)] with index on user_id
+        // Plan: Join { NestedLoop, Scan(users), RowidLookup(IndexProbe(key=ColumnRef(0))), on: true }
+        // Expected: (1,10,1,100), (1,10,1,200), (2,20,2,300)
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let left_root = btree.create_tree();
+        let right_root = btree.create_tree(); // orders table
+        let idx_root = btree.create_tree(); // index on orders.user_id
+
+        // users: rows keyed 0..(n-1)
+        insert_rows2(&mut btree, left_root, &[(1, 10), (2, 20)]);
+
+        // orders: rows keyed by rowid
+        {
+            let values = vec![
+                (
+                    vec![ScalarValue::Integer(1), ScalarValue::Integer(100)],
+                    0u64,
+                ),
+                (
+                    vec![ScalarValue::Integer(1), ScalarValue::Integer(200)],
+                    1u64,
+                ),
+                (
+                    vec![ScalarValue::Integer(2), ScalarValue::Integer(300)],
+                    2u64,
+                ),
+            ];
+            let mut cursor = btree.open(right_root);
+            let mut c = cursor.open_readwrite();
+            for (row, rowid) in &values {
+                let mut buf = Vec::new();
+                ciborium::ser::into_writer(row, &mut buf).unwrap();
+                c.insert_u64(*rowid, buf);
+            }
+        }
+
+        // index on orders.user_id: composite key = [encode_index_value(user_id)][rowid_be_u64]
+        {
+            use crate::storage::{encode_index_value, encode_u64_key};
+            let entries: &[(i64, u64)] = &[(1, 0), (1, 1), (2, 2)];
+            let mut cursor = btree.open(idx_root);
+            let mut c = cursor.open_readwrite();
+            for (user_id, rowid) in entries.iter() {
+                let col_bytes = encode_index_value(&ScalarValue::Integer(*user_id));
+                let mut composite_key = col_bytes;
+                composite_key.extend_from_slice(&encode_u64_key(*rowid));
+                c.insert(&composite_key, vec![]);
+            }
+        }
+
+        // Plan: NestedLoop(Scan(users), RowidLookup(IndexProbe(key=left.col[0])))
+        // ON condition: Literal(1) (true) — the equi-join is handled by IndexProbe itself
+        let plan = LogicalPlan::Join {
+            left: Box::new(LogicalPlan::Scan {
+                rootpage: left_root,
+                columns: vec![0, 1],
+                with_key: false,
+            }),
+            right: Box::new(LogicalPlan::RowidLookup {
+                input: Box::new(LogicalPlan::IndexProbe {
+                    index_rootpage: idx_root,
+                    key_expr: PlanExpr::ColumnRef(0), // left.id
+                    index_col_idx: 0,
+                }),
+                table_rootpage: right_root,
+                columns: vec![0, 1],
+            }),
+            on_condition: on_true(),
+            strategy: crate::planner::JoinStrategy::NestedLoop,
+            left_column_count: 2,
+        };
+
+        let yields = run_plan_with_btree(&plan, btree);
+
+        assert_eq!(yields.len(), 3, "expected 3 rows, got: {:?}", yields);
+        assert_eq!(
+            yields[0],
+            vec![
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(10),
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(100)
+            ]
+        );
+        assert_eq!(
+            yields[1],
+            vec![
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(10),
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(200)
+            ]
+        );
+        assert_eq!(
+            yields[2],
+            vec![
+                ScalarValue::Integer(2),
+                ScalarValue::Integer(20),
+                ScalarValue::Integer(2),
+                ScalarValue::Integer(300)
+            ]
+        );
     }
 }
