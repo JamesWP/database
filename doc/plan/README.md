@@ -63,7 +63,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **Z** | Unified SELECT Planner | 2 | [phase-z-unified-select.md](completed/phase-z-unified-select.md) | Completed |
 | **AA** | REPL Polish & Parallel-Slice Refactor | 4 | [phase-aa-repl-and-refactor.md](phase-aa-repl-and-refactor.md) | Planned |
 | **AB** | Non-Correlated Subqueries | 4 | [phase-ab-subqueries.md](phase-ab-subqueries.md) | Planned |
-| **AC** | Join Improvements | 6 | [phase-ac-join-improvements.md](phase-ac-join-improvements.md) | Planned |
+| **AC** | Join Improvements | 6 | [phase-ac-join-improvements.md](completed/phase-ac-join-improvements.md) | Completed |
 
 ## Future
 
