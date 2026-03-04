@@ -4,7 +4,7 @@ use crate::frontend::ast::Statement;
 use crate::frontend::parse;
 use crate::storage::BTree;
 
-use super::{BinaryOp, Literal, LogicalPlan, PlanExpr, UnaryOp};
+use super::{BinaryOp, JoinStrategy, Literal, LogicalPlan, PlanExpr, UnaryOp};
 
 /// Collapse consecutive Project(Project(inner, inner_cols), outer_cols) into a single Project.
 ///
@@ -223,13 +223,25 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
             on_condition,
             strategy,
             left_column_count,
-        } => LogicalPlan::Join {
-            left: Box::new(optimize(*left, btree)),
-            right: Box::new(optimize(*right, btree)),
-            on_condition,
-            strategy,
-            left_column_count,
-        },
+        } => {
+            let opt_left = optimize(*left, btree);
+            let opt_right = optimize(*right, btree);
+
+            // Promote NestedLoop → Hash when no index is available on the right side.
+            // (Item 111 will add the IndexProbe path that keeps NestedLoop.)
+            let final_strategy = match &strategy {
+                JoinStrategy::NestedLoop => JoinStrategy::Hash,
+                other => other.clone(),
+            };
+
+            LogicalPlan::Join {
+                left: Box::new(opt_left),
+                right: Box::new(opt_right),
+                on_condition,
+                strategy: final_strategy,
+                left_column_count,
+            }
+        }
 
         // Leaf and DML nodes: no optimization.
         other => other,
@@ -706,6 +718,54 @@ mod tests {
                 && matches!(input.as_ref(), LogicalPlan::Scan { .. })),
             "unexpected fused plan: {:?}",
             fused
+        );
+    }
+
+    #[test]
+    fn optimizer_promotes_nested_loop_to_hash_when_no_index() {
+        let (mut db, users_root) = make_users_db();
+        let orders_root = db.btree.create_tree();
+        db.btree.insert_schema_entry(
+            "table",
+            "orders",
+            "orders",
+            orders_root,
+            "CREATE TABLE orders (user_id INTEGER, amount INTEGER)",
+        );
+
+        // Join { NestedLoop, Scan(users), Scan(orders), on: users.id = orders.user_id }
+        // No index on orders.user_id → optimizer should promote to Hash.
+        let plan = LogicalPlan::Join {
+            left: Box::new(LogicalPlan::Scan {
+                rootpage: users_root,
+                columns: vec![0, 1, 2],
+                with_key: false,
+            }),
+            right: Box::new(LogicalPlan::Scan {
+                rootpage: orders_root,
+                columns: vec![0, 1],
+                with_key: false,
+            }),
+            on_condition: PlanExpr::BinaryOp {
+                op: BinaryOp::Equals,
+                left: Box::new(PlanExpr::ColumnRef(0)),
+                right: Box::new(PlanExpr::ColumnRef(3)),
+            },
+            strategy: JoinStrategy::NestedLoop,
+            left_column_count: 3,
+        };
+
+        let optimized = optimize(plan, &db.btree);
+        assert!(
+            matches!(
+                &optimized,
+                LogicalPlan::Join {
+                    strategy: JoinStrategy::Hash,
+                    ..
+                }
+            ),
+            "expected Hash strategy, got: {:?}",
+            optimized
         );
     }
 }
