@@ -24,6 +24,7 @@ pub struct IndexMeta {
     pub name: String,
     #[allow(dead_code)]
     pub table_name: String,
+    pub column_names: Vec<String>,
 }
 
 #[derive(Default)]
@@ -57,6 +58,15 @@ impl ExplainSchema {
             .get(&rootpage)
             .map(|m| m.name.clone())
             .unwrap_or_else(|| format!("index@{rootpage}"))
+    }
+
+    /// Return the first indexed column name for this index rootpage.
+    pub fn index_col_name(&self, rootpage: u32) -> String {
+        self.indexes
+            .get(&rootpage)
+            .and_then(|m| m.column_names.first())
+            .cloned()
+            .unwrap_or_else(|| format!("col@{rootpage}"))
     }
 }
 
@@ -116,7 +126,9 @@ fn node_output_cols(plan: &LogicalPlan, schema: &ExplainSchema) -> Vec<String> {
             cols.extend(node_output_cols(right, schema));
             cols
         }
-        LogicalPlan::IndexScan { .. } => vec!["rowid".to_string()],
+        LogicalPlan::IndexScan { .. } | LogicalPlan::IndexProbe { .. } => {
+            vec!["rowid".to_string()]
+        }
         LogicalPlan::Values { rows } => rows
             .first()
             .map(|r| (0..r.len()).map(|i| format!("col:{i}")).collect())
@@ -199,6 +211,17 @@ fn collect_rows(
             let table = schema.table_name(*table_rootpage);
             let cols = resolve_cols(schema, *table_rootpage, columns);
             format!("{indent}RowidLookup {table} [cols: {cols}]")
+        }
+        LogicalPlan::IndexProbe {
+            index_rootpage,
+            key_expr,
+            index_col_idx: _,
+        } => {
+            let index_col = schema.index_col_name(*index_rootpage);
+            format!(
+                "{indent}IndexProbe [index_col={index_col}, key={}]",
+                format_expr_with_names(key_expr, &input_cols)
+            )
         }
         LogicalPlan::Filter { predicate, .. } => {
             format!(

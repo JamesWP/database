@@ -275,6 +275,21 @@ pub enum LogicalPlan {
     /// Output: same columns as input.
     Distinct { input: Box<LogicalPlan> },
 
+    /// Dynamic-key counterpart to IndexScan: yields rowids only.
+    /// Used as the right child of a NestedLoop join when an index exists on the join column.
+    /// Column fetching is delegated to a RowidLookup node above it.
+    ///
+    /// `key_expr` contains `ColumnRef(i)` references that index into the *left* row's
+    /// output registers — the sole exception to the left-column-free zone in right subtrees.
+    /// These are resolved via `ctx.outer_regs` in `codegen_index_probe`.
+    IndexProbe {
+        index_rootpage: u32,
+        /// Expression evaluated against left row's registers to produce the probe key.
+        /// ColumnRef(i) refers to left output column i — resolved via ctx.outer_regs.
+        key_expr: PlanExpr,
+        index_col_idx: usize,
+    },
+
     /// Populate an index B-tree from an existing table.
     /// Scans all rows in the table, encoding each row's indexed columns and
     /// primary key as a composite index key, then writes to the index B-tree.
