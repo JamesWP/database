@@ -25,6 +25,11 @@ pub struct CodegenContext {
     pub body_emitter: BytecodeEmitter,
     /// Register allocator shared across all nodes
     pub registers: RegisterAllocator,
+    /// Set only by `codegen_join_nested_loop` before compiling the right subtree;
+    /// consumed only by `codegen_index_probe` to evaluate `key_expr` against the
+    /// current left row. Must be `None` everywhere else. See phase-ac plan
+    /// "Codegen context and coupling".
+    pub outer_regs: Option<Vec<Reg>>,
 }
 
 impl CodegenContext {
@@ -33,6 +38,7 @@ impl CodegenContext {
             init_emitter: BytecodeEmitter::new(),
             body_emitter: BytecodeEmitter::new(),
             registers: RegisterAllocator::new(),
+            outer_regs: None,
         }
     }
 
@@ -75,6 +81,12 @@ pub struct NodeContinuation {
 pub struct NodeOutput {
     /// Label to jump to to request the next tuple
     pub next: Label,
+    /// Entry point to restart this node from scratch for the current outer (left) row.
+    /// Required by NestedLoop join; `None` for nodes that do not support reset
+    /// (materializing nodes such as Sort, Aggregate, Join(Hash)). Pass-through nodes
+    /// (Filter, Project, RowidLookup) propagate this from their child unchanged.
+    /// See phase-ac plan "Reset contract".
+    pub reset: Option<Label>,
     /// Registers containing the current tuple's column values
     pub output_regs: Vec<Reg>,
 }
@@ -125,14 +137,20 @@ pub fn codegen_scan(
         None
     };
 
-    // INIT (init_emitter): Open cursor and move to first row
+    // INIT (init_emitter): Open cursor and move to first row for standalone callers.
+    // NestedLoop join jumps to the reset label in the body instead.
     init!(ctx;
         Open(cursor_reg, rootpage);
         MoveCursor(cursor_reg, MoveOperation::First)
     );
 
     // BODY (body_emitter):
-    // CHECK: Label for iteration entry point
+    // RESET: jumped to by NestedLoop join once per left row to restart the scan.
+    // Standalone callers use the init MoveCursor(First) above and never jump here.
+    let reset_label = ctx.body_emitter.label_here();
+    body!(ctx; MoveCursor(cursor_reg, MoveOperation::First));
+
+    // CHECK: Label for iteration entry point (also falls through from RESET)
     let check_label = ctx.body_emitter.label_here();
     body!(ctx;
         CanReadCursor(flag_reg, cursor_reg);
@@ -153,6 +171,7 @@ pub fn codegen_scan(
 
     NodeOutput {
         next: check_label,
+        reset: Some(reset_label),
         output_regs,
     }
 }
@@ -211,6 +230,7 @@ pub fn codegen_count(
     NodeOutput {
         next: count_next,
         output_regs: vec![counter_reg],
+        reset: None,
     }
 }
 
@@ -247,6 +267,7 @@ pub fn codegen_values(
         return NodeOutput {
             next: check_label,
             output_regs: vec![],
+            reset: None,
         };
     }
 
@@ -315,6 +336,7 @@ pub fn codegen_values(
     NodeOutput {
         next: check_label,
         output_regs,
+        reset: None,
     }
 }
 
@@ -363,6 +385,7 @@ pub fn codegen_sequence(
     NodeOutput {
         next: check_label,
         output_regs: vec![output_reg],
+        reset: None,
     }
 }
 
@@ -420,9 +443,10 @@ pub fn codegen_filter(
         GoTo(cont.on_tuple)
     );
 
-    // Return: delegate to child for next, pass through output registers
+    // Return: delegate to child for next, propagate reset, pass through output registers
     NodeOutput {
         next: child_output.next,
+        reset: child_output.reset, // propagate child's reset label unchanged
         output_regs: child_output.output_regs,
     }
 }
@@ -537,6 +561,7 @@ pub fn codegen_index_scan(
     NodeOutput {
         next: index_next,
         output_regs,
+        reset: None,
     }
 }
 
@@ -577,6 +602,7 @@ pub fn codegen_rowid_lookup(
 
     NodeOutput {
         next: child_output.next,
+        reset: child_output.reset, // propagate child's reset label unchanged
         output_regs,
     }
 }
@@ -634,9 +660,10 @@ pub fn codegen_project(
     // Emit the transformed tuple
     body!(ctx; GoTo(cont.on_tuple));
 
-    // Return: delegate to child for next, but with new output registers
+    // Return: delegate to child for next, propagate reset, with new output registers
     NodeOutput {
         next: child_output.next,
+        reset: child_output.reset, // propagate child's reset label unchanged
         output_regs,
     }
 }
@@ -703,6 +730,7 @@ pub fn codegen_limit(
     NodeOutput {
         next: child_output.next,
         output_regs: child_output.output_regs,
+        reset: None,
     }
 }
 
@@ -777,6 +805,7 @@ pub fn codegen_distinct(
     NodeOutput {
         next: distinct_next,
         output_regs,
+        reset: None,
     }
 }
 
@@ -876,6 +905,7 @@ pub fn codegen_sort(
     NodeOutput {
         next: sort_next,
         output_regs: child_output.output_regs,
+        reset: None,
     }
 }
 
@@ -1007,6 +1037,7 @@ pub fn codegen_aggregate(
     NodeOutput {
         next: agg_next,
         output_regs,
+        reset: None,
     }
 }
 
@@ -1185,6 +1216,7 @@ pub fn codegen_insert(
     NodeOutput {
         next: insert_next,
         output_regs: vec![counter_reg],
+        reset: None,
     }
 }
 
@@ -1327,6 +1359,7 @@ pub fn codegen_update(
     NodeOutput {
         next: after_yield,
         output_regs: vec![counter_reg],
+        reset: None,
     }
 }
 
@@ -1471,6 +1504,110 @@ pub fn codegen_join(
     NodeOutput {
         next: join_next,
         output_regs: combined_output,
+        reset: None,
+    }
+}
+
+/// Generate bytecode for a NestedLoop Join node.
+///
+/// For each left row, resets the right child (via its reset label) and iterates
+/// all right rows, emitting combined rows where on_condition is true.
+///
+/// Two couplings between the join and its right subtree:
+/// 1. `reset: Option<Label>` on NodeOutput — the right child must provide a reset
+///    entry point. Pass-through nodes propagate it; materializing nodes do not
+///    support it (we panic). See phase-ac plan "Reset contract".
+/// 2. `ctx.outer_regs` — set to the left output registers before compiling the
+///    right subtree so that IndexProbe.key_expr can reference them via ColumnRef.
+///    Cleared immediately after. See phase-ac plan "Codegen context and coupling".
+///
+/// The left-column-free zone invariant: no expression inside the right subtree
+/// (except IndexProbe.key_expr) may reference left columns. Cross-column
+/// conditions belong in on_condition.
+pub fn codegen_join_nested_loop(
+    left: &LogicalPlan,
+    right: &LogicalPlan,
+    on_condition: &PlanExpr,
+    _left_column_count: usize,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // --- Compile left child ---
+    let left_on_tuple = ctx.body_emitter.create_label();
+    let left_cont = NodeContinuation {
+        on_tuple: left_on_tuple,
+        on_done: cont.on_done,
+    };
+    let left_output = codegen(left, &left_cont, ctx);
+
+    // Set outer_regs so the right subtree (IndexProbe) can reference left registers.
+    ctx.outer_regs = Some(left_output.output_regs.clone());
+
+    // --- Compile right child ---
+    let right_on_tuple = ctx.body_emitter.create_label();
+    let right_on_done = ctx.body_emitter.create_label();
+    let right_cont = NodeContinuation {
+        on_tuple: right_on_tuple,
+        on_done: right_on_done,
+    };
+    let right_output = codegen(right, &right_cont, ctx);
+
+    // Clear outer_regs — must be None outside of nested-loop right subtree compilation.
+    ctx.outer_regs = None;
+
+    let right_reset = right_output.reset.expect(
+        "NestedLoop join: right child does not support reset. \
+         Materializing nodes (Sort, Aggregate, Join(Hash)) cannot be right children. \
+         See phase-ac plan 'Reset contract'.",
+    );
+
+    // Combined output: left columns then right columns
+    let mut combined_output = left_output.output_regs.clone();
+    combined_output.extend(right_output.output_regs.clone());
+
+    // Entry: start with the first left row
+    body!(ctx;
+        GoTo(left_output.next)
+    );
+
+    // left_on_tuple: got a new left row — restart the right child
+    body!(ctx;
+        Bind(left_on_tuple);
+        GoTo(right_reset)
+    );
+
+    // right_on_done: right side exhausted — advance left
+    body!(ctx;
+        Bind(right_on_done);
+        GoTo(left_output.next)
+    );
+
+    // right_on_tuple: right child yielded a row — evaluate ON condition
+    let check_label = ctx.body_emitter.label_here();
+    body!(ctx; Bind(right_on_tuple));
+    let pred_reg = compile_expr(
+        on_condition,
+        &combined_output,
+        &mut ExprContext {
+            emitter: &mut ctx.body_emitter,
+            registers: &mut ctx.registers,
+        },
+    );
+    body!(ctx;
+        GoToIfFalse(right_output.next, pred_reg);
+        GoTo(cont.on_tuple)
+    );
+
+    // JOIN_NEXT: parent requests next row — advance right child
+    let join_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(right_output.next));
+
+    let _ = check_label; // used for doc clarity
+
+    NodeOutput {
+        next: join_next,
+        reset: None,
+        output_regs: combined_output,
     }
 }
 
@@ -1590,6 +1727,7 @@ pub fn codegen_delete(
     NodeOutput {
         next: after_yield,
         output_regs: vec![counter_reg],
+        reset: None,
     }
 }
 
@@ -1656,6 +1794,7 @@ pub fn codegen_populate_index(
     NodeOutput {
         next: scan_out.next,
         output_regs: vec![],
+        reset: None,
     }
 }
 
@@ -1727,9 +1866,16 @@ pub fn codegen(
             left,
             right,
             on_condition,
-            strategy: _,
+            strategy,
             left_column_count,
-        } => codegen_join(left, right, on_condition, *left_column_count, cont, ctx),
+        } => match strategy {
+            crate::planner::JoinStrategy::Hash => {
+                codegen_join(left, right, on_condition, *left_column_count, cont, ctx)
+            }
+            crate::planner::JoinStrategy::NestedLoop => {
+                codegen_join_nested_loop(left, right, on_condition, *left_column_count, cont, ctx)
+            }
+        },
         LogicalPlan::Distinct { input } => codegen_distinct(input, cont, ctx),
         LogicalPlan::PopulateIndex {
             input,
@@ -2836,5 +2982,205 @@ mod tests {
 
         // Just verify we got some operations
         assert!(ops.len() > 10, "Expected reasonable bytecode length");
+    }
+
+    // ========================================================================
+    // NestedLoop Join tests
+    // ========================================================================
+
+    /// Insert CBOR-encoded rows into a btree table.
+    fn insert_rows2(btree: &mut crate::storage::BTree, root: u32, rows: &[(i64, i64)]) {
+        let mut cursor = btree.open(root);
+        let mut c = cursor.open_readwrite();
+        for (i, (a, b)) in rows.iter().enumerate() {
+            let values = vec![ScalarValue::Integer(*a), ScalarValue::Integer(*b)];
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(&values, &mut buf).unwrap();
+            c.insert_u64(i as u64, buf);
+        }
+    }
+
+    fn nlj(left: LogicalPlan, right: LogicalPlan, on: PlanExpr) -> LogicalPlan {
+        LogicalPlan::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            on_condition: on,
+            strategy: crate::planner::JoinStrategy::NestedLoop,
+            left_column_count: 2,
+        }
+    }
+
+    fn on_eq_col0_col2() -> PlanExpr {
+        // ON left.col[0] = right.col[0] — in combined space right starts at index 2
+        PlanExpr::BinaryOp {
+            op: BinaryOp::Equals,
+            left: Box::new(PlanExpr::ColumnRef(0)),
+            right: Box::new(PlanExpr::ColumnRef(2)),
+        }
+    }
+
+    fn on_true() -> PlanExpr {
+        PlanExpr::Literal(Literal::Integer(1))
+    }
+
+    /// Run a plan that requires btree access.
+    fn run_plan_with_btree(
+        plan: &LogicalPlan,
+        btree: crate::storage::BTree,
+    ) -> Vec<Vec<ScalarValue>> {
+        let (ops, num_registers) = compile_plan(plan);
+        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        engine.run()
+    }
+
+    #[test]
+    fn nested_loop_join_scan_right() {
+        // users(id, val): [(1,10),(2,20)]; orders(user_id, amount): [(1,100),(1,200),(2,300)]
+        // ON users.id = orders.user_id → 3 combined rows
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let left_root = btree.create_tree();
+        let right_root = btree.create_tree();
+        insert_rows2(&mut btree, left_root, &[(1, 10), (2, 20)]);
+        insert_rows2(&mut btree, right_root, &[(1, 100), (1, 200), (2, 300)]);
+
+        let plan = nlj(
+            LogicalPlan::Scan {
+                rootpage: left_root,
+                columns: vec![0, 1],
+                with_key: false,
+            },
+            LogicalPlan::Scan {
+                rootpage: right_root,
+                columns: vec![0, 1],
+                with_key: false,
+            },
+            on_eq_col0_col2(),
+        );
+
+        let yields = run_plan_with_btree(&plan, btree);
+
+        assert_eq!(yields.len(), 3, "expected 3 rows, got: {:?}", yields);
+        assert_eq!(
+            yields[0],
+            vec![
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(10),
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(100)
+            ]
+        );
+        assert_eq!(
+            yields[1],
+            vec![
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(10),
+                ScalarValue::Integer(1),
+                ScalarValue::Integer(200)
+            ]
+        );
+        assert_eq!(
+            yields[2],
+            vec![
+                ScalarValue::Integer(2),
+                ScalarValue::Integer(20),
+                ScalarValue::Integer(2),
+                ScalarValue::Integer(300)
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_loop_join_filter_scan_right() {
+        // right has 3 rows; filter keeps only amount > 100
+        // ON left.id = right.user_id → (1,10,1,200), (2,20,2,300)
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let left_root = btree.create_tree();
+        let right_root = btree.create_tree();
+        insert_rows2(&mut btree, left_root, &[(1, 10), (2, 20)]);
+        insert_rows2(&mut btree, right_root, &[(1, 50), (1, 200), (2, 300)]);
+
+        let right = LogicalPlan::Filter {
+            predicate: PlanExpr::BinaryOp {
+                op: BinaryOp::GreaterThan,
+                left: Box::new(PlanExpr::ColumnRef(1)),
+                right: Box::new(PlanExpr::Literal(Literal::Integer(100))),
+            },
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: right_root,
+                columns: vec![0, 1],
+                with_key: false,
+            }),
+        };
+        let plan = nlj(
+            LogicalPlan::Scan {
+                rootpage: left_root,
+                columns: vec![0, 1],
+                with_key: false,
+            },
+            right,
+            on_eq_col0_col2(),
+        );
+
+        let yields = run_plan_with_btree(&plan, btree);
+
+        assert_eq!(yields.len(), 2, "expected 2 rows, got: {:?}", yields);
+        assert_eq!(yields[0][3], ScalarValue::Integer(200));
+        assert_eq!(yields[1][3], ScalarValue::Integer(300));
+    }
+
+    #[test]
+    fn nested_loop_join_empty_right() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let left_root = btree.create_tree();
+        let right_root = btree.create_tree();
+        insert_rows2(&mut btree, left_root, &[(1, 10), (2, 20)]);
+        // right is empty
+
+        let plan = nlj(
+            LogicalPlan::Scan {
+                rootpage: left_root,
+                columns: vec![0, 1],
+                with_key: false,
+            },
+            LogicalPlan::Scan {
+                rootpage: right_root,
+                columns: vec![0, 1],
+                with_key: false,
+            },
+            on_true(),
+        );
+
+        let yields = run_plan_with_btree(&plan, btree);
+        assert_eq!(yields.len(), 0);
+    }
+
+    #[test]
+    fn nested_loop_join_empty_left() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let left_root = btree.create_tree();
+        let right_root = btree.create_tree();
+        // left is empty
+        insert_rows2(&mut btree, right_root, &[(1, 100), (2, 200)]);
+
+        let plan = nlj(
+            LogicalPlan::Scan {
+                rootpage: left_root,
+                columns: vec![0, 1],
+                with_key: false,
+            },
+            LogicalPlan::Scan {
+                rootpage: right_root,
+                columns: vec![0, 1],
+                with_key: false,
+            },
+            on_true(),
+        );
+
+        let yields = run_plan_with_btree(&plan, btree);
+        assert_eq!(yields.len(), 0);
     }
 }
