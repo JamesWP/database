@@ -227,18 +227,28 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
             let opt_left = optimize(*left, btree);
             let opt_right = optimize(*right, btree);
 
-            // Promote NestedLoop → Hash when no index is available on the right side.
-            // (Item 111 will add the IndexProbe path that keeps NestedLoop.)
-            let final_strategy = match &strategy {
-                JoinStrategy::NestedLoop => JoinStrategy::Hash,
-                other => other.clone(),
-            };
+            // For NestedLoop: try to substitute right Scan with IndexProbe when an equi-join
+            // condition matches an index on the right table. If no index found, promote to Hash.
+            if strategy == JoinStrategy::NestedLoop {
+                if let Some((new_right, residual)) =
+                    try_index_probe_plan(&on_condition, &opt_right, left_column_count, btree)
+                {
+                    return LogicalPlan::Join {
+                        left: Box::new(opt_left),
+                        right: Box::new(new_right),
+                        on_condition: residual,
+                        strategy: JoinStrategy::NestedLoop,
+                        left_column_count,
+                    };
+                }
+            }
 
+            // No index available (or strategy is already Hash): promote to Hash.
             LogicalPlan::Join {
                 left: Box::new(opt_left),
                 right: Box::new(opt_right),
                 on_condition,
-                strategy: final_strategy,
+                strategy: JoinStrategy::Hash,
                 left_column_count,
             }
         }
@@ -298,6 +308,196 @@ fn try_index_scan_plan(
         table_rootpage,
         columns: scan_columns.to_vec(),
     })
+}
+
+/// Try to rewrite a NestedLoop join's right subtree to use an IndexProbe.
+///
+/// Inspects `on_condition` for equi-join conditions of the form
+/// `ColumnRef(left_col) = ColumnRef(right_col_combined)` where
+/// `right_col_combined >= left_column_count` (the right column in combined space).
+/// If the right subtree is a Scan whose table has an index on the right join column,
+/// returns `(new_right, residual_condition)` where:
+/// - `new_right` = `RowidLookup(IndexProbe { key_expr: ColumnRef(left_col_idx), ... })`
+/// - `residual_condition` = remaining AND conditions, or `Literal(Bool(true))` if the
+///   matched equality was the only condition.
+///
+/// Returns `None` if no applicable index probe is possible.
+fn try_index_probe_plan(
+    on_condition: &PlanExpr,
+    right: &LogicalPlan,
+    left_column_count: usize,
+    btree: &BTree,
+) -> Option<(LogicalPlan, PlanExpr)> {
+    // Right side must be a plain Scan (or possibly RowidLookup wrapping a scan that
+    // the sub-optimizer already rewrote — we only handle the Scan case here).
+    let (right_rootpage, right_columns) = match right {
+        LogicalPlan::Scan {
+            rootpage, columns, ..
+        } => (*rootpage, columns.clone()),
+        _ => return None,
+    };
+
+    let table_name = btree.lookup_table_name_by_rootpage(right_rootpage)?;
+    let indexes = btree.lookup_indexes_for_table(&table_name);
+    if indexes.is_empty() {
+        return None;
+    }
+
+    // Extract equi-join pairs: (left_col_idx, right_table_col_idx) from the ON condition.
+    // right_col_in_combined = left_column_count + right_table_col_position_in_scan
+    let equi_pairs = extract_equi_join_pairs(on_condition, left_column_count, &right_columns);
+
+    for (left_col_idx, right_table_col_idx) in &equi_pairs {
+        // Find an index whose first column matches right_table_col_idx
+        let index = indexes.iter().find(|idx| {
+            idx.column_names
+                .first()
+                .and_then(|col_name| {
+                    btree.lookup_table(&table_name).and_then(|(_, sql)| {
+                        parse(&sql).ok().and_then(|stmt| match stmt {
+                            Statement::CreateTable(ct) => {
+                                ct.columns.iter().position(|c| c.name == *col_name)
+                            }
+                            _ => None,
+                        })
+                    })
+                })
+                .unwrap_or(usize::MAX)
+                == *right_table_col_idx
+        });
+
+        if let Some(index) = index {
+            let new_right = LogicalPlan::RowidLookup {
+                input: Box::new(LogicalPlan::IndexProbe {
+                    index_rootpage: index.rootpage,
+                    key_expr: PlanExpr::ColumnRef(*left_col_idx),
+                    index_col_idx: *right_table_col_idx,
+                }),
+                table_rootpage: right_rootpage,
+                columns: right_columns,
+            };
+
+            // Remove the matched equality from on_condition; leave residual as Literal(true)
+            // if it was the only condition.
+            let residual = remove_equi_condition(
+                on_condition,
+                *left_col_idx,
+                left_column_count + *right_table_col_idx,
+            );
+
+            return Some((new_right, residual));
+        }
+    }
+
+    None
+}
+
+/// Extract equi-join pairs (left_col_idx, right_table_col_idx) from on_condition.
+/// right_table_col_idx = combined_col_idx - left_column_count, after mapping
+/// through right_scan_columns (which maps scan output position → table column index).
+fn extract_equi_join_pairs(
+    condition: &PlanExpr,
+    left_column_count: usize,
+    right_columns: &[usize],
+) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    collect_equi_pairs(condition, left_column_count, right_columns, &mut pairs);
+    pairs
+}
+
+fn collect_equi_pairs(
+    condition: &PlanExpr,
+    left_column_count: usize,
+    right_columns: &[usize],
+    pairs: &mut Vec<(usize, usize)>,
+) {
+    match condition {
+        PlanExpr::BinaryOp {
+            op: BinaryOp::Equals,
+            left,
+            right,
+        } => {
+            if let (PlanExpr::ColumnRef(l), PlanExpr::ColumnRef(r)) =
+                (left.as_ref(), right.as_ref())
+            {
+                // Identify which is left and which is right column reference
+                let (left_col, right_combined) =
+                    if *l < left_column_count && *r >= left_column_count {
+                        (*l, *r)
+                    } else if *r < left_column_count && *l >= left_column_count {
+                        (*r, *l)
+                    } else {
+                        return;
+                    };
+                // right_combined is the index in combined output; subtract left_column_count
+                // to get the right-side scan output position, then map to table column index
+                let right_scan_pos = right_combined - left_column_count;
+                if let Some(&right_table_col_idx) = right_columns.get(right_scan_pos) {
+                    pairs.push((left_col, right_table_col_idx));
+                }
+            }
+        }
+        PlanExpr::BinaryOp {
+            op: BinaryOp::And,
+            left,
+            right,
+        } => {
+            collect_equi_pairs(left, left_column_count, right_columns, pairs);
+            collect_equi_pairs(right, left_column_count, right_columns, pairs);
+        }
+        _ => {}
+    }
+}
+
+/// Remove the matched equi-join condition from `condition`.
+/// If `condition` is the exact equality, return `Literal(Bool(true))`.
+/// If `condition` is AND, strip the matching arm and return the other.
+fn remove_equi_condition(condition: &PlanExpr, left_col: usize, right_combined: usize) -> PlanExpr {
+    let is_match = |expr: &PlanExpr| -> bool {
+        if let PlanExpr::BinaryOp {
+            op: BinaryOp::Equals,
+            left,
+            right,
+        } = expr
+        {
+            matches!(
+                (left.as_ref(), right.as_ref()),
+                (PlanExpr::ColumnRef(l), PlanExpr::ColumnRef(r))
+                    if (*l == left_col && *r == right_combined)
+                       || (*r == left_col && *l == right_combined)
+            )
+        } else {
+            false
+        }
+    };
+
+    if is_match(condition) {
+        return PlanExpr::Literal(Literal::Bool(true));
+    }
+
+    if let PlanExpr::BinaryOp {
+        op: BinaryOp::And,
+        left,
+        right,
+    } = condition
+    {
+        if is_match(left) {
+            return *right.clone();
+        }
+        if is_match(right) {
+            return *left.clone();
+        }
+        // Recurse for deeper AND trees
+        let new_left = remove_equi_condition(left, left_col, right_combined);
+        let new_right = remove_equi_condition(right, left_col, right_combined);
+        return PlanExpr::BinaryOp {
+            op: BinaryOp::And,
+            left: Box::new(new_left),
+            right: Box::new(new_right),
+        };
+    }
+
+    condition.clone()
 }
 
 /// Extract (column_index, lower_bound, upper_bound) from a PlanExpr filter predicate.
@@ -765,6 +965,68 @@ mod tests {
                 }
             ),
             "expected Hash strategy, got: {:?}",
+            optimized
+        );
+    }
+
+    #[test]
+    fn optimizer_rewrites_nested_loop_to_index_probe_when_index_exists() {
+        // users(id, name, age): 3 cols; orders(user_id, amount): 2 cols
+        // Index on orders.user_id.
+        // Join { NestedLoop, Scan(users), Scan(orders), on: users.id = orders.user_id }
+        // = ColumnRef(0) = ColumnRef(3)  [0 is left.id; 3 = left_col_count(3) + 0 (user_id)]
+        let (mut db, users_root) = make_users_db();
+        let orders_root = db.btree.create_tree();
+        db.btree.insert_schema_entry(
+            "table",
+            "orders",
+            "orders",
+            orders_root,
+            "CREATE TABLE orders (user_id INTEGER, amount INTEGER)",
+        );
+        let idx_root = db.btree.create_tree();
+        db.btree.insert_schema_entry(
+            "index",
+            "idx_orders_user",
+            "orders",
+            idx_root,
+            "CREATE INDEX idx_orders_user ON orders (user_id)",
+        );
+
+        let plan = LogicalPlan::Join {
+            left: Box::new(LogicalPlan::Scan {
+                rootpage: users_root,
+                columns: vec![0, 1, 2],
+                with_key: false,
+            }),
+            right: Box::new(LogicalPlan::Scan {
+                rootpage: orders_root,
+                columns: vec![0, 1],
+                with_key: false,
+            }),
+            on_condition: PlanExpr::BinaryOp {
+                op: BinaryOp::Equals,
+                left: Box::new(PlanExpr::ColumnRef(0)), // users.id
+                right: Box::new(PlanExpr::ColumnRef(3)), // orders.user_id in combined space
+            },
+            strategy: JoinStrategy::NestedLoop,
+            left_column_count: 3,
+        };
+
+        let optimized = optimize(plan, &db.btree);
+
+        // Should keep NestedLoop with IndexProbe as right child
+        assert!(
+            matches!(
+                &optimized,
+                LogicalPlan::Join {
+                    strategy: JoinStrategy::NestedLoop,
+                    right,
+                    ..
+                } if matches!(right.as_ref(), LogicalPlan::RowidLookup { input, .. }
+                    if matches!(input.as_ref(), LogicalPlan::IndexProbe { .. }))
+            ),
+            "expected NestedLoop with RowidLookup(IndexProbe), got: {:?}",
             optimized
         );
     }
