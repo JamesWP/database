@@ -9,7 +9,7 @@ INSERT INTO users VALUES (2, 'bob')
 
 -- Duplicate primary key — must error
 INSERT INTO users VALUES (1, 'duplicate')
--- > ERROR: constraint violation
+-- > ERROR: constraint violation: unique constraint violated
 
 -- Non-duplicate succeeds
 INSERT INTO users VALUES (3, 'carol')
@@ -31,7 +31,7 @@ INSERT INTO emails VALUES (2, 'b@example.com')
 -- > 1
 
 INSERT INTO emails VALUES (3, 'a@example.com')
--- > ERROR: constraint violation
+-- > ERROR: constraint violation: unique constraint violated
 
 SELECT id FROM emails ORDER BY id
 -- > 1

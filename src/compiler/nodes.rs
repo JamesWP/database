@@ -1727,6 +1727,7 @@ pub fn codegen(
             left,
             right,
             on_condition,
+            strategy: _,
             left_column_count,
         } => codegen_join(left, right, on_condition, *left_column_count, cont, ctx),
         LogicalPlan::Distinct { input } => codegen_distinct(input, cont, ctx),

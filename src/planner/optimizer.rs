@@ -84,11 +84,13 @@ pub(super) fn fuse_projects(plan: LogicalPlan) -> LogicalPlan {
             left,
             right,
             on_condition,
+            strategy,
             left_column_count,
         } => LogicalPlan::Join {
             left: Box::new(fuse_projects(*left)),
             right: Box::new(fuse_projects(*right)),
             on_condition,
+            strategy,
             left_column_count,
         },
         // Leaf and DML nodes: no change.
@@ -219,11 +221,13 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
             left,
             right,
             on_condition,
+            strategy,
             left_column_count,
         } => LogicalPlan::Join {
             left: Box::new(optimize(*left, btree)),
             right: Box::new(optimize(*right, btree)),
             on_condition,
+            strategy,
             left_column_count,
         },
 
