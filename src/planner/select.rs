@@ -200,7 +200,7 @@ fn plan_select_joined(
         left: Box::new(left_scan),
         right: Box::new(right_scan),
         on_condition,
-        strategy: crate::planner::JoinStrategy::Hash,
+        strategy: crate::planner::JoinStrategy::NestedLoop,
         left_column_count: left_col_count,
     };
     let base_plan = apply_filter(join_plan, select.filter.as_ref(), &resolver)?;
