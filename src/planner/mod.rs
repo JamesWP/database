@@ -129,6 +129,17 @@ pub enum PlanExpr {
     },
 }
 
+/// Join execution strategy, chosen by the optimizer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum JoinStrategy {
+    /// Materialise the entire right side into a RowBuffer once, then for each left row
+    /// scan the buffer checking on_condition. Always applicable.
+    Hash,
+    /// Re-drive the right child once per left row via its reset entry point.
+    /// Used when an index-probe is available on the right side.
+    NestedLoop,
+}
+
 /// Logical plan nodes - relational algebra operators
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
@@ -248,14 +259,14 @@ pub enum LogicalPlan {
         indexes: Vec<IndexMaintenanceInfo>,
     },
 
-    /// Join two tables (2 inputs)
-    /// Performs nested loop join: for each left row, iterate all right rows,
-    /// emit combined rows where on_condition is true.
-    /// Output: left columns followed by right columns (left_column_count + right_column_count columns)
+    /// Join two tables (2 inputs).
+    /// Output: left columns followed by right columns (left_column_count + right_column_count columns).
+    /// Execution strategy is determined by the `strategy` field.
     Join {
         left: Box<LogicalPlan>,
         right: Box<LogicalPlan>,
         on_condition: PlanExpr,
+        strategy: JoinStrategy,
         left_column_count: usize, // for register offset calculation
     },
 

@@ -200,6 +200,7 @@ fn plan_select_joined(
         left: Box::new(left_scan),
         right: Box::new(right_scan),
         on_condition,
+        strategy: crate::planner::JoinStrategy::Hash,
         left_column_count: left_col_count,
     };
     let base_plan = apply_filter(join_plan, select.filter.as_ref(), &resolver)?;
@@ -1051,6 +1052,7 @@ mod tests {
                 right,
                 on_condition,
                 left_column_count,
+                ..
             } = *input
             {
                 assert_eq!(left_column_count, 3, "Employees has 3 columns");

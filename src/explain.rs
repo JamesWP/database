@@ -233,9 +233,18 @@ fn collect_rows(
                 aggregates.len()
             )
         }
-        LogicalPlan::Join { on_condition, .. } => {
+        LogicalPlan::Join {
+            on_condition,
+            strategy,
+            ..
+        } => {
+            let strategy_label = match strategy {
+                crate::planner::JoinStrategy::Hash => "Hash",
+                crate::planner::JoinStrategy::NestedLoop => "NestedLoop",
+            };
             format!(
-                "{indent}Join [{}]",
+                "{indent}Join [{} | {}]",
+                strategy_label,
                 format_expr_with_names(on_condition, &input_cols)
             )
         }
@@ -469,6 +478,7 @@ mod tests {
                 with_key: false,
             }),
             on_condition: PlanExpr::Literal(Literal::Integer(1)),
+            strategy: crate::planner::JoinStrategy::Hash,
             left_column_count: 1,
         };
         let rows = format_plan(&plan, &ExplainSchema::empty());
