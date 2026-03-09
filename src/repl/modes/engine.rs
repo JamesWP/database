@@ -6,6 +6,7 @@ use database::engine::registers::RegisterValue;
 use database::engine::{Engine, StepSuccess};
 use database::frontend::parse;
 use database::planner::plan;
+use database::storage::BTree;
 
 struct StepState {
     engine: Engine,
@@ -14,9 +15,9 @@ struct StepState {
 }
 
 impl StepState {
-    fn new(program: &CompiledProgram) -> Self {
+    fn new(program: &CompiledProgram, btree: BTree) -> Self {
         StepState {
-            engine: Engine::from_compiled(program),
+            engine: Engine::from_compiled_with_btree(program, btree),
             pc: 0,
             halted: false,
         }
@@ -131,7 +132,7 @@ impl Mode for EngineMode {
 
                 let state = self
                     .step_state
-                    .get_or_insert_with(|| StepState::new(program));
+                    .get_or_insert_with(|| StepState::new(program, (*shared.btree).clone()));
 
                 if state.halted {
                     return CommandResult::Message(
@@ -184,7 +185,7 @@ impl Mode for EngineMode {
 
                 let state = self
                     .step_state
-                    .get_or_insert_with(|| StepState::new(program));
+                    .get_or_insert_with(|| StepState::new(program, (*shared.btree).clone()));
 
                 if state.halted {
                     return CommandResult::Message(
@@ -244,7 +245,7 @@ impl Mode for EngineMode {
 
             ["restart"] => match &self.program {
                 Some(p) => {
-                    self.step_state = Some(StepState::new(p));
+                    self.step_state = Some(StepState::new(p, (*shared.btree).clone()));
                     CommandResult::Message("Execution restarted from instruction 0.".to_string())
                 }
                 None => CommandResult::Message(
