@@ -4,6 +4,7 @@ use std::fmt::Write;
 use super::btree::{decode_integer_key, decode_u64_key, BTree};
 use super::cell_reader::CellReader;
 use super::node::NodePage;
+use crate::engine::scalarvalue::ScalarValue;
 
 enum TreeKind<'a> {
     Table,
@@ -12,6 +13,17 @@ enum TreeKind<'a> {
 
 fn node_name_str(page_idx: u32) -> String {
     format!("node_{page_idx}")
+}
+
+fn format_scalar(v: &ScalarValue) -> String {
+    match v {
+        ScalarValue::Integer(i) => i.to_string(),
+        ScalarValue::Floating(f) => f.to_string(),
+        ScalarValue::Boolean(b) => b.to_string(),
+        ScalarValue::String(s) => format!("\"{}\"", s),
+        ScalarValue::Blob(b) => format!("Blob({})", b.len()),
+        ScalarValue::Null => "NULL".to_string(),
+    }
 }
 
 fn escape_label(s: &str) -> String {
@@ -134,7 +146,7 @@ fn write_leaf_node<W: Write>(
                 let values = reader.decode_as_array();
                 values
                     .iter()
-                    .map(|v| escape_label(&format!("{v}")))
+                    .map(|v| escape_label(&format_scalar(v)))
                     .collect::<Vec<_>>()
                     .join(", ")
             } else {
