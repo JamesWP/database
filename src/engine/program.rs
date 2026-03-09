@@ -171,7 +171,7 @@ pub enum Operation {
     Halt,
 }
 
-pub(crate) struct ProgramCode {
+pub struct ProgramCode {
     operations: Vec<Operation>,
     curent_operation_index: usize,
 }
