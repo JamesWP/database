@@ -169,7 +169,7 @@ impl Registers {
         }
     }
 
-    pub(crate) fn new(size: usize) -> Registers {
+    pub fn new(size: usize) -> Registers {
         let mut file = Vec::with_capacity(size);
 
         for _ in 0..size {
@@ -177,5 +177,13 @@ impl Registers {
         }
 
         Registers { file }
+    }
+
+    pub fn len(&self) -> usize {
+        self.file.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &RegisterValue)> {
+        self.file.iter().enumerate()
     }
 }

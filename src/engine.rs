@@ -7,13 +7,13 @@ use self::{
 };
 
 pub mod program;
-pub(crate) mod registers;
+pub mod registers;
 pub mod scalarvalue;
 
-type StepResult = std::result::Result<StepSuccess, EngineError>;
+pub type StepResult = std::result::Result<StepSuccess, EngineError>;
 
 #[derive(PartialEq, Debug)]
-pub(crate) enum StepSuccess {
+pub enum StepSuccess {
     Halt,
     Yield(Vec<ScalarValue>),
     Continue,
@@ -21,13 +21,14 @@ pub(crate) enum StepSuccess {
 
 #[derive(Debug)]
 #[allow(dead_code)]
-pub(crate) enum EngineError {
+pub enum EngineError {
     #[allow(dead_code)]
     RegisterTypeError(Reg, &'static str, RegisterValue),
     ConstraintViolation(String),
+    NoBTree,
 }
 
-pub(crate) struct Engine {
+pub struct Engine {
     btree: Option<storage::BTree>,
     registers: Registers,
     program: ProgramCode,
@@ -36,6 +37,17 @@ pub(crate) struct Engine {
 impl Engine {
     #[allow(dead_code)]
     pub fn new(registers: Registers, program: ProgramCode) -> Engine {
+        Engine {
+            btree: None,
+            registers,
+            program,
+        }
+    }
+
+    /// Create an engine from a compiled program (no BTree — BTree operations will error).
+    pub fn from_compiled(compiled: &crate::compiler::CompiledProgram) -> Engine {
+        let program: ProgramCode = compiled.operations.as_slice().into();
+        let registers = Registers::new(compiled.num_registers);
         Engine {
             btree: None,
             registers,
@@ -62,6 +74,11 @@ impl Engine {
     #[allow(dead_code)]
     pub(crate) fn take_btree(&mut self) -> Option<storage::BTree> {
         self.btree.take()
+    }
+
+    /// Get a reference to the registers for inspection.
+    pub fn registers(&self) -> &Registers {
+        &self.registers
     }
 
     /// Run the program to completion, returning all yielded rows.
@@ -549,7 +566,12 @@ impl Engine {
                 return StepResult::Ok(StepSuccess::Halt);
             }
             Open(reg, rootpage) => {
-                let btree = self.btree.as_ref().unwrap();
+                let btree = match self.btree.as_ref() {
+                    Some(b) => b,
+                    None => {
+                        return StepResult::Err(EngineError::NoBTree);
+                    }
+                };
                 let cursor = btree.open(rootpage);
                 *self.registers.get_mut(reg) = RegisterValue::CursorHandle(cursor);
             }
