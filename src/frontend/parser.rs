@@ -528,7 +528,11 @@ impl Parser {
             lexer::Type::As => {
                 self.input.advance();
                 let alias = self.parse_identifier()?;
-
+                Ok(ast::NamedTupleSource::Named { alias, source })
+            }
+            // Implicit alias: bare identifier that is not a keyword
+            lexer::Type::Identifier(_) => {
+                let alias = self.parse_identifier()?;
                 Ok(ast::NamedTupleSource::Named { alias, source })
             }
             _ => Ok(ast::NamedTupleSource::Anonyomous(source)),
@@ -1407,6 +1411,23 @@ mod test {
         match stmt3 {
             ast::Statement::Select(select) => {
                 assert_eq!(select.joins.len(), 0);
+            }
+            _ => panic!("Expected Select statement"),
+        }
+
+        // Test implicit alias (no AS keyword) on both FROM table and JOIN table
+        let stmt4 = parse("SELECT * FROM users u JOIN orders o ON o.order_id = u.id").unwrap();
+        match stmt4 {
+            ast::Statement::Select(select) => {
+                assert!(matches!(
+                    &select.from,
+                    ast::NamedTupleSource::Named { alias, .. } if alias == "u"
+                ));
+                assert_eq!(select.joins.len(), 1);
+                assert!(matches!(
+                    &select.joins[0].table,
+                    ast::NamedTupleSource::Named { alias, .. } if alias == "o"
+                ));
             }
             _ => panic!("Expected Select statement"),
         }
