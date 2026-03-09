@@ -2,7 +2,7 @@ Output doc/screenshots/repl-engine.gif
 
 Set FontSize 14
 Set Width 900
-Set Height 480
+Set Height 700
 Set Theme "Catppuccin Mocha"
 Env PATH "/home/james/gits/database/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
