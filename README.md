@@ -111,6 +111,10 @@ db> SELECT name, age FROM users WHERE age > 20 ORDER BY age DESC
 └───────┴─────┘
 ```
 
+### Bytecode Compilation
+
+![engine REPL bytecode listing](doc/screenshots/repl-engine.gif)
+
 ### EXPLAIN and indexes
 
 ![Index scan](doc/screenshots/repl-index.gif)
