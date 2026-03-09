@@ -55,6 +55,20 @@ impl Engine {
         }
     }
 
+    /// Create an engine from a compiled program with a BTree for storage operations.
+    pub fn from_compiled_with_btree(
+        compiled: &crate::compiler::CompiledProgram,
+        btree: storage::BTree,
+    ) -> Engine {
+        let program: ProgramCode = compiled.operations.as_slice().into();
+        let registers = Registers::new(compiled.num_registers);
+        Engine {
+            btree: Some(btree),
+            registers,
+            program,
+        }
+    }
+
     /// Create an engine from operations and register count, with a BTree for storage.
     pub(crate) fn with_program(
         operations: &[Operation],
