@@ -64,11 +64,14 @@ cargo test                       # All tests must pass
 
 ## Git & Commits
 
+**Merge Strategy:** PRs are merged with **rebase** (not merge commits). Keep branches clean — avoid revert commits. If a commit needs undoing before merge, drop it with `git reset` + `git push --force-with-lease` rather than adding a revert on top.
+
 **Commit Strategy:**
 - Small, focused commits with clear messages (imperative mood)
 - Stage and review before committing: `git add <files> && git diff --cached --stat`
 - For multi-item phases: commit each item separately, infrastructure changes first
 - Wait for user approval after staging, before committing
+- Keep each branch to a single concern — unrelated commits belong on their own branch and PR
 
 **Standard Workflow:**
 ```bash
