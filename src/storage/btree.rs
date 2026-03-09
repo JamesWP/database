@@ -682,7 +682,7 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
 
 #[derive(Clone)]
 pub struct BTree {
-    pager: Arc<RefCell<pager::Pager>>,
+    pub(super) pager: Arc<RefCell<pager::Pager>>,
 }
 
 impl BTree {
@@ -1134,7 +1134,7 @@ impl BTree {
 
 impl Display for BTree {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        btree_graph::dump(f, &self.pager.borrow())?;
+        btree_graph::dump(f, self)?;
 
         Ok(())
     }
