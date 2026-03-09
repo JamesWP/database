@@ -20,6 +20,7 @@ screenshots: $(PROG)
 	rm -f demo.db
 	PATH="$(PWD)/.bin:$(PATH)" vhs doc/screenshots/repl-sql.tape
 	PATH="$(PWD)/.bin:$(PATH)" vhs doc/screenshots/repl-index.tape
+	PATH="$(PWD)/.bin:$(PATH)" vhs doc/screenshots/repl-engine.tape
 	rm -f demo.db demo-preloaded.db doc/screenshots/demo.db doc/screenshots/demo-preloaded.db
 
 big.db:
