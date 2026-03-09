@@ -1148,60 +1148,66 @@ pub fn codegen_aggregate(
 ///   child_on_done:  GoTo(on_tuple)     // yield the count
 ///   insert_next:    GoTo(on_done)      // done after yielding
 /// ```
+struct IndexWithCursor {
+    info: crate::planner::IndexMaintenanceInfo,
+    cursor_reg: Reg,
+}
+
 fn open_index_cursors(
     indexes: &[crate::planner::IndexMaintenanceInfo],
     ctx: &mut CodegenContext,
-) -> Vec<Reg> {
+) -> Vec<IndexWithCursor> {
     indexes
         .iter()
         .map(|index| {
-            let reg = ctx.registers.alloc();
-            ctx.init_emitter.emit(Operation::Open(reg, index.rootpage));
-            reg
+            let cursor_reg = ctx.registers.alloc();
+            ctx.init_emitter
+                .emit(Operation::Open(cursor_reg, index.rootpage));
+            IndexWithCursor {
+                info: index.clone(),
+                cursor_reg,
+            }
         })
         .collect()
 }
 
 fn emit_check_uniques(
-    indexes: &[crate::planner::IndexMaintenanceInfo],
-    cursor_regs: &[Reg],
+    index_cursors: &[IndexWithCursor],
     row_regs: &[Reg],
     ctx: &mut CodegenContext,
 ) {
-    for (index, &cursor_reg) in indexes.iter().zip(cursor_regs) {
-        if index.unique {
-            let col_regs: Vec<Reg> = index.column_idxs.iter().map(|&c| row_regs[c]).collect();
+    for ic in index_cursors {
+        if ic.info.unique {
+            let col_regs: Vec<Reg> = ic.info.column_idxs.iter().map(|&c| row_regs[c]).collect();
             ctx.body_emitter
-                .emit(Operation::CheckUnique(cursor_reg, col_regs));
+                .emit(Operation::CheckUnique(ic.cursor_reg, col_regs));
         }
     }
 }
 
 fn emit_write_indexes(
-    indexes: &[crate::planner::IndexMaintenanceInfo],
-    cursor_regs: &[Reg],
+    index_cursors: &[IndexWithCursor],
     row_regs: &[Reg],
     key_reg: Reg,
     ctx: &mut CodegenContext,
 ) {
-    for (index, &cursor_reg) in indexes.iter().zip(cursor_regs) {
-        let col_regs: Vec<Reg> = index.column_idxs.iter().map(|&c| row_regs[c]).collect();
+    for ic in index_cursors {
+        let col_regs: Vec<Reg> = ic.info.column_idxs.iter().map(|&c| row_regs[c]).collect();
         ctx.body_emitter
-            .emit(Operation::WriteIndex(cursor_reg, col_regs, key_reg));
+            .emit(Operation::WriteIndex(ic.cursor_reg, col_regs, key_reg));
     }
 }
 
 fn emit_delete_indexes(
-    indexes: &[crate::planner::IndexMaintenanceInfo],
-    cursor_regs: &[Reg],
+    index_cursors: &[IndexWithCursor],
     row_regs: &[Reg],
     key_reg: Reg,
     ctx: &mut CodegenContext,
 ) {
-    for (index, &cursor_reg) in indexes.iter().zip(cursor_regs) {
-        let col_regs: Vec<Reg> = index.column_idxs.iter().map(|&c| row_regs[c]).collect();
+    for ic in index_cursors {
+        let col_regs: Vec<Reg> = ic.info.column_idxs.iter().map(|&c| row_regs[c]).collect();
         ctx.body_emitter
-            .emit(Operation::DeleteIndex(cursor_reg, col_regs, key_reg));
+            .emit(Operation::DeleteIndex(ic.cursor_reg, col_regs, key_reg));
     }
 }
 
@@ -1273,12 +1279,12 @@ pub fn codegen_insert(
         reordered
     };
     // Check unique constraints before writing
-    emit_check_uniques(indexes, &index_cursor_regs, &reordered_regs, ctx);
+    emit_check_uniques(&index_cursor_regs, &reordered_regs, ctx);
 
     body!(ctx; WriteCursor(cursor_reg, key_reg, reordered_regs.clone()));
 
     // Write to each index
-    emit_write_indexes(indexes, &index_cursor_regs, &reordered_regs, key_reg, ctx);
+    emit_write_indexes(&index_cursor_regs, &reordered_regs, key_reg, ctx);
 
     body!(ctx;
         IncrementValue(key_reg);
@@ -1406,7 +1412,7 @@ pub fn codegen_update(
     );
 
     // Delete stale index entries (old column values, before applying assignments)
-    emit_delete_indexes(indexes, &index_cursor_regs, &read_regs, key_reg, ctx);
+    emit_delete_indexes(&index_cursor_regs, &read_regs, key_reg, ctx);
 
     // Compute new values from assignments
     let new_values = read_regs.clone();
@@ -1422,7 +1428,7 @@ pub fn codegen_update(
     }
 
     // Write updated index entries (new column values, after applying assignments)
-    emit_write_indexes(indexes, &index_cursor_regs, &new_values, key_reg, ctx);
+    emit_write_indexes(&index_cursor_regs, &new_values, key_reg, ctx);
 
     body!(ctx;
         WriteCursor(cursor_reg, key_reg, new_values);
@@ -1789,7 +1795,7 @@ pub fn codegen_delete(
     if !indexes.is_empty() {
         let phase2_read_regs = ctx.registers.alloc_block(table_columns.len());
         body!(ctx; ReadCursor(phase2_read_regs.clone(), cursor_reg));
-        emit_delete_indexes(indexes, &index_cursor_regs, &phase2_read_regs, key_reg, ctx);
+        emit_delete_indexes(&index_cursor_regs, &phase2_read_regs, key_reg, ctx);
     }
 
     body!(ctx;
