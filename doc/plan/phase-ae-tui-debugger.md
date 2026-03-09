@@ -27,22 +27,37 @@ The debugger is launched from the existing engine REPL mode with a new `debug` c
 
 ### What Changes
 
-Add two crate dependencies to `Cargo.toml`:
+Add three crate dependencies to `Cargo.toml`:
 
 ```toml
 ratatui = "0.30"
 crossterm = "0.29"
+ansi-to-tui = "8"
 ```
 
-`ratatui` is the TUI framework (widgets, layout). `crossterm` is the cross-platform terminal backend (raw mode, key events, cursor).
+`ratatui` is the TUI framework (widgets, layout). `crossterm` is the cross-platform terminal backend (raw mode, key events, cursor). `ansi-to-tui` converts ANSI-escape strings to ratatui `Text`/`Spans` — this lets us reuse the existing `colored`-based `Display` impls on `Operation`, `Reg`, `JumpTarget`, and `ScalarValue` directly in the TUI without duplicating any formatting logic.
 
 ### Background
 
-`ratatui` is the actively maintained successor to `tui-rs`. It works on Linux, macOS, and Windows via `crossterm`. Ratatui re-exports crossterm internally, but we add it as an explicit dependency so `enable_raw_mode`, `ExecutableCommand`, and `event::*` imports compile without relying on ratatui's re-export stability. Adding these does not affect the existing `rustyline`-based REPL — the two libraries manage the terminal in different ways, and we switch modes explicitly when entering/leaving the TUI.
+`ratatui` is the actively maintained successor to `tui-rs`. It works on Linux, macOS, and Windows via `crossterm`. Ratatui re-exports crossterm internally, but we add it as an explicit dependency so `enable_raw_mode`, `ExecutableCommand`, and `event::*` imports compile without relying on ratatui's re-export stability.
+
+`ansi-to-tui` (v8, released January 2026) is part of the official ratatui GitHub organisation. Its API is a single trait:
+
+```rust
+use ansi_to_tui::IntoText as _;
+
+let text = format!("{op}").into_text()?;  // Text with cyan/yellow/magenta preserved
+```
+
+This means the bytecode pane and register pane inherit all the colors from `program.rs` for free — `Store` in cyan+bold, register names in yellow, jump targets in magenta, etc. The only additional ratatui styling we apply is the `►` current-PC row highlight (yellow background or bold).
+
+Note: `ansi-to-tui` depends on `ratatui-core ^0.1.0` (the extracted core-types package). This is compatible with `ratatui 0.30` — verify with `cargo build` that there are no version conflicts.
+
+Adding these deps does not affect the existing `rustyline`-based REPL.
 
 ### Key Files
 
-- `Cargo.toml` — two new dependencies
+- `Cargo.toml` — three new dependencies
 
 ### Tests
 
@@ -50,9 +65,9 @@ None — just verify `cargo build` succeeds.
 
 ### Implementation Steps (1 commit)
 
-#### Step 103.1 — Add ratatui and crossterm to Cargo.toml
+#### Step 103.1 — Add ratatui, crossterm, and ansi-to-tui to Cargo.toml
 
-**Commit:** `Deps: add ratatui and crossterm for TUI debugger`
+**Commit:** `Deps: add ratatui, crossterm, and ansi-to-tui for TUI debugger`
 
 ---
 
@@ -192,16 +207,23 @@ impl TuiDebugger {
     }
 
     fn draw_bytecode(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        use ansi_to_tui::IntoText as _;
         let pc = self.step_state.pc;
         let items: Vec<ListItem> = self.program.operations.iter().enumerate().map(|(i, op)| {
+            // format!("{op}") produces ANSI-escaped output (cyan opcodes, yellow regs, magenta jumps)
+            // into_text() converts those escapes to ratatui Spans, preserving all colors.
             let prefix = if i == pc { "► " } else { "  " };
-            let line = format!("{prefix}{i:4}  {op}");
-            let style = if i == pc {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(Span::styled(line, style)))
+            let ansi_str = format!("{prefix}{i:4}  {op}");
+            let mut text = ansi_str.into_text().unwrap_or_default();
+            // Highlight the current PC row with a bold underline on top of the existing colors
+            if i == pc {
+                for line in &mut text.lines {
+                    for span in &mut line.spans {
+                        span.style = span.style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                    }
+                }
+            }
+            ListItem::new(text)
         }).collect();
 
         let list = List::new(items)
@@ -210,17 +232,20 @@ impl TuiDebugger {
     }
 
     fn draw_registers(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        use ansi_to_tui::IntoText as _;
+        // format!("{s}") for ScalarValue produces green ANSI output; into_text() preserves it.
         let text: Vec<Line> = self.step_state.engine.registers().iter()
             .filter_map(|(i, val)| {
                 use database::engine::registers::RegisterValue;
-                let display = match val {
+                let ansi_str = match val {
                     RegisterValue::None => return None,
-                    RegisterValue::ScalarValue(s) => format!("{s}"),
-                    RegisterValue::CursorHandle(_) => "<cursor>".to_string(),
-                    RegisterValue::RowBuffer(_) => "<rowbuffer>".to_string(),
-                    RegisterValue::GroupTable(_) => "<grouptable>".to_string(),
+                    RegisterValue::ScalarValue(s) => format!("  R{i} = {s}"),
+                    RegisterValue::CursorHandle(_) => format!("  R{i} = <cursor>"),
+                    RegisterValue::RowBuffer(_) => format!("  R{i} = <rowbuffer>"),
+                    RegisterValue::GroupTable(_) => format!("  R{i} = <grouptable>"),
                 };
-                Some(Line::from(format!("  r{i} = {display}")))
+                // into_text() returns a Text (multi-line); take first line only
+                ansi_str.into_text().ok()?.lines.into_iter().next()
             })
             .collect();
 
