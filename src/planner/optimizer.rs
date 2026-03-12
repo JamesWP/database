@@ -197,15 +197,25 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
             input: Box::new(optimize(*input, btree)),
         },
+        // Rule 3: RowidLookup(IndexScan) → covering IndexScan when all requested
+        // columns are present in the index key. The primary B-tree lookup is elided.
         LogicalPlan::RowidLookup {
             input,
             table_rootpage,
             columns,
-        } => LogicalPlan::RowidLookup {
-            input: Box::new(optimize(*input, btree)),
-            table_rootpage,
-            columns,
-        },
+        } => {
+            let opt_input = optimize(*input, btree);
+            if let Some(covering) =
+                try_covering_index_scan(&opt_input, table_rootpage, &columns, btree)
+            {
+                return covering;
+            }
+            LogicalPlan::RowidLookup {
+                input: Box::new(opt_input),
+                table_rootpage,
+                columns,
+            }
+        }
         LogicalPlan::PopulateIndex {
             input,
             index_rootpage,
@@ -298,13 +308,24 @@ fn try_index_scan_plan(
             == table_col_idx
     })?;
 
+    let index_scan = LogicalPlan::IndexScan {
+        index_rootpage: index.rootpage,
+        index_col_idx: table_col_idx,
+        lower_bound,
+        upper_bound,
+        output_columns: None,
+    };
+
+    // Try the covering index optimisation: if all requested scan columns are
+    // present in the index key, skip the primary B-tree lookup entirely.
+    if let Some(covering) =
+        try_covering_index_scan(&index_scan, table_rootpage, scan_columns, btree)
+    {
+        return Some(covering);
+    }
+
     Some(LogicalPlan::RowidLookup {
-        input: Box::new(LogicalPlan::IndexScan {
-            index_rootpage: index.rootpage,
-            index_col_idx: table_col_idx,
-            lower_bound,
-            upper_bound,
-        }),
+        input: Box::new(index_scan),
         table_rootpage,
         columns: scan_columns.to_vec(),
     })
@@ -625,6 +646,62 @@ fn can_elide_sort_by_proj(plan: &LogicalPlan, proj_idx: usize) -> bool {
     }
 }
 
+/// Try to rewrite `RowidLookup { input: IndexScan, .. }` into a covering
+/// `IndexScan { output_columns: Some(...) }` when every column requested by the
+/// RowidLookup is present in the index key.
+///
+/// `scan_columns` are the table-column indices the RowidLookup needs to fetch.
+/// Returns `Some(IndexScan { output_columns: Some(mapped) })` if all columns are
+/// covered; `None` otherwise (caller keeps the RowidLookup unchanged).
+fn try_covering_index_scan(
+    input: &LogicalPlan,
+    table_rootpage: u32,
+    scan_columns: &[usize],
+    btree: &BTree,
+) -> Option<LogicalPlan> {
+    // Only applies when the direct child is a plain IndexScan.
+    let (index_rootpage, index_col_idx, lower_bound, upper_bound) = match input {
+        LogicalPlan::IndexScan {
+            index_rootpage,
+            index_col_idx,
+            lower_bound,
+            upper_bound,
+            output_columns: None,
+        } => (*index_rootpage, *index_col_idx, lower_bound, upper_bound),
+        _ => return None,
+    };
+
+    // Look up the table's column names to map table-col-idx → name.
+    let table_name = btree.lookup_table_name_by_rootpage(table_rootpage)?;
+    let (_, table_sql) = btree.lookup_table(&table_name)?;
+    let table_cols: Vec<String> = match parse(&table_sql).ok()? {
+        Statement::CreateTable(ct) => ct.columns.into_iter().map(|c| c.name).collect(),
+        _ => return None,
+    };
+
+    // Look up the index's column names.
+    let indexes = btree.lookup_indexes_for_table(&table_name);
+    let index = indexes.iter().find(|idx| idx.rootpage == index_rootpage)?;
+    let index_cols = &index.column_names;
+
+    // For each requested scan column, find its position in the index key.
+    let mut output_columns: Vec<usize> = Vec::with_capacity(scan_columns.len());
+    for &table_col in scan_columns {
+        let col_name = table_cols.get(table_col)?;
+        let idx_pos = index_cols.iter().position(|n| n == col_name)?;
+        output_columns.push(idx_pos);
+    }
+
+    // All columns are covered — return a covering IndexScan.
+    Some(LogicalPlan::IndexScan {
+        index_rootpage,
+        index_col_idx,
+        lower_bound: lower_bound.clone(),
+        upper_bound: upper_bound.clone(),
+        output_columns: Some(output_columns),
+    })
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -674,6 +751,7 @@ mod tests {
                 index_col_idx,
                 lower_bound: Some((Literal::Integer(30), true)),
                 upper_bound: Some((Literal::Integer(30), true)),
+                output_columns: None,
             }),
             table_rootpage,
             columns: vec![0, 1, 2],

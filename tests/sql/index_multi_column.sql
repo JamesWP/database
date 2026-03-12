@@ -15,8 +15,7 @@ CREATE INDEX idx_age_id ON users(age, id)
 -- Planner must choose the multi-column index via its first column
 EXPLAIN SELECT id FROM users WHERE age = 30
 -- > 0, "Project [id:0]"
--- > 1, "  RowidLookup users [cols: id, age]"
--- > 2, "    IndexScan via idx_age_id [= 30]"
+-- > 1, "  IndexScan via idx_age_id [= 30] [id, age]"
 
 -- Equality prefix scan
 SELECT id FROM users WHERE age = 30 ORDER BY id
@@ -103,8 +102,7 @@ CREATE INDEX idx_status_priority_id ON orders(status, priority, id)
 -- Planner picks first column of three-column index
 EXPLAIN SELECT id FROM orders WHERE status = 'open'
 -- > 0, "Project [id:0]"
--- > 1, "  RowidLookup orders [cols: id, status]"
--- > 2, "    IndexScan via idx_status_priority_id [= 'open']"
+-- > 1, "  IndexScan via idx_status_priority_id [= 'open'] [id, status]"
 
 SELECT id FROM orders WHERE status = 'open' ORDER BY id
 -- > 1

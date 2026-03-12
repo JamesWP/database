@@ -163,6 +163,11 @@ pub enum LogicalPlan {
         index_col_idx: usize, // table column index of the indexed column
         lower_bound: Option<(Literal, bool)>, // (value, inclusive)
         upper_bound: Option<(Literal, bool)>, // (value, inclusive)
+        /// When `None`: yield only the rowid (existing behaviour).
+        /// When `Some(cols)`: decode index-key column positions and yield them
+        /// directly, skipping the primary B-tree lookup entirely.
+        /// `cols[i]` = 0-based index-key column position for output slot i.
+        output_columns: Option<Vec<usize>>,
     },
 
     /// For each rowid produced by its input, fetch the requested columns from
