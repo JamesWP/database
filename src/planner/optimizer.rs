@@ -593,7 +593,15 @@ pub(super) fn can_elide_sort(plan: &LogicalPlan, sort_col_idx: usize) -> bool {
         | LogicalPlan::Filter { input, .. }
         | LogicalPlan::Limit { input, .. } => can_elide_sort(input, sort_col_idx),
 
-        LogicalPlan::RowidLookup { input, .. } => can_elide_sort(input, sort_col_idx),
+        LogicalPlan::RowidLookup { input, columns, .. } => {
+            // sort_col_idx is a scan-output position; translate to table-column
+            // space before descending into IndexScan, which uses table column indices.
+            if let Some(&table_col) = columns.get(sort_col_idx) {
+                can_elide_sort(input, table_col)
+            } else {
+                false
+            }
+        }
 
         LogicalPlan::IndexScan { index_col_idx, .. } => *index_col_idx == sort_col_idx,
 

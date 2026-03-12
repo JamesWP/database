@@ -656,7 +656,14 @@ pub fn codegen_rowid_lookup(
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
     let table_cursor_reg = ctx.registers.alloc();
-    let output_regs = ctx.registers.alloc_block(columns.len());
+
+    // Allocate enough registers to cover all requested columns by their table
+    // position. ReadCursor fills registers sequentially from column 0, so we
+    // need at least max(columns)+1 registers even if we only output a subset.
+    let max_col = columns.iter().copied().max().unwrap_or(0);
+    let read_regs = ctx.registers.alloc_block(max_col + 1);
+    // Output registers are the specific requested columns, in request order.
+    let output_regs: Vec<Reg> = columns.iter().map(|&c| read_regs[c]).collect();
 
     // INIT: Open the table cursor
     init!(ctx; Open(table_cursor_reg, table_rootpage));
@@ -675,7 +682,7 @@ pub fn codegen_rowid_lookup(
     let pk_reg = child_output.output_regs[0];
     body!(ctx;
         MoveCursor(table_cursor_reg, MoveOperation::Find(pk_reg));
-        ReadCursor(output_regs.clone(), table_cursor_reg);
+        ReadCursor(read_regs, table_cursor_reg);
         GoTo(cont.on_tuple)
     );
 
