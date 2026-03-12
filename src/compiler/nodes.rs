@@ -461,11 +461,13 @@ pub fn codegen_index_scan(
     index_rootpage: u32,
     lower_bound: &Option<(Literal, bool)>,
     upper_bound: &Option<(Literal, bool)>,
+    output_columns: Option<&[usize]>,
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
     let index_cursor_reg = ctx.registers.alloc();
     let flag_reg = ctx.registers.alloc();
+    // For the non-covering path we need a pk register; allocate upfront.
     let pk_reg = ctx.registers.alloc();
     let output_regs = vec![pk_reg];
 
@@ -543,24 +545,46 @@ pub fn codegen_index_scan(
         body!(ctx; GoToIfFalse(cont.on_done, in_range_reg));
     }
 
-    // Extract rowid from last 8 bytes of the index key (rowid is always the last 8 bytes)
-    let pk_blob_reg = ctx.registers.alloc();
-    body!(ctx;
-        BlobSliceLast(pk_blob_reg, key_blob_reg, 8);
-        DecodeU64Key(pk_reg, pk_blob_reg);
-        GoTo(cont.on_tuple)
-    );
-
-    // INDEX_NEXT: advance
-    let index_next = ctx.body_emitter.label_here();
-    body!(ctx;
-        MoveCursor(index_cursor_reg, MoveOperation::Next);
-        GoTo(index_check)
-    );
+    let (final_output_regs, index_next) = match output_columns {
+        None => {
+            // Non-covering path: extract rowid from last 8 bytes of the index key.
+            let pk_blob_reg = ctx.registers.alloc();
+            body!(ctx;
+                BlobSliceLast(pk_blob_reg, key_blob_reg, 8);
+                DecodeU64Key(pk_reg, pk_blob_reg);
+                GoTo(cont.on_tuple)
+            );
+            let index_next = ctx.body_emitter.label_here();
+            body!(ctx;
+                MoveCursor(index_cursor_reg, MoveOperation::Next);
+                GoTo(index_check)
+            );
+            (output_regs, index_next)
+        }
+        Some(cols) => {
+            // Covering path: decode column values directly from the index key.
+            // Allocate one register per index column position (up to max(cols)+1).
+            let num_to_decode = cols.iter().copied().max().map(|m| m + 1).unwrap_or(0);
+            let col_regs: Vec<Reg> = ctx.registers.alloc_block(num_to_decode);
+            ctx.body_emitter.emit(Operation::DecodeIndexColumns {
+                dest: col_regs.clone(),
+                src: key_blob_reg,
+            });
+            body!(ctx; GoTo(cont.on_tuple));
+            // Assemble output in the order cols specifies.
+            let covering_output: Vec<Reg> = cols.iter().map(|&j| col_regs[j]).collect();
+            let index_next = ctx.body_emitter.label_here();
+            body!(ctx;
+                MoveCursor(index_cursor_reg, MoveOperation::Next);
+                GoTo(index_check)
+            );
+            (covering_output, index_next)
+        }
+    };
 
     NodeOutput {
         next: index_next,
-        output_regs,
+        output_regs: final_output_regs,
         reset: None,
     }
 }
@@ -1908,7 +1932,15 @@ pub fn codegen(
             index_col_idx: _,
             lower_bound,
             upper_bound,
-        } => codegen_index_scan(*index_rootpage, lower_bound, upper_bound, cont, ctx),
+            output_columns,
+        } => codegen_index_scan(
+            *index_rootpage,
+            lower_bound,
+            upper_bound,
+            output_columns.as_deref(),
+            cont,
+            ctx,
+        ),
         LogicalPlan::RowidLookup {
             input,
             table_rootpage,

@@ -709,6 +709,62 @@ impl Engine {
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Integer(rowid as i64));
             }
+            DecodeIndexColumns { dest, src } => {
+                let blob = match self.registers.get(src).scalar().unwrap() {
+                    ScalarValue::Blob(b) => b.clone(),
+                    _ => panic!("DecodeIndexColumns: src register must be Blob"),
+                };
+                let mut pos = 0usize;
+                let mut decoded: Vec<ScalarValue> = Vec::with_capacity(dest.len());
+                for _ in dest.iter() {
+                    let tag = *blob
+                        .get(pos)
+                        .expect("DecodeIndexColumns: index key truncated");
+                    let val = match tag {
+                        0x00 => {
+                            pos += 1;
+                            ScalarValue::Null
+                        }
+                        0x01 => {
+                            let bytes = blob[pos + 1..pos + 9]
+                                .try_into()
+                                .expect("DecodeIndexColumns: integer key too short");
+                            pos += 9;
+                            ScalarValue::Integer(storage::decode_integer_key(bytes))
+                        }
+                        0x02 => {
+                            let bits = u64::from_be_bytes(
+                                blob[pos + 1..pos + 9]
+                                    .try_into()
+                                    .expect("DecodeIndexColumns: float key too short"),
+                            );
+                            let original = if bits & (1u64 << 63) != 0 {
+                                bits ^ 0x8000_0000_0000_0000
+                            } else {
+                                bits ^ 0xFFFF_FFFF_FFFF_FFFF
+                            };
+                            pos += 9;
+                            ScalarValue::Floating(f64::from_bits(original))
+                        }
+                        0x03 => {
+                            let start = pos + 1;
+                            let nul_offset = blob[start..]
+                                .iter()
+                                .position(|&b| b == 0)
+                                .expect("DecodeIndexColumns: unterminated text in index key");
+                            let s = String::from_utf8(blob[start..start + nul_offset].to_vec())
+                                .expect("DecodeIndexColumns: invalid UTF-8 in index key");
+                            pos = start + nul_offset + 1;
+                            ScalarValue::String(s)
+                        }
+                        other => panic!("DecodeIndexColumns: unknown type tag {other:#04x}"),
+                    };
+                    decoded.push(val);
+                }
+                for (reg, val) in dest.iter().zip(decoded) {
+                    *self.registers.get_mut(*reg) = RegisterValue::ScalarValue(val);
+                }
+            }
             ReadCursor(regs, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readwrite();
@@ -2255,5 +2311,109 @@ mod test {
         harness.run();
         assert_eq!(harness.num_yields(), 1);
         assert_eq!(harness.value(0, 0), ScalarValue::Integer(rowid as i64));
+    }
+
+    // =========================================================================
+    // DecodeIndexColumns tests
+    // =========================================================================
+
+    fn make_index_key(cols: &[ScalarValue], rowid: u64) -> Vec<u8> {
+        let mut key = Vec::new();
+        for col in cols {
+            key.extend_from_slice(&storage::encode_index_value(col));
+        }
+        key.extend_from_slice(&rowid.to_be_bytes());
+        key
+    }
+
+    fn decode_index_cols(blob: Vec<u8>, n: usize) -> Vec<ScalarValue> {
+        let blob_reg = Reg::new(0);
+        let dest_regs: Vec<Reg> = (1..=n).map(Reg::new).collect();
+        let yield_regs = dest_regs.clone();
+        let ops: Vec<Operation> = vec![
+            Operation::StoreValue(blob_reg, ScalarValue::Blob(blob)),
+            Operation::DecodeIndexColumns {
+                dest: dest_regs,
+                src: blob_reg,
+            },
+            Operation::Yield(yield_regs),
+            Operation::Halt,
+        ];
+        let mut harness = TestHarness::new(&ops, n + 1);
+        harness.run();
+        assert_eq!(harness.num_yields(), 1);
+        (0..n).map(|i| harness.value(0, i)).collect()
+    }
+
+    #[test]
+    fn decode_index_columns_integer_positive() {
+        let key = make_index_key(&[ScalarValue::Integer(42)], 0);
+        let decoded = decode_index_cols(key, 1);
+        assert_eq!(decoded[0], ScalarValue::Integer(42));
+    }
+
+    #[test]
+    fn decode_index_columns_integer_negative() {
+        let key = make_index_key(&[ScalarValue::Integer(-1)], 0);
+        let decoded = decode_index_cols(key, 1);
+        assert_eq!(decoded[0], ScalarValue::Integer(-1));
+    }
+
+    #[test]
+    fn decode_index_columns_integer_zero() {
+        let key = make_index_key(&[ScalarValue::Integer(0)], 99);
+        let decoded = decode_index_cols(key, 1);
+        assert_eq!(decoded[0], ScalarValue::Integer(0));
+    }
+
+    #[test]
+    fn decode_index_columns_string() {
+        let key = make_index_key(&[ScalarValue::String("hello".into())], 0);
+        let decoded = decode_index_cols(key, 1);
+        assert_eq!(decoded[0], ScalarValue::String("hello".into()));
+    }
+
+    #[test]
+    fn decode_index_columns_null() {
+        let key = make_index_key(&[ScalarValue::Null], 0);
+        let decoded = decode_index_cols(key, 1);
+        assert!(
+            matches!(decoded[0], ScalarValue::Null),
+            "expected Null, got {:?}",
+            decoded[0]
+        );
+    }
+
+    #[test]
+    fn decode_index_columns_float() {
+        let key = make_index_key(&[ScalarValue::Floating(3.14)], 0);
+        let decoded = decode_index_cols(key, 1);
+        assert_eq!(decoded[0], ScalarValue::Floating(3.14));
+    }
+
+    #[test]
+    fn decode_index_columns_float_negative() {
+        let key = make_index_key(&[ScalarValue::Floating(-2.5)], 0);
+        let decoded = decode_index_cols(key, 1);
+        assert_eq!(decoded[0], ScalarValue::Floating(-2.5));
+    }
+
+    #[test]
+    fn decode_index_columns_multi_column() {
+        let key = make_index_key(
+            &[ScalarValue::Integer(7), ScalarValue::String("x".into())],
+            99,
+        );
+        let decoded = decode_index_cols(key, 2);
+        assert_eq!(decoded[0], ScalarValue::Integer(7));
+        assert_eq!(decoded[1], ScalarValue::String("x".into()));
+    }
+
+    #[test]
+    fn decode_index_columns_rowid_suffix_ignored() {
+        // Rowid suffix must not affect column decoding
+        let key1 = make_index_key(&[ScalarValue::Integer(42)], 1);
+        let key2 = make_index_key(&[ScalarValue::Integer(42)], 9999);
+        assert_eq!(decode_index_cols(key1, 1), decode_index_cols(key2, 1));
     }
 }

@@ -68,6 +68,14 @@ impl ExplainSchema {
             .cloned()
             .unwrap_or_else(|| format!("col@{rootpage}"))
     }
+
+    /// Return all indexed column names for this index rootpage.
+    pub fn index_col_names(&self, rootpage: u32) -> Vec<String> {
+        self.indexes
+            .get(&rootpage)
+            .map(|m| m.column_names.clone())
+            .unwrap_or_default()
+    }
 }
 
 // ============================================================================
@@ -126,7 +134,25 @@ fn node_output_cols(plan: &LogicalPlan, schema: &ExplainSchema) -> Vec<String> {
             cols.extend(node_output_cols(right, schema));
             cols
         }
-        LogicalPlan::IndexScan { .. } | LogicalPlan::IndexProbe { .. } => {
+        LogicalPlan::IndexScan {
+            index_rootpage,
+            output_columns,
+            ..
+        } => match output_columns {
+            None => vec!["rowid".to_string()],
+            Some(cols) => {
+                let all_names = schema.index_col_names(*index_rootpage);
+                cols.iter()
+                    .map(|&j| {
+                        all_names
+                            .get(j)
+                            .cloned()
+                            .unwrap_or_else(|| format!("col:{j}"))
+                    })
+                    .collect()
+            }
+        },
+        LogicalPlan::IndexProbe { .. } => {
             vec!["rowid".to_string()]
         }
         LogicalPlan::Values { rows } => rows
@@ -198,10 +224,29 @@ fn collect_rows(
             index_col_idx: _,
             lower_bound,
             upper_bound,
+            output_columns,
         } => {
             let index = schema.index_name(*index_rootpage);
             let pred = format_index_predicate(lower_bound, upper_bound);
-            format!("{indent}IndexScan via {index} [{pred}]")
+            match output_columns {
+                None => format!("{indent}IndexScan via {index} [{pred}]"),
+                Some(cols) => {
+                    let names: Vec<String> = cols
+                        .iter()
+                        .map(|&j| {
+                            schema
+                                .index_col_names(*index_rootpage)
+                                .get(j)
+                                .cloned()
+                                .unwrap_or_else(|| format!("col:{j}"))
+                        })
+                        .collect();
+                    format!(
+                        "{indent}IndexScan via {index} [{pred}] [{}]",
+                        names.join(", ")
+                    )
+                }
+            }
         }
         LogicalPlan::RowidLookup {
             table_rootpage,
@@ -518,6 +563,7 @@ mod tests {
             index_col_idx: 0,
             lower_bound: Some((Literal::Integer(30), true)),
             upper_bound: Some((Literal::Integer(30), true)),
+            output_columns: None,
         };
         let rows = format_plan(&plan, &ExplainSchema::empty());
         assert_eq!(rows.len(), 1);
@@ -606,5 +652,49 @@ mod tests {
         };
         // Without context, falls back to col:N
         assert_eq!(format_expr(&expr), "col:2 = 30");
+    }
+
+    #[test]
+    fn test_explain_covering_index_scan() {
+        let mut schema = ExplainSchema::empty();
+        schema.indexes.insert(
+            5,
+            IndexMeta {
+                name: "idx_age".to_string(),
+                table_name: "users".to_string(),
+                column_names: vec!["age".to_string()],
+            },
+        );
+        let plan = LogicalPlan::IndexScan {
+            index_rootpage: 5,
+            index_col_idx: 2,
+            lower_bound: Some((Literal::Integer(30), true)),
+            upper_bound: Some((Literal::Integer(30), true)),
+            output_columns: Some(vec![0]), // covering: output index col 0 (age)
+        };
+        let rows = format_plan(&plan, &schema);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].1.contains("idx_age"), "got: {}", rows[0].1);
+        assert!(rows[0].1.contains("= 30"), "got: {}", rows[0].1);
+        assert!(rows[0].1.contains("[age]"), "got: {}", rows[0].1);
+    }
+
+    #[test]
+    fn test_explain_non_covering_index_scan_unchanged() {
+        let plan = LogicalPlan::IndexScan {
+            index_rootpage: 5,
+            index_col_idx: 0,
+            lower_bound: Some((Literal::Integer(30), true)),
+            upper_bound: Some((Literal::Integer(30), true)),
+            output_columns: None,
+        };
+        let rows = format_plan(&plan, &ExplainSchema::empty());
+        assert!(rows[0].1.contains("IndexScan"), "got: {}", rows[0].1);
+        // No column list appended for non-covering scan
+        assert!(
+            !rows[0].1.contains("[age]") && !rows[0].1.contains("[col:"),
+            "should have no column list: {}",
+            rows[0].1
+        );
     }
 }

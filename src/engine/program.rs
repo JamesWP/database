@@ -162,6 +162,13 @@ pub enum Operation {
     BlobSliceLast(Reg, Reg, usize), // BlobSliceLast(dest, blob, n): last n bytes of blob
     BlobDropLast(Reg, Reg, usize), // BlobDropLast(dest, blob, n): blob without last n bytes
     DecodeU64Key(Reg, Reg),        // DecodeU64Key(dest, blob): 8-byte blob → u64 as Integer
+    /// Decode N column values sequentially from the start of an index key blob.
+    /// Walks the type-tagged byte stream, storing each column into the corresponding
+    /// dest register. Does NOT touch the trailing 8-byte rowid suffix.
+    DecodeIndexColumns {
+        dest: Vec<Reg>, // one register per index column to decode (in key order)
+        src: Reg,       // blob register with the raw index key
+    },
 
     // Control Flow
     Yield(Vec<Reg>),
@@ -493,6 +500,16 @@ impl std::fmt::Display for Operation {
             }
             DecodeU64Key(dest, blob) => {
                 write!(f, "{:10} {}, {}", "DecU64Key".cyan().bold(), dest, blob)
+            }
+            DecodeIndexColumns { dest, src } => {
+                let regs_str: Vec<String> = dest.iter().map(|r| format!("{}", r)).collect();
+                write!(
+                    f,
+                    "{:10} [{}], {}",
+                    "DecIdxCols".cyan().bold(),
+                    regs_str.join(", "),
+                    src
+                )
             }
 
             // Control flow
