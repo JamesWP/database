@@ -66,11 +66,10 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AC** | Join Improvements | 6 | [phase-ac-join-improvements.md](completed/phase-ac-join-improvements.md) | Completed |
 | **AD** | Page-Geometry-Aware Overflow Thresholds | 4 | [phase-ad-overflow-thresholds.md](phase-ad-overflow-thresholds.md) | Planned |
 | **AE** | TUI Bytecode Debugger | 3 | [phase-ae-tui-debugger.md](phase-ae-tui-debugger.md) | Planned |
-| **AF** | Covering Indexes | 3 | [phase-af-covering-indexes.md](phase-af-covering-indexes.md) | Planned |
+| **AF** | Covering Indexes | 3 | [phase-af-covering-indexes.md](completed/phase-af-covering-indexes.md) | Completed |
 
 ## Future
 
-* support covering indexes — satisfy a query entirely from an index without touching the primary B-tree
 * support aggregation for joins
 * multi-column joins — extend planner and JoinResolver to support multiple JOIN clauses and multi-column ON conditions (a.x = b.x AND a.y = b.y)
 * take the example sql db, extract missing features and order them here [example](https://github.com/jOOQ/sakila/tree/main/sqlite-sakila-db)
