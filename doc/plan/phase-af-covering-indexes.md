@@ -1,8 +1,8 @@
 # Phase AF — Covering Indexes
 
 Elide the primary-table B-tree lookup when all projected columns are already
-encoded in the index key, by introducing a `CoveringIndexScan` plan node and a
-`DecodeIndexColumns` VM instruction.
+encoded in the index key, by extending `IndexScan` with an optional
+`output_columns` field and adding a `DecodeIndexColumns` VM instruction.
 
 ## Items
 
@@ -10,7 +10,7 @@ encoded in the index key, by introducing a `CoveringIndexScan` plan node and a
 |---|-------|------|------------|
 | 116 | 7 | SQL test baseline: correctness tests for covering-eligible index queries | — |
 | 117 | 4 | Implement covering index optimization (planner + VM instruction + compiler) | 116 |
-| 118 | 7 | SQL tests verifying EXPLAIN shows `CoveringIndexScan` where expected | 117 |
+| 118 | 7 | SQL tests verifying EXPLAIN shows covering IndexScan where expected | 117 |
 
 ---
 Important: Each item should be committed separately, follow 'Git Workflow' in CLAUDE.md
@@ -29,19 +29,24 @@ into the primary B-tree entirely — the answer is in the index key itself.
 ```
 Project [age:0]
   RowidLookup users [cols: age]     ← seeks primary B-tree once per match
-    IndexScan via idx_age [= 30]    ← yields rowids
+    IndexScan via idx_age [= 30]    ← yields rowid only
 ```
 
 **Optimised execution path** (this phase):
 
 ```
 Project [age:0]
-  CoveringIndexScan via idx_age [= 30] [age]   ← decodes value from key, no table touch
+  IndexScan via idx_age [= 30] [age]   ← decodes value from key; no table touch
 ```
 
-The optimisation applies when every column requested by the `RowidLookup` node
-is present in the index's key encoding.  When even one column is absent, the
-existing `RowidLookup(IndexScan)` path is used unchanged.
+`IndexScan` gains an optional `output_columns` field.  When it is `None`
+(the default), the node yields only the rowid as today.  When it is `Some`,
+it decodes and yields the specified column values directly from the index key,
+and the `RowidLookup` wrapper is dropped entirely.
+
+The optimisation applies when every column requested by `RowidLookup` is
+present in the index key.  If even one column is absent, the existing
+`RowidLookup(IndexScan)` path is left unchanged.
 
 **Index key encoding recap** (from `encode_index_value`):
 
@@ -179,81 +184,89 @@ Run with `cargo test test_sql_covering_index_baseline`.
 
 ### What Changes
 
-1. **New plan node** `LogicalPlan::CoveringIndexScan` in `src/planner/mod.rs`.
+1. **Extend `IndexScan`** with `output_columns: Option<Vec<usize>>` in
+   `src/planner/mod.rs`.
 2. **Optimizer rule** in `src/planner/optimizer.rs`: rewrite
-   `RowidLookup { input: IndexScan, columns: C }` → `CoveringIndexScan` when
-   every column in `C` is present in the index.
+   `RowidLookup { input: IndexScan { output_columns: None, .. }, columns }` →
+   `IndexScan { output_columns: Some(mapped), .. }` (RowidLookup dropped) when
+   every requested column is present in the index.
 3. **New VM instruction** `DecodeIndexColumns` in `src/engine/program.rs`.
-4. **Compiler codegen** `codegen_covering_index_scan` in
-   `src/compiler/nodes.rs`.
-5. **EXPLAIN support** in `src/explain.rs`.
+4. **Compiler codegen** updated in `src/compiler/nodes.rs`: emit
+   `DecodeIndexColumns` instead of `BlobSliceLast + DecodeU64Key + Yield(rowid)`
+   when `output_columns` is set.
+5. **EXPLAIN support** in `src/explain.rs`: append column names to the
+   `IndexScan` line when `output_columns` is set; `node_output_cols` returns
+   index column names instead of `["rowid"]`.
 
 ### Background
 
 The index key encodes column values sequentially followed by the 8-byte rowid
 suffix.  Decoding requires walking the byte stream, reading the type tag, and
-parsing each field according to its encoding.  A single
-`DecodeIndexColumns` VM instruction handles this walk for all existing column
-types (NULL / INTEGER / FLOAT / TEXT), keeping the compiler output concise.
+parsing each field.  A single `DecodeIndexColumns` VM instruction handles this
+walk for all existing column types (NULL / INTEGER / FLOAT / TEXT), keeping the
+compiler output concise.
+
+The `IndexScan` node today always sits inside a `RowidLookup` (or at the
+bottom of a join probe chain).  Adding `output_columns` lets it stand alone as
+a leaf that produces real column values, which is all the planner needs to
+drop the wrapping `RowidLookup`.
 
 ### Implementation Approach
 
-#### New plan node
+#### Extend IndexScan
 
 ```rust
 // src/planner/mod.rs  (inside pub enum LogicalPlan)
 
-/// Like IndexScan but decodes column values from the index key directly,
-/// skipping the primary B-tree lookup entirely.
-/// `output_columns[i]` is the 0-based index key column position whose
-/// decoded value becomes output register i.
-CoveringIndexScan {
+IndexScan {
     index_rootpage: u32,
+    index_col_idx: usize,
     lower_bound: Option<(Literal, bool)>,
     upper_bound: Option<(Literal, bool)>,
-    /// Maps output position → index key column position (0-based).
-    output_columns: Vec<usize>,
-    /// Total number of columns in the index key (needed by DecodeIndexColumns).
-    index_col_count: usize,
+    /// When None  — yield only the rowid (existing behaviour).
+    /// When Some  — decode these index-key column positions and yield them.
+    ///   output_columns[i] = 0-based index key column position for output slot i.
+    output_columns: Option<Vec<usize>>,
 }
 ```
 
-`output_columns` is computed by the optimizer: for each table column index
-requested by `RowidLookup`, find its position in the index key.
+All existing construction sites set `output_columns: None` — no behaviour
+change for non-covering paths.
 
 #### Optimizer rule
 
-Add to `src/planner/optimizer.rs` a post-pass that rewrites the plan tree
-bottom-up after the existing index substitution rules run.  Match pattern:
+Add a tree-rewrite pass in `src/planner/optimizer.rs` that runs after the
+existing index-substitution rules.  It matches:
 
 ```
 RowidLookup {
-    input: IndexScan { index_rootpage, lower_bound, upper_bound, .. },
+    input: IndexScan { index_rootpage, lower_bound, upper_bound,
+                       output_columns: None, .. },
     table_rootpage,
-    columns,       // table column indices requested by the query
+    columns,   // table column indices the query needs
 }
 ```
 
 Steps:
 
-1. Look up the table columns by name: `schema.table_columns(table_rootpage)` →
+1. Get table column names via `schema.table_columns(table_rootpage)` →
    `["id", "name", "age", ...]`.
-2. Look up the index columns: `schema.index_columns(index_rootpage)` →
+2. Get index column names via `schema.index_columns(index_rootpage)` →
    `["age"]`.
 3. For each table column index `c` in `columns`:
-   - Get the column name `name = table_cols[c]`.
-   - Find position `j` in `index_cols` where `index_cols[j] == name`.
-   - If not found → **not covering**, return the tree unchanged.
-   - Otherwise record `j` in `output_columns`.
-4. All columns found → emit:
+   - `name = table_cols[c]`
+   - Find `j` where `index_cols[j] == name`.
+   - If not found → **not covering**; leave the tree unchanged and return.
+   - Otherwise push `j` into `output_columns`.
+4. All columns mapped → return:
 
 ```rust
-LogicalPlan::CoveringIndexScan {
+LogicalPlan::IndexScan {
     index_rootpage,
+    index_col_idx,   // unchanged
     lower_bound,
     upper_bound,
-    output_columns,
-    index_col_count: index_cols.len(),
+    output_columns: Some(output_columns),
 }
 ```
 
@@ -262,16 +275,18 @@ LogicalPlan::CoveringIndexScan {
 ```rust
 // src/engine/program.rs
 
-/// Decode `dest.len()` column values from the beginning of an index key blob.
-/// Walks the byte stream, consuming one type-tagged field per dest register.
-/// Does NOT touch the trailing 8-byte rowid suffix.
+/// Decode N column values from the start of an index key blob.
+/// Walks the byte stream sequentially, consuming one type-tagged field
+/// per dest register.  Does NOT touch the trailing 8-byte rowid suffix.
+/// N = dest.len(); the compiler sets N = max(output_columns) + 1 so
+/// all needed index columns are decoded into consecutive registers.
 DecodeIndexColumns {
-    dest: Vec<Reg>,   // destination registers (one per index column to decode)
-    src: Reg,         // register holding the raw key blob
+    dest: Vec<Reg>,  // one register per index column decoded (in key order)
+    src:  Reg,       // blob register with the raw index key
 }
 ```
 
-Executor implementation (in `src/engine.rs` or the appropriate dispatch file):
+Executor (in `src/engine.rs` or the dispatch file that handles `Operation`):
 
 ```rust
 Operation::DecodeIndexColumns { dest, src } => {
@@ -282,30 +297,21 @@ Operation::DecodeIndexColumns { dest, src } => {
             0x00 => { pos += 1; ScalarValue::Null }
             0x01 => {
                 let bits = u64::from_be_bytes(blob[pos+1..pos+9].try_into()?);
-                let i = (bits ^ (1u64 << 63)) as i64;
                 pos += 9;
-                ScalarValue::Integer(i)
+                ScalarValue::Integer((bits ^ (1u64 << 63)) as i64)
             }
             0x02 => {
                 let bits = u64::from_be_bytes(blob[pos+1..pos+9].try_into()?);
-                // Reverse the sortable float encoding:
-                // if high bit is set (original was positive), just clear it;
-                // otherwise flip all bits.
-                let bits = if bits & (1u64 << 63) != 0 {
-                    bits & !(1u64 << 63)
-                } else {
-                    !bits
-                };
+                // Reverse sortable float encoding (verify against encode_index_value)
+                let bits = if bits & (1u64 << 63) != 0 { bits & !(1u64 << 63) } else { !bits };
                 pos += 9;
                 ScalarValue::Float(f64::from_bits(bits))
             }
             0x03 => {
                 let start = pos + 1;
-                let nul = blob[start..]
-                    .iter()
-                    .position(|&b| b == 0)
+                let nul = blob[start..].iter().position(|&b| b == 0)
                     .ok_or(Error::IndexKeyTruncated)?;
-                let s = String::from_utf8(blob[start..start+nul].to_vec())?;
+                let s = String::from_utf8(blob[start..start + nul].to_vec())?;
                 pos = start + nul + 1;
                 ScalarValue::Text(s)
             }
@@ -317,149 +323,270 @@ Operation::DecodeIndexColumns { dest, src } => {
 }
 ```
 
-> **Note on float encoding:** confirm the encoding/decoding round-trip by
-> checking `encode_index_value` in `src/storage/btree.rs`.  If the encoding
-> differs from the snippet above, adjust accordingly.
+> **Note on float encoding:** confirm the round-trip by checking
+> `encode_index_value` in `src/storage/btree.rs` before finalising the
+> decoder.
 
 #### Compiler codegen
 
+In `codegen_index_scan` (or its equivalent in `src/compiler/nodes.rs`),
+branch on `output_columns`:
+
 ```rust
-// src/compiler/nodes.rs
-
-fn codegen_covering_index_scan(
-    ctx: &mut CodegenContext,
-    index_rootpage: u32,
-    lower_bound: &Option<(Literal, bool)>,
-    upper_bound: &Option<(Literal, bool)>,
-    output_columns: &[usize],
-    index_col_count: usize,
-) -> Result<()> {
-    let cursor = ctx.alloc_reg();
-    let key_blob = ctx.alloc_reg();
-    // One register per index column (we decode all of them)
-    let col_regs: Vec<Reg> = (0..index_col_count).map(|_| ctx.alloc_reg()).collect();
-
-    emit!(ctx, Open(cursor, index_rootpage));
-
-    // Position cursor (identical to IndexScan lower-bound logic)
-    let start_label = ctx.new_label();
-    codegen_index_seek(ctx, cursor, lower_bound)?;   // reuse existing helper
-
-    ctx.place_label(start_label);
-
-    // Upper bound check
-    let halt_label = ctx.new_label();
-    codegen_index_upper_bound_check(ctx, cursor, key_blob, upper_bound, halt_label)?;
-
-    // Decode all index columns from current key
-    emit!(ctx, ReadCurrentKey(key_blob, cursor));
-    emit!(ctx, DecodeIndexColumns { dest: col_regs.clone(), src: key_blob });
-
-    // Assemble output registers in the order output_columns specifies
-    let output_regs: Vec<Reg> = output_columns.iter().map(|&j| col_regs[j]).collect();
-    emit!(ctx, Yield(output_regs));
-
-    emit!(ctx, MoveCursor(cursor, Next));
-    emit!(ctx, GoTo(start_label));
-
-    ctx.place_label(halt_label);
-    Ok(())
+match output_columns {
+    None => {
+        // existing path: extract rowid from key suffix, Yield([rowid_reg])
+        emit!(ctx, BlobSliceLast(rowid_blob, key_blob, 8));
+        emit!(ctx, DecodeU64Key(rowid_reg, rowid_blob));
+        emit!(ctx, Yield(vec![rowid_reg]));
+    }
+    Some(cols) => {
+        // covering path: decode all needed index columns, assemble output
+        let num_to_decode = cols.iter().copied().max().map(|m| m + 1).unwrap_or(0);
+        let col_regs: Vec<Reg> = (0..num_to_decode).map(|_| ctx.alloc_reg()).collect();
+        emit!(ctx, DecodeIndexColumns { dest: col_regs.clone(), src: key_blob });
+        // assemble output in the order cols specifies
+        let output_regs: Vec<Reg> = cols.iter().map(|&j| col_regs[j]).collect();
+        emit!(ctx, Yield(output_regs));
+    }
 }
 ```
-
-Integrate by adding a `LogicalPlan::CoveringIndexScan { .. }` arm in the
-top-level `codegen_plan` match in `src/compiler/nodes.rs`, mirroring the
-`IndexScan` arm.
 
 #### EXPLAIN support
 
-In `src/explain.rs`, add:
+In `src/explain.rs`:
 
-1. `node_output_cols` arm for `CoveringIndexScan`:
+1. `node_output_cols` — `IndexScan` arm:
 
 ```rust
-LogicalPlan::CoveringIndexScan { index_rootpage, output_columns, .. } => {
-    output_columns
-        .iter()
-        .map(|&j| {
-            schema.indexes
-                .get(index_rootpage)
+LogicalPlan::IndexScan { index_rootpage, output_columns, .. } => {
+    match output_columns {
+        None => vec!["rowid".to_string()],
+        Some(cols) => cols.iter().map(|&j| {
+            schema.indexes.get(index_rootpage)
                 .and_then(|m| m.column_names.get(j))
                 .cloned()
                 .unwrap_or_else(|| format!("col:{j}"))
-        })
-        .collect()
+        }).collect(),
+    }
 }
 ```
 
-2. `collect_rows` summary arm:
+2. `collect_rows` — `IndexScan` summary: append column list when covering:
 
 ```rust
-LogicalPlan::CoveringIndexScan {
-    index_rootpage,
-    lower_bound,
-    upper_bound,
-    output_columns,
-    ..
-} => {
+LogicalPlan::IndexScan { index_rootpage, lower_bound, upper_bound, output_columns, .. } => {
     let index = schema.index_name(*index_rootpage);
-    let pred = format_index_predicate(lower_bound, upper_bound);
-    let cols: Vec<String> = output_columns
-        .iter()
-        .map(|&j| {
-            schema.indexes
-                .get(index_rootpage)
-                .and_then(|m| m.column_names.get(j))
-                .cloned()
-                .unwrap_or_else(|| format!("col:{j}"))
-        })
-        .collect();
-    format!("{indent}CoveringIndexScan via {index} [{pred}] [{}]", cols.join(", "))
+    let pred  = format_index_predicate(lower_bound, upper_bound);
+    match output_columns {
+        None => format!("{indent}IndexScan via {index} [{pred}]"),
+        Some(cols) => {
+            let names: Vec<String> = cols.iter().map(|&j| {
+                schema.indexes.get(index_rootpage)
+                    .and_then(|m| m.column_names.get(j))
+                    .cloned()
+                    .unwrap_or_else(|| format!("col:{j}"))
+            }).collect();
+            format!("{indent}IndexScan via {index} [{pred}] [{}]", names.join(", "))
+        }
+    }
 }
 ```
-
-3. `plan_children` arm: `LogicalPlan::CoveringIndexScan { .. } => vec![]`
 
 ### Key Files
 
-- `src/planner/mod.rs` — add `CoveringIndexScan` variant to `LogicalPlan`
-- `src/planner/optimizer.rs` — add covering index rewrite rule
-- `src/engine/program.rs` — add `DecodeIndexColumns` instruction
-- `src/engine.rs` (or equivalent dispatch) — execute `DecodeIndexColumns`
-- `src/compiler/nodes.rs` — `codegen_covering_index_scan` + dispatch arm
-- `src/explain.rs` — `node_output_cols`, `collect_rows`, `plan_children` arms
+- `src/planner/mod.rs` — add `output_columns` field to `IndexScan`
+- `src/planner/optimizer.rs` — covering index rewrite rule
+- `src/engine/program.rs` — `DecodeIndexColumns` instruction definition
+- `src/engine.rs` (or dispatch) — `DecodeIndexColumns` executor
+- `src/compiler/nodes.rs` — branch in `codegen_index_scan` on `output_columns`
+- `src/explain.rs` — `node_output_cols` and `collect_rows` arms for `IndexScan`
 
 ### Tests
 
+**Unit tests for `DecodeIndexColumns`** — add a `#[cfg(test)]` block in the
+executor source file (wherever `DecodeIndexColumns` is dispatched).  Build
+key blobs using `encode_index_value` (already `pub` in
+`src/storage/btree.rs`) rather than crafting raw bytes by hand, so the tests
+are coupled to the encoder and will catch any future encoding change
+automatically.
+
+A full index key is: `encode_index_value(col1) ++ encode_index_value(col2) ++ ... ++ rowid.to_be_bytes()`.
+`DecodeIndexColumns` only consumes the column portion; the rowid suffix is
+ignored (as with the existing `BlobSliceLast` path).
+
+```rust
+use crate::storage::btree::encode_index_value;
+use crate::engine::scalarvalue::ScalarValue;
+
+fn make_key(cols: &[ScalarValue], rowid: u64) -> Vec<u8> {
+    let mut key = Vec::new();
+    for col in cols {
+        key.extend_from_slice(&encode_index_value(col));
+    }
+    key.extend_from_slice(&rowid.to_be_bytes());
+    key
+}
+
+#[test]
+fn decode_index_columns_integer_positive() {
+    let key = make_key(&[ScalarValue::Integer(42)], 0);
+    // assert decoded value == ScalarValue::Integer(42)
+}
+
+#[test]
+fn decode_index_columns_integer_negative() {
+    let key = make_key(&[ScalarValue::Integer(-1)], 0);
+    // assert decoded value == ScalarValue::Integer(-1)
+}
+
+#[test]
+fn decode_index_columns_string() {
+    let key = make_key(&[ScalarValue::String("hello".into())], 0);
+    // assert decoded value == ScalarValue::String("hello".into())
+}
+
+#[test]
+fn decode_index_columns_null() {
+    let key = make_key(&[ScalarValue::Null], 0);
+    // assert decoded value == ScalarValue::Null
+}
+
+#[test]
+fn decode_index_columns_multi_column() {
+    // Two-column index: INTEGER then STRING
+    let key = make_key(&[ScalarValue::Integer(7), ScalarValue::String("x".into())], 99);
+    // assert both columns decode correctly
+}
+
+#[test]
+fn decode_index_columns_truncated_returns_error() {
+    // Pass an empty blob; expect an error, not a panic
+}
+```
+
+**Property-based tests for `DecodeIndexColumns`** — add proptest cases in the
+same `#[cfg(test)]` block.  proptest is already a dependency (used in
+`src/storage/btree.rs`).  The strategy generates arbitrary `ScalarValue`
+inputs (within the types that `encode_index_value` supports), encodes them,
+decodes them, and asserts round-trip equality:
+
+```rust
+use proptest::prelude::*;
+
+fn arb_scalar() -> impl Strategy<Value = ScalarValue> {
+    prop_oneof![
+        Just(ScalarValue::Null),
+        any::<i64>().prop_map(ScalarValue::Integer),
+        any::<f64>()
+            .prop_filter("no NaN", |f| !f.is_nan())
+            .prop_map(ScalarValue::Floating),
+        ".*".prop_map(|s| ScalarValue::String(s.into())),
+    ]
+}
+
+proptest! {
+    #[test]
+    fn prop_decode_index_columns_roundtrip_single(val in arb_scalar()) {
+        let key = make_key(&[val.clone()], 0);
+        let decoded = decode_index_columns_from_blob(&key, 1)?;
+        prop_assert_eq!(decoded[0], val);
+    }
+
+    #[test]
+    fn prop_decode_index_columns_roundtrip_multi(
+        a in arb_scalar(),
+        b in arb_scalar(),
+        rowid in any::<u64>(),
+    ) {
+        let key = make_key(&[a.clone(), b.clone()], rowid);
+        let decoded = decode_index_columns_from_blob(&key, 2)?;
+        prop_assert_eq!(decoded[0], a);
+        prop_assert_eq!(decoded[1], b);
+        // rowid suffix is untouched — verify key length is unchanged
+    }
+}
+```
+
+`decode_index_columns_from_blob` is a thin test helper (or the inner
+function extracted from the executor) that takes a blob and a column count
+and returns `Vec<ScalarValue>` — avoids needing a full register file in
+tests.
+
+**Unit test for EXPLAIN covering IndexScan** — add to the `#[cfg(test)]`
+block in `src/explain.rs`:
+
+```rust
+#[test]
+fn test_explain_covering_index_scan() {
+    let mut schema = ExplainSchema::empty();
+    schema.indexes.insert(5, IndexMeta {
+        name: "idx_age".to_string(),
+        table_name: "users".to_string(),
+        column_names: vec!["age".to_string()],
+    });
+
+    let plan = LogicalPlan::IndexScan {
+        index_rootpage: 5,
+        index_col_idx: 0,
+        lower_bound: Some((Literal::Integer(30), true)),
+        upper_bound: Some((Literal::Integer(30), true)),
+        output_columns: Some(vec![0]),   // covering: output index col 0 (age)
+    };
+
+    let rows = format_plan(&plan, &schema);
+    assert_eq!(rows.len(), 1);
+    // Should include column name, not just the predicate
+    assert!(rows[0].1.contains("idx_age"), "got: {}", rows[0].1);
+    assert!(rows[0].1.contains("= 30"),    "got: {}", rows[0].1);
+    assert!(rows[0].1.contains("[age]"),   "got: {}", rows[0].1);
+}
+
+#[test]
+fn test_explain_non_covering_index_scan_unchanged() {
+    // output_columns: None  →  existing format, no column list appended
+    let plan = LogicalPlan::IndexScan {
+        index_rootpage: 5,
+        index_col_idx: 0,
+        lower_bound: Some((Literal::Integer(30), true)),
+        upper_bound: Some((Literal::Integer(30), true)),
+        output_columns: None,
+    };
+    let rows = format_plan(&plan, &ExplainSchema::empty());
+    assert!(rows[0].1.contains("IndexScan"), "got: {}", rows[0].1);
+    assert!(!rows[0].1.contains('['), "should have no column list: {}", rows[0].1);
+}
+```
+
 All tests in `tests/sql/covering_index_baseline.sql` must continue to pass
-unchanged (they prove correctness).  Run with:
+unchanged.  Run:
 
 ```bash
 cargo test test_sql_covering_index_baseline
-cargo test  # full suite — no regressions
+cargo test   # full suite — no regressions
 ```
 
 ### Implementation Steps (1 commit)
 
-#### Step 117.1 — Implement CoveringIndexScan end-to-end
+#### Step 117.1 — Extend IndexScan with covering index support end-to-end
 
-Add the plan node, optimizer rule, VM instruction + executor, compiler codegen,
-and EXPLAIN support in one commit.
+Add `output_columns` to `IndexScan`, the optimizer rule, `DecodeIndexColumns`,
+compiler branch, and EXPLAIN update in one commit.
 
 **Commit:** `Feature: covering index optimization — skip primary B-tree lookup when all projected columns are in the index key`
 
 ---
 
-## 118. SQL tests verifying EXPLAIN shows CoveringIndexScan (Track 7)
+## 118. SQL tests verifying EXPLAIN shows covering IndexScan (Track 7)
 
 ### What Changes
 
 New file `tests/sql/covering_index.sql` containing EXPLAIN-based tests that
-verify the optimiser produces `CoveringIndexScan` where it should, and
-preserves `RowidLookup` where it should not.
+verify the optimiser produces a covering `IndexScan` where it should, and
+preserves `RowidLookup(IndexScan)` where it should not.
 
 These tests **fail before Item 117** (EXPLAIN shows `RowidLookup`) and
-**pass after Item 117** (EXPLAIN shows `CoveringIndexScan`).
+**pass after Item 117** (EXPLAIN shows the column-annotated `IndexScan`).
 
 ### Test Cases
 
@@ -483,9 +610,9 @@ CREATE INDEX idx_name ON users(name)
 -- 1. Covered: select only the indexed INTEGER column
 EXPLAIN SELECT age FROM users WHERE age = 30
 -- > 0, "Project [age:0]"
--- > 1, "  CoveringIndexScan via idx_age [= 30] [age]"
+-- > 1, "  IndexScan via idx_age [= 30] [age]"
 
--- 2. NOT covered: also selects 'name', which is not in idx_age
+-- 2. NOT covered: also selects 'name', not in idx_age
 EXPLAIN SELECT age, name FROM users WHERE age = 30
 -- > 0, "Project [age:0, name:1]"
 -- > 1, "  RowidLookup users [cols: age, name]"
@@ -494,18 +621,18 @@ EXPLAIN SELECT age, name FROM users WHERE age = 30
 -- 3. Covered: select only the indexed TEXT column
 EXPLAIN SELECT name FROM users WHERE name = 'Alice'
 -- > 0, "Project [name:0]"
--- > 1, "  CoveringIndexScan via idx_name [= 'Alice'] [name]"
+-- > 1, "  IndexScan via idx_name [= 'Alice'] [name]"
 
--- 4. NOT covered: also selects 'id', which is not in idx_name
+-- 4. NOT covered: also selects 'id', not in idx_name
 EXPLAIN SELECT name, id FROM users WHERE name = 'Alice'
 -- > 0, "Project [name:0, id:1]"
 -- > 1, "  RowidLookup users [cols: name, id]"
 -- > 2, "    IndexScan via idx_name [= 'Alice']"
 
--- 5. Covered range scan: select only the indexed column
+-- 5. Covered range scan
 EXPLAIN SELECT age FROM users WHERE age > 25
 -- > 0, "Project [age:0]"
--- > 1, "  CoveringIndexScan via idx_age [> 25] [age]"
+-- > 1, "  IndexScan via idx_age [> 25] [age]"
 
 -- Multi-column index
 CREATE TABLE orders (id INTEGER, status TEXT, priority INTEGER, note TEXT)
@@ -523,20 +650,20 @@ CREATE INDEX idx_status_priority ON orders(status, priority)
 -- 6. Covered: both columns of multi-column index
 EXPLAIN SELECT status, priority FROM orders WHERE status = 'open'
 -- > 0, "Project [status:0, priority:1]"
--- > 1, "  CoveringIndexScan via idx_status_priority [= 'open'] [status, priority]"
+-- > 1, "  IndexScan via idx_status_priority [= 'open'] [status, priority]"
 
--- 7. Covered: only the leading column (still in the index)
+-- 7. Covered: only the leading column
 EXPLAIN SELECT status FROM orders WHERE status = 'open'
 -- > 0, "Project [status:0]"
--- > 1, "  CoveringIndexScan via idx_status_priority [= 'open'] [status]"
+-- > 1, "  IndexScan via idx_status_priority [= 'open'] [status]"
 
--- 8. NOT covered: requests 'note', which is not in the index
+-- 8. NOT covered: 'note' is not in the index
 EXPLAIN SELECT status, note FROM orders WHERE status = 'open'
 -- > 0, "Project [status:0, note:1]"
 -- > 1, "  RowidLookup orders [cols: status, note]"
 -- > 2, "    IndexScan via idx_status_priority [= 'open']"
 
--- Verify query results are correct after optimization (not just EXPLAIN)
+-- Verify result correctness after optimization
 SELECT age FROM users WHERE age = 30 ORDER BY age
 -- > 30
 -- > 30
@@ -555,14 +682,14 @@ SELECT status, priority FROM orders WHERE status = 'open' ORDER BY priority
 
 ```bash
 cargo test test_sql_covering_index
-cargo test  # full suite
+cargo test   # full suite
 ```
 
 ### Implementation Steps (1 commit)
 
 #### Step 118.1 — Add covering_index.sql EXPLAIN + result verification tests
 
-**Commit:** `Tests: add SQL tests verifying CoveringIndexScan plan shape and correctness`
+**Commit:** `Tests: add SQL tests verifying covering IndexScan plan shape and correctness`
 
 ---
 
@@ -571,9 +698,9 @@ cargo test  # full suite
 - [ ] `cargo test` — all tests pass (no regressions)
 - [ ] `cargo fmt && cargo build 2>&1 | grep -i warning` — zero warnings
 - [ ] `covering_index_baseline.sql` tests pass before and after Item 117
-- [ ] `covering_index.sql` EXPLAIN tests show `CoveringIndexScan` for covered queries
+- [ ] `covering_index.sql` EXPLAIN tests show `IndexScan … [cols]` for covered queries
 - [ ] `covering_index.sql` EXPLAIN tests show `RowidLookup` for non-covered queries
-- [ ] Result rows from covered queries are identical to those from the RowidLookup path
-- [ ] Multi-column index covering works correctly (both 1-of-2 and 2-of-2 column projections)
+- [ ] Result rows from covered queries match the RowidLookup path exactly
+- [ ] Multi-column index covering works for 1-of-N and all-N column projections
 - [ ] TEXT column covering decodes correctly (variable-length NUL-terminated encoding)
 - [ ] Each commit is independently buildable
