@@ -1107,6 +1107,7 @@ mod tests {
                         index_col_idx: _,
                         lower_bound,
                         upper_bound,
+                        ..
                     } => {
                         assert_eq!(index_rootpage, index_root);
                         assert_eq!(lower_bound, Some((Literal::Integer(30), true)));
@@ -1149,6 +1150,7 @@ mod tests {
                         index_col_idx: _,
                         lower_bound,
                         upper_bound,
+                        ..
                     } => {
                         assert_eq!(index_rootpage, index_root);
                         assert_eq!(lower_bound, Some((Literal::Integer(20), false)));
@@ -1210,6 +1212,7 @@ mod tests {
                         index_col_idx: _,
                         lower_bound,
                         upper_bound,
+                        ..
                     } => {
                         assert_eq!(index_rootpage, index_root);
                         assert_eq!(lower_bound, Some((Literal::Integer(2024), true)));
