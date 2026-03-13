@@ -94,6 +94,17 @@ type InteriorNodeIterator = (u32, usize);
 /// identifies the page index of the leaf node and the index of the entry curently selected
 type LeafNodeIterator = (u32, usize);
 
+/// CBOR framing overhead for `NodePage::OverflowPage { content, continuation: Some(u32) }`.
+/// Measured empirically — see `measure_cbor_framing_overhead` in node.rs.
+/// The NodePage enum wrapper accounts for most of the 38-byte actual overhead; 40 is a
+/// conservative upper bound with a small safety margin.
+const OVERFLOW_PAGE_FRAMING_BYTES: usize = 40;
+
+/// Maximum bytes stored in a single overflow page.
+/// Sized to fill a page while leaving room for CBOR framing overhead.
+/// With PAGE_SIZE=4096: OVERFLOW_LIMIT = 4096 - 40 = 4056.
+const OVERFLOW_LIMIT: usize = pager::PAGE_SIZE as usize - OVERFLOW_PAGE_FRAMING_BYTES;
+
 #[allow(dead_code)]
 const CHUNK_THRESHOLD: usize = 55;
 
@@ -653,8 +664,6 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
     //  ^ page_idx
 
     assert!(rest.len() > 0);
-
-    const OVERFLOW_LIMIT: usize = 100;
 
     let mut page_idx = pager.allocate();
     let first_page_idx = page_idx;

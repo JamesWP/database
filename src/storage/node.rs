@@ -307,6 +307,7 @@ impl InteriorNodePage {
 }
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OverflowPage {
+    #[serde(with = "serde_bytes")]
     content: Vec<u8>,
     continuation: Option<u32>,
 }
@@ -503,6 +504,20 @@ mod test {
             assert_eq!(right.keys.len() + 1, right.edges.len());
             // Total keys accounted for (left + promoted + right = original)
             assert_eq!(left.keys.len() + 1 + right.keys.len(), n_keys);
+        }
+    }
+
+    #[test]
+    fn measure_overflow_scaling() {
+        fn cbor_size<T: serde::Serialize>(v: &T) -> usize {
+            let mut buf = vec![];
+            ciborium::ser::into_writer(v, &mut buf).unwrap();
+            buf.len()
+        }
+        for n in [0usize, 23, 24, 100, 255, 256, 3545, 4000, 4050, 4055, 4056] {
+            let page = NodePage::OverflowPage(OverflowPage::new(vec![0u8; n], None));
+            let size = cbor_size(&page);
+            println!("content={n} -> total={size}, overhead={}", size - n);
         }
     }
 
