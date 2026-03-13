@@ -105,8 +105,27 @@ const OVERFLOW_PAGE_FRAMING_BYTES: usize = 40;
 /// With PAGE_SIZE=4096: OVERFLOW_LIMIT = 4096 - 40 = 4056.
 const OVERFLOW_LIMIT: usize = pager::PAGE_SIZE as usize - OVERFLOW_PAGE_FRAMING_BYTES;
 
-#[allow(dead_code)]
-const CHUNK_THRESHOLD: usize = 55;
+/// Minimum number of cells that must fit on a leaf page to maintain adequate B-tree fill
+/// factor after a split. After splitting, each half has ≥ MIN_CELLS_PER_PAGE / 2 cells,
+/// which is the minimum for a valid non-root leaf node.
+const MIN_CELLS_PER_PAGE: usize = 4;
+
+/// Conservative CBOR framing overhead for a `NodePage::Leaf(LeafNodePage)` with zero cells.
+/// Measured empirically — see `measure_cbor_framing_overhead` in node.rs (actual: 14 bytes).
+const LEAF_PAGE_BASE_FRAMING_BYTES: usize = 15;
+
+/// Conservative CBOR framing overhead per `Cell` (key bytes + struct wrapper overhead).
+/// The key is always 8 bytes (u64 rowid big-endian). Inline value bytes are added on top.
+/// Measured empirically — see `measure_cbor_framing_overhead` in node.rs (actual: 11 bytes).
+const CELL_FRAMING_BYTES: usize = 15;
+
+/// Maximum inline value bytes stored directly in a `Cell` on a leaf page.
+/// Derived so that `MIN_CELLS_PER_PAGE` cells can always fit on one page.
+/// With PAGE_SIZE=4096: CHUNK_THRESHOLD = (4096 - 15) / 4 - 15 = 1005.
+/// Typical SQL rows (< 500 bytes) now store inline with no overflow pages.
+const CHUNK_THRESHOLD: usize = (pager::PAGE_SIZE as usize - LEAF_PAGE_BASE_FRAMING_BYTES)
+    / MIN_CELLS_PER_PAGE
+    - CELL_FRAMING_BYTES;
 
 /// Mutable cursor implementation
 impl<'a, PagerRef> Cursor<'a, PagerRef>
