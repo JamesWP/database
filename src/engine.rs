@@ -91,6 +91,11 @@ impl Engine {
     }
 
     /// Get a reference to the registers for inspection.
+    /// Returns the index of the next instruction to be executed.
+    pub fn pc(&self) -> usize {
+        self.program.current_index()
+    }
+
     pub fn registers(&self) -> &Registers {
         &self.registers
     }
