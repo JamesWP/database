@@ -99,7 +99,7 @@ impl Drop for Pager {
     }
 }
 
-const PAGE_SIZE: u64 = 2 << 11;
+pub(crate) const PAGE_SIZE: u64 = 2 << 11;
 
 #[derive(Debug)]
 pub enum EncodingError {
