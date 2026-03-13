@@ -164,18 +164,36 @@ fn write_leaf_node<W: Write>(
     let label = cells.join("|");
     writeln!(output, "\t{} [label=\"{label}\"];", node_name_str(page_idx))?;
 
-    // Overflow stubs
-    for (i, overflow_page) in overflow_stubs {
-        let overflow_name = format!("node_{page_idx}_c{i}_overflow");
-        writeln!(
-            output,
-            "\t{overflow_name} [label=\"overflow\\n(page {overflow_page})\" shape=ellipse style=dashed];"
-        )?;
-        writeln!(
-            output,
-            "\t{}:c{i} -> {overflow_name} [style=dashed];",
-            node_name_str(page_idx)
-        )?;
+    // Overflow chains: follow continuation pointers until the end
+    for (i, first_overflow_page) in overflow_stubs {
+        let mut prev_name = format!("{}:c{i}", node_name_str(page_idx));
+        let mut cur_page = first_overflow_page;
+        let mut hop = 0usize;
+
+        loop {
+            let overflow_name = format!("node_{page_idx}_c{i}_overflow{hop}");
+            let pager = btree.pager.borrow();
+            let page: NodePage = pager.get_and_decode(cur_page);
+            let NodePage::OverflowPage(overflow) = page else {
+                break;
+            };
+            let continuation = overflow.continuation();
+            let bytes = overflow.value().len();
+            writeln!(
+                output,
+                "\t{overflow_name} [label=\"overflow\\n(page {cur_page}, {bytes}B)\" shape=ellipse style=dashed];"
+            )?;
+            writeln!(output, "\t{prev_name} -> {overflow_name} [style=dashed];")?;
+
+            match continuation {
+                None => break,
+                Some(next_page) => {
+                    prev_name = overflow_name;
+                    cur_page = next_page;
+                    hop += 1;
+                }
+            }
+        }
     }
 
     Ok(())
