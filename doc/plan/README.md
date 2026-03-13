@@ -65,7 +65,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AB** | Non-Correlated Subqueries | 4 | [phase-ab-subqueries.md](phase-ab-subqueries.md) | Planned |
 | **AC** | Join Improvements | 6 | [phase-ac-join-improvements.md](completed/phase-ac-join-improvements.md) | Completed |
 | **AD** | Page-Geometry-Aware Overflow Thresholds | 4 | [phase-ad-overflow-thresholds.md](completed/phase-ad-overflow-thresholds.md) | Completed |
-| **AE** | TUI Bytecode Debugger | 3 | [phase-ae-tui-debugger.md](phase-ae-tui-debugger.md) | Planned |
+| **AE** | TUI Bytecode Debugger | 3 | [phase-ae-tui-debugger.md](completed/phase-ae-tui-debugger.md) | Completed |
 | **AF** | Covering Indexes | 3 | [phase-af-covering-indexes.md](completed/phase-af-covering-indexes.md) | Completed |
 
 ## Future
