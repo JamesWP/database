@@ -1264,7 +1264,7 @@ mod test {
     use std::collections::BTreeMap;
     use std::io::Read;
 
-    use super::{BTree, CursorPosition};
+    use super::{BTree, CursorPosition, CHUNK_THRESHOLD, OVERFLOW_LIMIT};
 
     #[test]
     fn test_create_blank() {
@@ -2886,5 +2886,123 @@ mod test {
                 "All keys should be accessible after splits"
             );
         }
+    }
+
+    /// Return the number of pages currently allocated in the btree's pager.
+    fn page_count(btree: &BTree) -> u32 {
+        btree.pager.borrow().get_file_size_pages()
+    }
+
+    /// Insert a value and return the number of overflow pages allocated (pages_after - pages_before - 1).
+    /// The -1 accounts for the leaf page that always exists.
+    fn overflow_pages_for(btree: &mut BTree, root: u32, key: u64, value: Vec<u8>) -> u32 {
+        let before = page_count(btree);
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert_u64(key, value);
+        }
+        let after = page_count(btree);
+        // Subtract 1 for any potential leaf split page; use saturating sub to avoid underflow
+        after.saturating_sub(before)
+    }
+
+    #[test]
+    fn test_chunk_threshold_no_overflow() {
+        // A value of exactly CHUNK_THRESHOLD bytes should store inline — no overflow pages.
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let value = vec![0xAAu8; CHUNK_THRESHOLD];
+        let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
+        assert_eq!(
+            pages_added, 0,
+            "CHUNK_THRESHOLD bytes should store inline (no overflow pages), but got {pages_added} new pages"
+        );
+
+        // Verify round-trip
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_readonly();
+        cursor.first();
+        let mut buf = Vec::new();
+        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, value);
+    }
+
+    #[test]
+    fn test_chunk_threshold_plus_one_spills_to_one_overflow_page() {
+        // A value of CHUNK_THRESHOLD + 1 bytes should spill to exactly one overflow page.
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let value = vec![0x55u8; CHUNK_THRESHOLD + 1];
+        let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
+        assert_eq!(
+            pages_added, 1,
+            "CHUNK_THRESHOLD+1 bytes should use exactly 1 overflow page, but got {pages_added} new pages"
+        );
+
+        // Verify round-trip
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_readonly();
+        cursor.first();
+        let mut buf = Vec::new();
+        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, value);
+    }
+
+    #[test]
+    fn test_overflow_limit_boundary_two_pages() {
+        // A value of CHUNK_THRESHOLD + OVERFLOW_LIMIT bytes:
+        //   - CHUNK_THRESHOLD bytes inline
+        //   - OVERFLOW_LIMIT bytes in exactly one overflow page
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let value = vec![0x77u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT];
+        let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
+        assert_eq!(
+            pages_added, 1,
+            "CHUNK_THRESHOLD + OVERFLOW_LIMIT bytes should fit in exactly 1 overflow page, got {pages_added}"
+        );
+
+        // Verify round-trip
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_readonly();
+        cursor.first();
+        let mut buf = Vec::new();
+        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, value);
+    }
+
+    #[test]
+    fn test_overflow_chain_three_pages() {
+        // A value of CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 + 1 bytes:
+        //   - CHUNK_THRESHOLD bytes inline
+        //   - OVERFLOW_LIMIT bytes in page 1
+        //   - OVERFLOW_LIMIT bytes in page 2
+        //   - 1 byte in page 3
+        // Total: 3 overflow pages
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        let value = vec![0x33u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 + 1];
+        let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
+        assert_eq!(
+            pages_added, 3,
+            "CHUNK_THRESHOLD + OVERFLOW_LIMIT*2 + 1 bytes should create 3 overflow pages, got {pages_added}"
+        );
+
+        // Verify round-trip
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_readonly();
+        cursor.first();
+        let mut buf = Vec::new();
+        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, value);
     }
 }
