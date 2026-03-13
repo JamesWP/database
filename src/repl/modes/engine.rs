@@ -1,6 +1,6 @@
 use colored::Colorize;
 
-use crate::repl::{CommandResult, Mode, ModeId, SharedState};
+use crate::repl::{tui_debugger::TuiDebugger, CommandResult, Mode, ModeId, SharedState};
 use database::compiler::{compile, CompiledProgram};
 use database::engine::registers::RegisterValue;
 use database::engine::{Engine, StepSuccess};
@@ -253,6 +253,22 @@ impl Mode for EngineMode {
                 ),
             },
 
+            ["debug"] => {
+                let program = match &self.program {
+                    Some(p) => p.clone(),
+                    None => {
+                        return CommandResult::Message(
+                            "No program loaded. Use 'compile <sql>' first.".to_string(),
+                        )
+                    }
+                };
+                let debugger = TuiDebugger::new(program, (*shared.btree).clone());
+                match debugger.run() {
+                    Ok(()) => CommandResult::Message("Debugger exited.".to_string()),
+                    Err(e) => CommandResult::Error(format!("TUI error: {e}")),
+                }
+            }
+
             ["clear"] | ["reset"] => {
                 self.program = None;
                 self.step_state = None;
@@ -271,6 +287,7 @@ impl Mode for EngineMode {
   run                 Run program to completion, printing each yielded row
   registers/regs      Print current register state
   restart             Reset execution to instruction 0
+  debug               Launch interactive TUI debugger (step through bytecode visually)
   clear/reset         Clear compiled program"#
             .to_string()
     }
