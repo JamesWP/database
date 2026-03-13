@@ -520,7 +520,10 @@ mod test {
         }
 
         let overflow_no_cont = NodePage::OverflowPage(OverflowPage::new(vec![], None));
-        let overflow_with_cont = NodePage::OverflowPage(OverflowPage::new(vec![], Some(0)));
+        let overflow_with_cont_small = NodePage::OverflowPage(OverflowPage::new(vec![], Some(0)));
+        // Worst-case continuation: u32::MAX encodes as 5 CBOR bytes
+        let overflow_with_cont_large =
+            NodePage::OverflowPage(OverflowPage::new(vec![], Some(u32::MAX)));
         let leaf_empty = NodePage::Leaf(LeafNodePage::default());
         let cell_empty = Cell::new(vec![0u8; 8], vec![], None);
         // Measure a leaf with one empty cell to get per-cell framing overhead
@@ -529,7 +532,8 @@ mod test {
         let leaf_one_cell_page = NodePage::Leaf(leaf_one_cell);
 
         let overflow_no_cont_size = cbor_size(&overflow_no_cont);
-        let overflow_with_cont_size = cbor_size(&overflow_with_cont);
+        let overflow_with_cont_small_size = cbor_size(&overflow_with_cont_small);
+        let overflow_with_cont_large_size = cbor_size(&overflow_with_cont_large);
         let leaf_empty_size = cbor_size(&leaf_empty);
         let leaf_one_cell_size = cbor_size(&leaf_one_cell_page);
         let cell_size = cbor_size(&cell_empty);
@@ -539,8 +543,12 @@ mod test {
             overflow_no_cont_size
         );
         println!(
-            "overflow_with_cont (with u32 continuation): {} bytes",
-            overflow_with_cont_size
+            "overflow_with_cont Some(0) (min u32): {} bytes",
+            overflow_with_cont_small_size
+        );
+        println!(
+            "overflow_with_cont Some(u32::MAX) (max u32): {} bytes",
+            overflow_with_cont_large_size
         );
         println!("leaf_empty (base leaf framing): {} bytes", leaf_empty_size);
         println!("leaf_one_cell: {} bytes", leaf_one_cell_size);
@@ -554,11 +562,13 @@ mod test {
         // Each constant must be >= the measured value so the derived OVERFLOW_LIMIT and
         // CHUNK_THRESHOLD are safe lower bounds (not over-aggressive thresholds).
 
-        // OVERFLOW_PAGE_FRAMING_BYTES = 40 must be >= overflow_with_cont_size
-        // (NodePage enum wrapper adds ~24 bytes on top of the inner OverflowPage struct)
+        // OVERFLOW_PAGE_FRAMING_BYTES = 44 must be >= worst-case framing:
+        // base (38) + content-header growth (+2 for len > 255) + u32 growth (+4 for u32::MAX)
+        // The measured value here only covers the empty-content framing; the content-header
+        // growth is accounted for separately via the +2 in the constant derivation comment.
         assert!(
-            overflow_with_cont_size <= 40,
-            "overflow_with_cont framing ({overflow_with_cont_size}) exceeds constant OVERFLOW_PAGE_FRAMING_BYTES=40"
+            overflow_with_cont_large_size <= 44,
+            "overflow_with_cont max-u32 framing ({overflow_with_cont_large_size}) exceeds constant OVERFLOW_PAGE_FRAMING_BYTES=44"
         );
         // LEAF_PAGE_BASE_FRAMING_BYTES = 15 must be >= leaf_empty_size
         assert!(

@@ -96,13 +96,18 @@ type LeafNodeIterator = (u32, usize);
 
 /// CBOR framing overhead for `NodePage::OverflowPage { content, continuation: Some(u32) }`.
 /// Measured empirically — see `measure_cbor_framing_overhead` in node.rs.
-/// The NodePage enum wrapper accounts for most of the 38-byte actual overhead; 40 is a
-/// conservative upper bound with a small safety margin.
-const OVERFLOW_PAGE_FRAMING_BYTES: usize = 40;
+///
+/// The base framing with empty content and Some(0) is 38 bytes, but the actual overhead
+/// grows with both the content size and the continuation page number:
+///   - Content byte-string header: 1 byte for empty, 3 bytes for content > 255 bytes (+2)
+///   - Continuation u32: 1 byte for values 0-23, up to 5 bytes for values ≥ 65536 (+4)
+///
+/// Worst-case overhead = 38 + 2 (content header) + 4 (u32 continuation) = 44.
+const OVERFLOW_PAGE_FRAMING_BYTES: usize = 44;
 
 /// Maximum bytes stored in a single overflow page.
-/// Sized to fill a page while leaving room for CBOR framing overhead.
-/// With PAGE_SIZE=4096: OVERFLOW_LIMIT = 4096 - 40 = 4056.
+/// Sized to fill a page while leaving room for worst-case CBOR framing overhead.
+/// With PAGE_SIZE=4096: OVERFLOW_LIMIT = 4096 - 44 = 4052.
 const OVERFLOW_LIMIT: usize = pager::PAGE_SIZE as usize - OVERFLOW_PAGE_FRAMING_BYTES;
 
 /// Minimum number of cells that must fit on a leaf page to maintain adequate B-tree fill
