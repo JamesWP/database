@@ -89,7 +89,7 @@ macro_rules! init {
 }
 
 /// A compiled program ready for execution by the VM.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompiledProgram {
     /// The bytecode operations
     pub operations: Vec<Operation>,
