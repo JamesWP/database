@@ -332,7 +332,7 @@ impl OverflowPage {
 mod test {
     use std::collections::HashSet;
 
-    use super::Cell;
+    use super::{Cell, NodePage, OverflowPage};
 
     use super::{InteriorNodePage, LeafNodePage, SearchResult};
 
@@ -504,6 +504,72 @@ mod test {
             // Total keys accounted for (left + promoted + right = original)
             assert_eq!(left.keys.len() + 1 + right.keys.len(), n_keys);
         }
+    }
+
+    /// Measure the CBOR framing overhead for OverflowPage and LeafNodePage structures.
+    ///
+    /// Run with `cargo test measure_cbor_framing -- --nocapture` to see byte counts.
+    /// These values inform the derived overflow constants in btree.rs.
+    #[test]
+    fn measure_cbor_framing_overhead() {
+        fn cbor_size<T: serde::Serialize>(v: &T) -> usize {
+            let mut buf = vec![];
+            ciborium::ser::into_writer(v, &mut buf).unwrap();
+            buf.len()
+        }
+
+        let overflow_no_cont = NodePage::OverflowPage(OverflowPage::new(vec![], None));
+        let overflow_with_cont = NodePage::OverflowPage(OverflowPage::new(vec![], Some(0)));
+        let leaf_empty = NodePage::Leaf(LeafNodePage::default());
+        let cell_empty = Cell::new(vec![0u8; 8], vec![], None);
+        // Measure a leaf with one empty cell to get per-cell framing overhead
+        let mut leaf_one_cell = LeafNodePage::default();
+        leaf_one_cell.insert_item_at_index(0, Cell::new(vec![0u8; 8], vec![], None));
+        let leaf_one_cell_page = NodePage::Leaf(leaf_one_cell);
+
+        let overflow_no_cont_size = cbor_size(&overflow_no_cont);
+        let overflow_with_cont_size = cbor_size(&overflow_with_cont);
+        let leaf_empty_size = cbor_size(&leaf_empty);
+        let leaf_one_cell_size = cbor_size(&leaf_one_cell_page);
+        let cell_size = cbor_size(&cell_empty);
+
+        println!(
+            "overflow_no_cont (base framing): {} bytes",
+            overflow_no_cont_size
+        );
+        println!(
+            "overflow_with_cont (with u32 continuation): {} bytes",
+            overflow_with_cont_size
+        );
+        println!("leaf_empty (base leaf framing): {} bytes", leaf_empty_size);
+        println!("leaf_one_cell: {} bytes", leaf_one_cell_size);
+        println!(
+            "per-cell framing (leaf_one_cell - leaf_empty): {} bytes",
+            leaf_one_cell_size - leaf_empty_size
+        );
+        println!("cell_empty (standalone): {} bytes", cell_size);
+
+        // Validate the conservative upper bounds used in btree.rs constants.
+        // Each constant must be >= the measured value so the derived OVERFLOW_LIMIT and
+        // CHUNK_THRESHOLD are safe lower bounds (not over-aggressive thresholds).
+
+        // OVERFLOW_PAGE_FRAMING_BYTES = 40 must be >= overflow_with_cont_size
+        // (NodePage enum wrapper adds ~24 bytes on top of the inner OverflowPage struct)
+        assert!(
+            overflow_with_cont_size <= 40,
+            "overflow_with_cont framing ({overflow_with_cont_size}) exceeds constant OVERFLOW_PAGE_FRAMING_BYTES=40"
+        );
+        // LEAF_PAGE_BASE_FRAMING_BYTES = 15 must be >= leaf_empty_size
+        assert!(
+            leaf_empty_size <= 15,
+            "leaf_empty framing ({leaf_empty_size}) exceeds constant LEAF_PAGE_BASE_FRAMING_BYTES=15"
+        );
+        // CELL_FRAMING_BYTES = 15 must be >= per-cell overhead (leaf_one_cell - leaf_empty)
+        let per_cell_framing = leaf_one_cell_size - leaf_empty_size;
+        assert!(
+            per_cell_framing <= 15,
+            "per-cell framing ({per_cell_framing}) exceeds constant CELL_FRAMING_BYTES=15"
+        );
     }
 
     proptest! {
