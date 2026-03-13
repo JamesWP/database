@@ -1,6 +1,7 @@
 mod mode;
 pub mod modes;
 mod shared;
+pub(crate) mod tui_debugger;
 
 use std::collections::HashMap;
 

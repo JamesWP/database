@@ -214,6 +214,10 @@ impl ProgramCode {
     pub(crate) fn set_next_operation_index(&mut self, index: usize) {
         self.curent_operation_index = index;
     }
+
+    pub(crate) fn current_index(&self) -> usize {
+        self.curent_operation_index
+    }
 }
 
 impl Reg {
