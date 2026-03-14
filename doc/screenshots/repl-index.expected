@@ -1,3 +1,579 @@
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db>
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db>
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db>
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql>
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql>
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql>
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql>
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql>
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql>
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql>
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql>
+────────────────────────────────────────────────────────────────────────────────
 > db demo-preloaded.db
 Path "demo-preloaded.db" exists. opening
 db> enter sql
@@ -14,3 +590,123 @@ sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
 3 │ "      Scan users [cols: id, name, age]"
 (4 rows)
 sql> CREATE INDEX idx_age ON users (age)
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql> CREATE INDEX idx_age ON users (age)
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql> CREATE INDEX idx_age ON users (age)
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql> CREATE INDEX idx_age ON users (age)
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql> CREATE INDEX idx_age ON users (age)
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql> CREATE INDEX idx_age ON users (age)
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql> CREATE INDEX idx_age ON users (age)
+────────────────────────────────────────────────────────────────────────────────
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter sql
+Entered sql mode
+sql> SELECT * FROM users WHERE age = 30 ORDER BY age
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+(1 rows)
+sql> EXPLAIN SELECT * FROM users WHERE age = 30 ORDER BY age
+0 │ "Sort [age:2:2 ASC]"
+1 │ "  Project [id:0, name:1, age:2]"
+2 │ "    Filter [age:2 = 30]"
+3 │ "      Scan users [cols: id, name, age]"
+(4 rows)
+sql> CREATE INDEX idx_age ON users (age)
+────────────────────────────────────────────────────────────────────────────────
