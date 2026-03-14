@@ -132,6 +132,10 @@ sql> EXPLAIN SELECT * FROM users WHERE age = 30
 
 ### Debug modes
 
+TUI Debugger:
+![TUI debugger](doc/screenshots/repl-debug.gif)
+
+REPL:
 ```
 db> modes
 Available modes:
