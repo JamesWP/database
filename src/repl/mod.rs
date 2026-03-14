@@ -8,7 +8,7 @@ use std::collections::HashMap;
 pub use mode::{CommandResult, Mode, ModeFactory, ModeId};
 pub use shared::SharedState;
 
-use modes::{BTreeMode, EngineMode, ParserMode, PlannerMode, SqlMode};
+use modes::{BTreeMode, EngineMode, FileMode, ParserMode, PlannerMode, SqlMode};
 
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
@@ -28,6 +28,7 @@ impl Repl {
         mode_factories.insert(ModeId::Planner, |_| Box::new(PlannerMode::new()));
         mode_factories.insert(ModeId::Engine, |_| Box::new(EngineMode::new()));
         mode_factories.insert(ModeId::Sql, |_| Box::new(SqlMode::new()));
+        mode_factories.insert(ModeId::File, |_| Box::new(FileMode::new()));
 
         Repl {
             shared,

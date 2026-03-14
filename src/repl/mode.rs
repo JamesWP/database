@@ -8,6 +8,7 @@ pub enum ModeId {
     Planner,
     Engine,
     Sql,
+    File,
 }
 
 impl ModeId {
@@ -18,6 +19,7 @@ impl ModeId {
             ModeId::Planner => "planner",
             ModeId::Engine => "engine",
             ModeId::Sql => "sql",
+            ModeId::File => "file",
         }
     }
 
@@ -28,6 +30,7 @@ impl ModeId {
             ModeId::Planner => "Query planning and logical plans",
             ModeId::Engine => "VM bytecode execution",
             ModeId::Sql => "Run SQL statements",
+            ModeId::File => "Execute SQL statements from a file",
         }
     }
 
@@ -38,6 +41,7 @@ impl ModeId {
             ModeId::Planner,
             ModeId::Engine,
             ModeId::Sql,
+            ModeId::File,
         ]
     }
 }
@@ -52,6 +56,7 @@ impl TryFrom<&str> for ModeId {
             "planner" => Ok(ModeId::Planner),
             "engine" => Ok(ModeId::Engine),
             "sql" => Ok(ModeId::Sql),
+            "file" => Ok(ModeId::File),
             _ => Err(()),
         }
     }
