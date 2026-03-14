@@ -292,7 +292,7 @@ pub fn execute(sql: &str, btree: &mut BTree) -> Result<ExecuteResult, ExecuteErr
     }
 }
 
-fn build_explain_schema(btree: &BTree) -> ExplainSchema {
+pub fn build_explain_schema(btree: &BTree) -> ExplainSchema {
     let mut schema = ExplainSchema::default();
     for (obj_type, name, tbl_name, rootpage, sql) in btree.scan_schema_entries() {
         match obj_type.as_str() {

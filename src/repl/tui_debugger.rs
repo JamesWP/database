@@ -15,9 +15,12 @@ use ratatui::{
 };
 
 use database::compiler::CompiledProgram;
+use database::db::build_explain_schema;
 use database::engine::registers::RegisterValue;
 use database::engine::scalarvalue::ScalarValue;
 use database::engine::{Engine, StepSuccess};
+use database::explain::format_plan;
+use database::planner::LogicalPlan;
 use database::storage::BTree;
 
 /// Outcome of a single VM step, used to control `do_run_to_yield`.
@@ -36,11 +39,29 @@ pub struct TuiDebugger {
     yielded_rows: Vec<Vec<ScalarValue>>,
     /// Cached rendered results table; rebuilt only when `yielded_rows` changes.
     results_cache: Vec<Line<'static>>,
+    /// Source SQL of the compiled program.
+    source_sql: String,
+    /// EXPLAIN plan lines for the header pane.
+    plan_lines: Vec<String>,
 }
 
 impl TuiDebugger {
-    pub fn new(program: CompiledProgram, btree: BTree) -> Self {
+    pub fn new(
+        program: CompiledProgram,
+        btree: BTree,
+        source_sql: String,
+        logical_plan: Option<LogicalPlan>,
+    ) -> Self {
         let engine = Engine::from_compiled_with_btree(&program, btree.clone());
+        let plan_lines = if let Some(plan) = &logical_plan {
+            let schema = build_explain_schema(&btree);
+            format_plan(plan, &schema)
+                .into_iter()
+                .map(|(id, text)| format!("{id:>3}  {text}"))
+                .collect()
+        } else {
+            vec!["(no plan)".to_string()]
+        };
         TuiDebugger {
             program,
             btree,
@@ -49,6 +70,8 @@ impl TuiDebugger {
             output_log: Vec::new(),
             yielded_rows: Vec::new(),
             results_cache: Vec::new(),
+            source_sql,
+            plan_lines,
         }
     }
 
@@ -180,20 +203,62 @@ impl TuiDebugger {
     fn draw(&self, frame: &mut ratatui::Frame) {
         let pc = self.engine.pc();
 
-        let top_bottom = Layout::default()
+        // Header height = tallest of (sql lines, plan lines) + 2 for borders.
+        let sql_line_count = self.source_sql.lines().count().max(1);
+        let plan_line_count = self.plan_lines.len().max(1);
+        let header_height = (sql_line_count.max(plan_line_count) + 2) as u16;
+
+        let sections = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .constraints([
+                Constraint::Length(header_height),
+                Constraint::Min(0),
+            ])
             .split(frame.area());
+
+        // Split the remaining space 50/30 for bytecode+registers / log+results.
+        let sections = {
+            let rest = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .split(sections[1]);
+            [sections[0], rest[0], rest[1]]
+        };
+
+        let header_row = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(sections[0]);
 
         let top_row = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(top_bottom[0]);
+            .split(sections[1]);
 
         let bottom_row = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(top_bottom[1]);
+            .split(sections[2]);
+
+        // ── SQL query pane ─────────────────────────────────────────────────────
+        let sql_lines: Vec<Line> = self
+            .source_sql
+            .lines()
+            .map(|l| Line::from(format!(" {l}")))
+            .collect();
+        let sql_para = Paragraph::new(sql_lines)
+            .block(Block::default().borders(Borders::ALL).title(" Query "));
+        frame.render_widget(sql_para, header_row[0]);
+
+        // ── Query plan pane ────────────────────────────────────────────────────
+        let plan_lines: Vec<Line> = self
+            .plan_lines
+            .iter()
+            .map(|l| Line::from(format!(" {l}")))
+            .collect();
+        let plan_para = Paragraph::new(plan_lines)
+            .block(Block::default().borders(Borders::ALL).title(" Plan "));
+        frame.render_widget(plan_para, header_row[1]);
 
         // ── Bytecode pane ──────────────────────────────────────────────────────
         let items: Vec<ListItem> = self
