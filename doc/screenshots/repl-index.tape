@@ -1,4 +1,5 @@
 Output doc/screenshots/repl-index.gif
+Output doc/screenshots/repl-index.txt
 
 Set FontSize 14
 Set Width 900

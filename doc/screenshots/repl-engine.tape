@@ -1,4 +1,5 @@
 Output doc/screenshots/repl-engine.gif
+Output doc/screenshots/repl-engine.txt
 
 Set FontSize 14
 Set Width 900

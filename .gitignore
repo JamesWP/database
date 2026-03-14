@@ -4,6 +4,13 @@ test.dot
 test.svg
 big.db
 .vscode/settings.json
-doc/screenshots/demo*.db
+
+# Screenshot build artifacts
 demo.db
 demo-preloaded.db
+demo-preloaded.db.seed
+doc/screenshots/demo*.db
+doc/screenshots/*.txt
+doc/screenshots/*.checked
+test-out.gif
+test-out.txt
