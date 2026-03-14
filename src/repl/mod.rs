@@ -120,8 +120,8 @@ impl Repl {
             let line = match readline {
                 Ok(line) => line,
                 Err(ReadlineError::Interrupted) => {
-                    eprintln!("Press Ctrl+C again to quit");
-                    break;
+                    // Clear the current line (like bash Ctrl+C) and continue
+                    continue;
                 }
                 Err(ReadlineError::Eof) => break,
                 Err(err) => {
