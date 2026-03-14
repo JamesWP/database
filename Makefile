@@ -50,17 +50,9 @@ doc/screenshots/%.verified: doc/screenshots/%.txt
 	@! grep -E '(^Error:|panic|thread .* panicked)' $< || (echo "Errors found in $<" && false)
 	touch $@
 
-SCREENSHOTS = \
-	doc/screenshots/repl-sql.gif \
-	doc/screenshots/repl-index.gif \
-	doc/screenshots/repl-engine.gif \
-	doc/screenshots/repl-debug.gif
-
-VERIFIED = \
-	doc/screenshots/repl-sql.verified \
-	doc/screenshots/repl-index.verified \
-	doc/screenshots/repl-engine.verified \
-	doc/screenshots/repl-debug.verified
+TAPES       = $(wildcard doc/screenshots/*.tape)
+SCREENSHOTS = $(TAPES:.tape=.gif)
+VERIFIED    = $(TAPES:.tape=.verified)
 
 screenshots: $(VERIFIED) $(SCREENSHOTS)
 
