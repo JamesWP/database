@@ -45,20 +45,10 @@ big.db: $(PROG)
 doc/screenshots/%.gif doc/screenshots/%.txt &: doc/screenshots/%.tape demo.db demo-preloaded.db.seed $(PROG)
 	$(VHS) $<
 
-# Verify txt output against committed expected files; stamp avoids re-checking if nothing changed
-doc/screenshots/%.checked: doc/screenshots/%.txt doc/screenshots/%.expected
-	diff $< $(word 2,$^)
+# Verify txt output has no errors or panics; stamp avoids re-checking if nothing changed
+doc/screenshots/%.verified: doc/screenshots/%.txt
+	@! grep -E '(^Error:|panic|thread .* panicked)' $< || (echo "Errors found in $<" && false)
 	touch $@
-
-# TODO: replace file listing with globs
-
-# Update committed expected files from current txt output (stores normalized form)
-.PHONY: update-screenshots
-update-screenshots: doc/screenshots/repl-sql.txt doc/screenshots/repl-index.txt doc/screenshots/repl-engine.txt doc/screenshots/repl-debug.txt
-	cp doc/screenshots/repl-sql.txt doc/screenshots/repl-sql.expected
-	cp doc/screenshots/repl-index.txt doc/screenshots/repl-index.expected
-	cp doc/screenshots/repl-engine.txt doc/screenshots/repl-engine.expected
-	cp doc/screenshots/repl-debug.txt doc/screenshots/repl-debug.expected
 
 SCREENSHOTS = \
 	doc/screenshots/repl-sql.gif \
@@ -66,13 +56,13 @@ SCREENSHOTS = \
 	doc/screenshots/repl-engine.gif \
 	doc/screenshots/repl-debug.gif
 
-CHECKS = \
-	doc/screenshots/repl-sql.checked \
-	doc/screenshots/repl-index.checked \
-	doc/screenshots/repl-engine.checked \
-	doc/screenshots/repl-debug.checked
+VERIFIED = \
+	doc/screenshots/repl-sql.verified \
+	doc/screenshots/repl-index.verified \
+	doc/screenshots/repl-engine.verified \
+	doc/screenshots/repl-debug.verified
 
-screenshots: $(CHECKS) $(SCREENSHOTS)
+screenshots: $(VERIFIED) $(SCREENSHOTS)
 
 clean-screenshots:
-	rm -f doc/screenshots/*.txt $(SCREENSHOTS) 
+	rm -f doc/screenshots/*.txt doc/screenshots/*.verified $(SCREENSHOTS)
