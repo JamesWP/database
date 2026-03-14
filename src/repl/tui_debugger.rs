@@ -310,7 +310,7 @@ impl TuiDebugger {
         let log_lines: Vec<Line> = self
             .output_log
             .iter()
-            .map(|s| Line::from(s.as_str()))
+            .filter_map(|s| s.into_text().ok().and_then(|t| t.lines.into_iter().next()))
             .collect();
         let log_scroll = self
             .output_log
