@@ -20,6 +20,12 @@ use database::engine::scalarvalue::ScalarValue;
 use database::engine::{Engine, StepSuccess};
 use database::storage::BTree;
 
+/// Outcome of a single VM step, used to control `do_run_to_yield`.
+enum StepOutcome {
+    Continue,
+    Stop, // Yield, Halt, or Error — caller should break
+}
+
 pub struct TuiDebugger {
     program: CompiledProgram,
     btree: BTree,
@@ -88,22 +94,9 @@ impl TuiDebugger {
         Ok(())
     }
 
-    fn record_yield(&mut self, pc: usize, op_plain: &str, values: Vec<ScalarValue>) {
-        let row_display: Vec<String> = values.iter().map(|v| format!("{v}")).collect();
-        self.output_log.push(format!(
-            "Step {pc}: {op_plain}  → row: {}",
-            row_display.join(", ")
-        ));
-        self.yielded_rows.push(values);
-        self.rebuild_results_cache();
-    }
-
-    fn do_step(&mut self) {
-        if self.halted {
-            self.output_log
-                .push("Halted. Press R to restart.".to_string());
-            return;
-        }
+    /// Execute one VM instruction, append to the log, and record any yielded row.
+    /// Returns `Stop` when the caller should break out of a run loop.
+    fn execute_one_step(&mut self) -> StepOutcome {
         let pc = self.engine.pc();
         let op_plain = strip_ansi(
             &self
@@ -118,55 +111,44 @@ impl TuiDebugger {
                 self.halted = true;
                 self.output_log
                     .push(format!("Step {pc}: {op_plain}  → [halted]"));
+                StepOutcome::Stop
             }
             Ok(StepSuccess::Yield(values)) => {
-                self.record_yield(pc, &op_plain, values);
+                let row_display: Vec<String> = values.iter().map(|v| format!("{v}")).collect();
+                self.output_log.push(format!(
+                    "Step {pc}: {op_plain}  → row: {}",
+                    row_display.join(", ")
+                ));
+                self.yielded_rows.push(values);
+                self.rebuild_results_cache();
+                StepOutcome::Stop
             }
             Ok(StepSuccess::Continue) => {
                 self.output_log.push(format!("Step {pc}: {op_plain}"));
+                StepOutcome::Continue
             }
             Err(e) => {
                 self.halted = true;
                 self.output_log
                     .push(format!("Step {pc}: {op_plain}  → error: {e:?}"));
+                StepOutcome::Stop
             }
         }
     }
 
+    fn do_step(&mut self) {
+        if self.halted {
+            self.output_log
+                .push("Halted. Press R to restart.".to_string());
+            return;
+        }
+        self.execute_one_step();
+    }
+
     fn do_run_to_yield(&mut self) {
-        loop {
-            if self.halted {
+        while !self.halted {
+            if matches!(self.execute_one_step(), StepOutcome::Stop) {
                 break;
-            }
-            let pc = self.engine.pc();
-            let op_plain = strip_ansi(
-                &self
-                    .program
-                    .operations
-                    .get(pc)
-                    .map(|o| format!("{o}"))
-                    .unwrap_or_default(),
-            );
-            match self.engine.step() {
-                Ok(StepSuccess::Halt) => {
-                    self.halted = true;
-                    self.output_log
-                        .push(format!("Step {pc}: {op_plain}  → [halted]"));
-                    break;
-                }
-                Ok(StepSuccess::Yield(values)) => {
-                    self.record_yield(pc, &op_plain, values);
-                    break;
-                }
-                Ok(StepSuccess::Continue) => {
-                    self.output_log.push(format!("Step {pc}: {op_plain}"));
-                }
-                Err(e) => {
-                    self.halted = true;
-                    self.output_log
-                        .push(format!("Step {pc}: {op_plain}  → error: {e:?}"));
-                    break;
-                }
             }
         }
     }
