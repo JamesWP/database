@@ -39,10 +39,12 @@ pub struct TuiDebugger {
     yielded_rows: Vec<Vec<ScalarValue>>,
     /// Cached rendered results table; rebuilt only when `yielded_rows` changes.
     results_cache: Vec<Line<'static>>,
-    /// Source SQL of the compiled program.
-    source_sql: String,
-    /// EXPLAIN plan lines for the header pane.
-    plan_lines: Vec<String>,
+    /// Pre-rendered SQL query lines for the header pane (immutable after construction).
+    sql_display: Vec<Line<'static>>,
+    /// Pre-rendered EXPLAIN plan lines for the header pane (immutable after construction).
+    plan_display: Vec<Line<'static>>,
+    /// Height of the header pane in terminal rows (immutable after construction).
+    header_height: u16,
 }
 
 impl TuiDebugger {
@@ -53,7 +55,13 @@ impl TuiDebugger {
         logical_plan: Option<LogicalPlan>,
     ) -> Self {
         let engine = Engine::from_compiled_with_btree(&program, btree.clone());
-        let plan_lines = if let Some(plan) = &logical_plan {
+
+        let sql_display: Vec<Line<'static>> = source_sql
+            .lines()
+            .map(|l| Line::from(format!(" {l}")))
+            .collect();
+
+        let plan_strs: Vec<String> = if let Some(plan) = &logical_plan {
             let schema = build_explain_schema(&btree);
             format_plan(plan, &schema)
                 .into_iter()
@@ -62,6 +70,13 @@ impl TuiDebugger {
         } else {
             vec!["(no plan)".to_string()]
         };
+        let plan_display: Vec<Line<'static>> = plan_strs
+            .iter()
+            .map(|l| Line::from(format!(" {l}")))
+            .collect();
+
+        let header_height = (sql_display.len().max(plan_display.len()).max(1) + 2) as u16;
+
         TuiDebugger {
             program,
             btree,
@@ -70,8 +85,9 @@ impl TuiDebugger {
             output_log: Vec::new(),
             yielded_rows: Vec::new(),
             results_cache: Vec::new(),
-            source_sql,
-            plan_lines,
+            sql_display,
+            plan_display,
+            header_height,
         }
     }
 
@@ -203,60 +219,37 @@ impl TuiDebugger {
     fn draw(&self, frame: &mut ratatui::Frame) {
         let pc = self.engine.pc();
 
-        // Header height = tallest of (sql lines, plan lines) + 2 for borders.
-        let sql_line_count = self.source_sql.lines().count().max(1);
-        let plan_line_count = self.plan_lines.len().max(1);
-        let header_height = (sql_line_count.max(plan_line_count) + 2) as u16;
-
-        let sections = Layout::default()
+        let outer = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(header_height),
-                Constraint::Min(0),
-            ])
+            .constraints([Constraint::Length(self.header_height), Constraint::Min(0)])
             .split(frame.area());
-
-        // Split the remaining space 50/30 for bytecode+registers / log+results.
-        let sections = {
-            let rest = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                .split(sections[1]);
-            [sections[0], rest[0], rest[1]]
-        };
+        let inner = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(outer[1]);
 
         let header_row = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(sections[0]);
+            .split(outer[0]);
 
         let top_row = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(sections[1]);
+            .split(inner[0]);
 
         let bottom_row = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(sections[2]);
+            .split(inner[1]);
 
         // ── SQL query pane ─────────────────────────────────────────────────────
-        let sql_lines: Vec<Line> = self
-            .source_sql
-            .lines()
-            .map(|l| Line::from(format!(" {l}")))
-            .collect();
-        let sql_para = Paragraph::new(sql_lines)
+        let sql_para = Paragraph::new(self.sql_display.clone())
             .block(Block::default().borders(Borders::ALL).title(" Query "));
         frame.render_widget(sql_para, header_row[0]);
 
         // ── Query plan pane ────────────────────────────────────────────────────
-        let plan_lines: Vec<Line> = self
-            .plan_lines
-            .iter()
-            .map(|l| Line::from(format!(" {l}")))
-            .collect();
-        let plan_para = Paragraph::new(plan_lines)
+        let plan_para = Paragraph::new(self.plan_display.clone())
             .block(Block::default().borders(Borders::ALL).title(" Plan "));
         frame.render_widget(plan_para, header_row[1]);
 
