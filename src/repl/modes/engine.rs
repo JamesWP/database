@@ -4,8 +4,9 @@ use crate::repl::{tui_debugger::TuiDebugger, CommandResult, Mode, ModeId, Shared
 use database::compiler::{compile, CompiledProgram};
 use database::engine::registers::RegisterValue;
 use database::engine::{Engine, StepSuccess};
+use database::frontend::ast::Statement;
 use database::frontend::parse;
-use database::planner::plan;
+use database::planner::{extract_select_column_names, plan};
 use database::storage::BTree;
 
 struct StepState {
@@ -83,9 +84,16 @@ impl Mode for EngineMode {
                 }
 
                 match parse(&sql) {
-                    Ok(stmt) => match plan(stmt, &shared.btree) {
+                    Ok(stmt) => {
+                        let column_names = if let Statement::Select(ref select) = stmt {
+                            extract_select_column_names(select, &shared.btree)
+                        } else {
+                            vec![]
+                        };
+                        match plan(stmt, &shared.btree) {
                         Ok(logical_plan) => {
-                            let compiled = compile(&logical_plan);
+                            let mut compiled = compile(&logical_plan);
+                            compiled.column_names = column_names;
                             let msg = format!(
                                 "Compiled: {} operations, {} registers",
                                 compiled.operations.len(),
@@ -96,7 +104,8 @@ impl Mode for EngineMode {
                             CommandResult::Message(msg)
                         }
                         Err(e) => CommandResult::Error(format!("Plan error: {:?}", e)),
-                    },
+                        }
+                    }
                     Err(e) => CommandResult::Error(format!("Parse error: {:?}", e)),
                 }
             }
