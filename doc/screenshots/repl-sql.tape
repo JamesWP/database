@@ -1,4 +1,5 @@
 Output doc/screenshots/repl-sql.gif
+Output doc/screenshots/repl-sql.txt
 
 Set FontSize 14
 Set Width 900

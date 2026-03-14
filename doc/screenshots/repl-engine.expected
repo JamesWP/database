@@ -1,0 +1,35 @@
+> db demo-preloaded.db
+Path "demo-preloaded.db" exists. opening
+db> enter engine
+Entered engine mode
+engine> compile SELECT id, name FROM users WHERE age > 27 ORDER BY name
+Compiled: 28 operations, 11 registers
+engine> program
+Program (28 ops, 11 regs):
+   0  InitRBuf   R0
+   1  Open       R1, page:2
+   2  MoveCursor R1, First
+   3  GoTo       @4
+   4  MoveCursor R1, First
+   5  CanRead    R2, R1
+   6  GoToIfNot  @20, R2
+   7  ReadCursor [R3, R4, R5], R1
+   8  MoveCursor R1, Next
+   9  GoTo       @10
+  10  Copy       R6, R5
+  11  Store      R7, 27
+  12  Gt         R8, R6, R7
+  13  GoToIfNot  @5, R8
+  14  GoTo       @15
+  15  Copy       R9, R3
+  16  Copy       R10, R4
+  17  GoTo       @18
+  18  AppendRow  R0, [R9, R10]
+  19  GoTo       @5
+  20  SortRows   R0, 1 keys
+  21  RewindBuf  R0
+  22  NextRow    [R9, R10], R0, @27
+  23  GoTo       @25
+  24  GoTo       @22
+  25  Yield      [R9, R10]
+  26  GoTo       @24
