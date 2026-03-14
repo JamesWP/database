@@ -16,8 +16,8 @@ use ratatui::{
 
 use database::compiler::CompiledProgram;
 use database::engine::registers::RegisterValue;
-use database::engine::{Engine, StepSuccess};
 use database::engine::scalarvalue::ScalarValue;
+use database::engine::{Engine, StepSuccess};
 use database::storage::BTree;
 
 pub struct TuiDebugger {
@@ -28,6 +28,8 @@ pub struct TuiDebugger {
     output_log: Vec<String>,
     /// Rows yielded so far, for the query results pane.
     yielded_rows: Vec<Vec<ScalarValue>>,
+    /// Cached rendered results table; rebuilt only when `yielded_rows` changes.
+    results_cache: Vec<Line<'static>>,
 }
 
 impl TuiDebugger {
@@ -40,6 +42,7 @@ impl TuiDebugger {
             halted: false,
             output_log: Vec::new(),
             yielded_rows: Vec::new(),
+            results_cache: Vec::new(),
         }
     }
 
@@ -92,6 +95,7 @@ impl TuiDebugger {
             row_display.join(", ")
         ));
         self.yielded_rows.push(values);
+        self.rebuild_results_cache();
     }
 
     fn do_step(&mut self) {
@@ -172,7 +176,23 @@ impl TuiDebugger {
         self.halted = false;
         self.output_log.clear();
         self.yielded_rows.clear();
+        self.results_cache.clear();
         self.output_log.push("Restarted.".to_string());
+    }
+
+    /// Rebuild the cached results table lines from `yielded_rows`.
+    /// Called only when a new row is yielded or on restart.
+    fn rebuild_results_cache(&mut self) {
+        let text = build_results_table(&self.program.column_names, &self.yielded_rows);
+        self.results_cache = text
+            .lines()
+            .filter_map(|s| {
+                format!(" {s}")
+                    .into_text()
+                    .ok()
+                    .and_then(|t| t.lines.into_iter().next())
+            })
+            .collect();
     }
 
     fn draw(&self, frame: &mut ratatui::Frame) {
@@ -265,21 +285,12 @@ impl TuiDebugger {
             .scroll((log_scroll, 0));
         frame.render_widget(log_para, bottom_row[0]);
 
-        // ── Query results pane ─────────────────────────────────────────────────
-        let results_text = build_results_table(&self.program.column_names, &self.yielded_rows);
-        let results_lines: Vec<Line> = results_text
-            .lines()
-            .filter_map(|s| {
-                format!(" {s}") // left-pad one space
-                    .into_text()
-                    .ok()
-                    .and_then(|t| t.lines.into_iter().next())
-            })
-            .collect();
-        let results_scroll = results_lines
+        // ── Query results pane (pre-rendered cache) ────────────────────────────
+        let results_scroll = self
+            .results_cache
             .len()
             .saturating_sub(bottom_row[1].height as usize - 2) as u16;
-        let results_para = Paragraph::new(results_lines)
+        let results_para = Paragraph::new(self.results_cache.clone())
             .block(Block::default().borders(Borders::ALL).title(" Results "))
             .scroll((results_scroll, 0));
         frame.render_widget(results_para, bottom_row[1]);
