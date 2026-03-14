@@ -1,3 +1,756 @@
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql> INSERT INTO users VALUES (1, 'alice', 30), (2, 'bob', 25), (3, 'carol', 35), (
+4, 'dave', 28)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql> INSERT INTO users VALUES (1, 'alice', 30), (2, 'bob', 25), (3, 'carol', 35), (
+4, 'dave', 28)
+4
+(1 rows)
+sql>
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql> INSERT INTO users VALUES (1, 'alice', 30), (2, 'bob', 25), (3, 'carol', 35), (
+4, 'dave', 28)
+4
+(1 rows)
+sql>
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql> INSERT INTO users VALUES (1, 'alice', 30), (2, 'bob', 25), (3, 'carol', 35), (
+4, 'dave', 28)
+4
+(1 rows)
+sql>
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql> INSERT INTO users VALUES (1, 'alice', 30), (2, 'bob', 25), (3, 'carol', 35), (
+4, 'dave', 28)
+4
+(1 rows)
+sql> SELECT * FROM users WHERE age > 27 ORDER BY name
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
 > db demo.db
 Path "demo.db" does not exist. creating
 db> enter sql
@@ -16,3 +769,60 @@ id │ name    │ age
 4  │ "dave"  │ 28
 (3 rows)
 sql>
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql> INSERT INTO users VALUES (1, 'alice', 30), (2, 'bob', 25), (3, 'carol', 35), (
+4, 'dave', 28)
+4
+(1 rows)
+sql> SELECT * FROM users WHERE age > 27 ORDER BY name
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+3  │ "carol" │ 35
+4  │ "dave"  │ 28
+(3 rows)
+sql>
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> db demo.db
+Path "demo.db" does not exist. creating
+db> enter sql
+Entered sql mode
+sql> CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)
+Table 'users' created
+sql> INSERT INTO users VALUES (1, 'alice', 30), (2, 'bob', 25), (3, 'carol', 35), (
+4, 'dave', 28)
+4
+(1 rows)
+sql> SELECT * FROM users WHERE age > 27 ORDER BY name
+id │ name    │ age
+───┼─────────┼────
+1  │ "alice" │ 30
+3  │ "carol" │ 35
+4  │ "dave"  │ 28
+(3 rows)
+sql>
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────

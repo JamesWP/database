@@ -1,0 +1,2605 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sq
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inn
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+>
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+>
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db>
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db>
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db>
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+┌ Query ───────────────────────────────────────────────────────┐┌ Plan ────────────────────────────────────────────────────────┐
+│ SELECT id, name FROM employees WHERE dept_id = 1             ││   0  Project [id:0, name:1]                                  │
+│                                                              ││   1    Filter [dept_id:2 = 1]                                │
+│                                                              ││   2      Scan employees [cols: id, name, dept_id]            │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+┌ Bytecode ─────────────────────────────────────────────────────────────────┐┌ Registers ──────────────────────────────────────┐
+│►    0  Open       R0, page:3                                              ││                                                 │
+│     1  MoveCursor R0, First                                               ││                                                 │
+│     2  GoTo       @3                                                      ││                                                 │
+│     3  MoveCursor R0, First                                               ││                                                 │
+│     4  CanRead    R1, R0                                                  ││                                                 │
+│     5  GoToIfNot  @19, R1                                                 ││                                                 │
+│     6  ReadCursor [R2, R3, R4], R0                                        ││                                                 │
+│     7  MoveCursor R0, Next                                                ││                                                 │
+│     8  GoTo       @9                                                      ││                                                 │
+│     9  Copy       R5, R4                                                  ││                                                 │
+│    10  Store      R6, 1                                                   ││                                                 │
+│    11  Eq         R7, R5, R6                                              ││                                                 │
+│    12  GoToIfNot  @4, R7                                                  ││                                                 │
+│    13  GoTo       @14                                                     ││                                                 │
+│    14  Copy       R8, R2                                                  ││                                                 │
+│    15  Copy       R9, R3                                                  ││                                                 │
+│    16  GoTo       @17                                                     ││                                                 │
+│    17  Yield      [R8, R9]                                                ││                                                 │
+│    18  GoTo       @4                                                      ││                                                 │
+│    19  Halt                                                               ││                                                 │
+└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Steps  [Space/n] Step  [r] Run  [R] Restart  [q] Quit ───────┐┌ Results ─────────────────────────────────────────────────────┐
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+┌ Query ───────────────────────────────────────────────────────┐┌ Plan ────────────────────────────────────────────────────────┐
+│ SELECT id, name FROM employees WHERE dept_id = 1             ││   0  Project [id:0, name:1]                                  │
+│                                                              ││   1    Filter [dept_id:2 = 1]                                │
+│                                                              ││   2      Scan employees [cols: id, name, dept_id]            │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+┌ Bytecode ─────────────────────────────────────────────────────────────────┐┌ Registers ──────────────────────────────────────┐
+│     0  Open       R0, page:3                                              ││  r0 = <cursor>                                  │
+│     1  MoveCursor R0, First                                               ││  r1 = false                                     │
+│     2  GoTo       @3                                                      ││  r2 = 103                                       │
+│     3  MoveCursor R0, First                                               ││  r3 = "Diana"                                   │
+│     4  CanRead    R1, R0                                                  ││  r4 = 2                                         │
+│     5  GoToIfNot  @19, R1                                                 ││  r5 = 2                                         │
+│     6  ReadCursor [R2, R3, R4], R0                                        ││  r6 = 1                                         │
+│     7  MoveCursor R0, Next                                                ││  r7 = false                                     │
+│     8  GoTo       @9                                                      ││  r8 = 102                                       │
+│     9  Copy       R5, R4                                                  ││  r9 = "Charlie"                                 │
+│    10  Store      R6, 1                                                   ││                                                 │
+│    11  Eq         R7, R5, R6                                              ││                                                 │
+│    12  GoToIfNot  @4, R7                                                  ││                                                 │
+│    13  GoTo       @14                                                     ││                                                 │
+│    14  Copy       R8, R2                                                  ││                                                 │
+│    15  Copy       R9, R3                                                  ││                                                 │
+│    16  GoTo       @17                                                     ││                                                 │
+│    17  Yield      [R8, R9]                                                ││                                                 │
+│    18  GoTo       @4                                                      ││                                                 │
+│    19  Halt                                                               ││                                                 │
+└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Steps  [Space/n] Step  [r] Run  [R] Restart  [q] Quit ───────┐┌ Results ─────────────────────────────────────────────────────┐
+│Step 19: Halt  → [halted]                                     ││ id  │ name                                                   │
+│Halted. Press R to restart.                                   ││ ────┼──────────                                              │
+│Halted. Press R to restart.                                   ││ 100 │ "Alice"                                                │
+│Halted. Press R to restart.                                   ││ 102 │ "Charlie"                                              │
+│Halted. Press R to restart.                                   ││ (2 rows)                                                     │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+┌ Query ───────────────────────────────────────────────────────┐┌ Plan ────────────────────────────────────────────────────────┐
+│ SELECT id, name FROM employees WHERE dept_id = 1             ││   0  Project [id:0, name:1]                                  │
+│                                                              ││   1    Filter [dept_id:2 = 1]                                │
+│                                                              ││   2      Scan employees [cols: id, name, dept_id]            │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+┌ Bytecode ─────────────────────────────────────────────────────────────────┐┌ Registers ──────────────────────────────────────┐
+│     0  Open       R0, page:3                                              ││  r0 = <cursor>                                  │
+│     1  MoveCursor R0, First                                               ││  r1 = false                                     │
+│     2  GoTo       @3                                                      ││  r2 = 103                                       │
+│     3  MoveCursor R0, First                                               ││  r3 = "Diana"                                   │
+│     4  CanRead    R1, R0                                                  ││  r4 = 2                                         │
+│     5  GoToIfNot  @19, R1                                                 ││  r5 = 2                                         │
+│     6  ReadCursor [R2, R3, R4], R0                                        ││  r6 = 1                                         │
+│     7  MoveCursor R0, Next                                                ││  r7 = false                                     │
+│     8  GoTo       @9                                                      ││  r8 = 102                                       │
+│     9  Copy       R5, R4                                                  ││  r9 = "Charlie"                                 │
+│    10  Store      R6, 1                                                   ││                                                 │
+│    11  Eq         R7, R5, R6                                              ││                                                 │
+│    12  GoToIfNot  @4, R7                                                  ││                                                 │
+│    13  GoTo       @14                                                     ││                                                 │
+│    14  Copy       R8, R2                                                  ││                                                 │
+│    15  Copy       R9, R3                                                  ││                                                 │
+│    16  GoTo       @17                                                     ││                                                 │
+│    17  Yield      [R8, R9]                                                ││                                                 │
+│    18  GoTo       @4                                                      ││                                                 │
+│    19  Halt                                                               ││                                                 │
+└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Steps  [Space/n] Step  [r] Run  [R] Restart  [q] Quit ───────┐┌ Results ─────────────────────────────────────────────────────┐
+│Step 19: Halt  → [halted]                                     ││ id  │ name                                                   │
+│Halted. Press R to restart.                                   ││ ────┼──────────                                              │
+│Halted. Press R to restart.                                   ││ 100 │ "Alice"                                                │
+│Halted. Press R to restart.                                   ││ 102 │ "Charlie"                                              │
+│Halted. Press R to restart.                                   ││ (2 rows)                                                     │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+┌ Query ───────────────────────────────────────────────────────┐┌ Plan ────────────────────────────────────────────────────────┐
+│ SELECT id, name FROM employees WHERE dept_id = 1             ││   0  Project [id:0, name:1]                                  │
+│                                                              ││   1    Filter [dept_id:2 = 1]                                │
+│                                                              ││   2      Scan employees [cols: id, name, dept_id]            │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+┌ Bytecode ─────────────────────────────────────────────────────────────────┐┌ Registers ──────────────────────────────────────┐
+│     0  Open       R0, page:3                                              ││  r0 = <cursor>                                  │
+│     1  MoveCursor R0, First                                               ││  r1 = false                                     │
+│     2  GoTo       @3                                                      ││  r2 = 103                                       │
+│     3  MoveCursor R0, First                                               ││  r3 = "Diana"                                   │
+│     4  CanRead    R1, R0                                                  ││  r4 = 2                                         │
+│     5  GoToIfNot  @19, R1                                                 ││  r5 = 2                                         │
+│     6  ReadCursor [R2, R3, R4], R0                                        ││  r6 = 1                                         │
+│     7  MoveCursor R0, Next                                                ││  r7 = false                                     │
+│     8  GoTo       @9                                                      ││  r8 = 102                                       │
+│     9  Copy       R5, R4                                                  ││  r9 = "Charlie"                                 │
+│    10  Store      R6, 1                                                   ││                                                 │
+│    11  Eq         R7, R5, R6                                              ││                                                 │
+│    12  GoToIfNot  @4, R7                                                  ││                                                 │
+│    13  GoTo       @14                                                     ││                                                 │
+│    14  Copy       R8, R2                                                  ││                                                 │
+│    15  Copy       R9, R3                                                  ││                                                 │
+│    16  GoTo       @17                                                     ││                                                 │
+│    17  Yield      [R8, R9]                                                ││                                                 │
+│    18  GoTo       @4                                                      ││                                                 │
+│    19  Halt                                                               ││                                                 │
+└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Steps  [Space/n] Step  [r] Run  [R] Restart  [q] Quit ───────┐┌ Results ─────────────────────────────────────────────────────┐
+│Step 19: Halt  → [halted]                                     ││ id  │ name                                                   │
+│Halted. Press R to restart.                                   ││ ────┼──────────                                              │
+│Halted. Press R to restart.                                   ││ 100 │ "Alice"                                                │
+│Halted. Press R to restart.                                   ││ 102 │ "Charlie"                                              │
+│Halted. Press R to restart.                                   ││ (2 rows)                                                     │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+┌ Query ───────────────────────────────────────────────────────┐┌ Plan ────────────────────────────────────────────────────────┐
+│ SELECT id, name FROM employees WHERE dept_id = 1             ││   0  Project [id:0, name:1]                                  │
+│                                                              ││   1    Filter [dept_id:2 = 1]                                │
+│                                                              ││   2      Scan employees [cols: id, name, dept_id]            │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+┌ Bytecode ─────────────────────────────────────────────────────────────────┐┌ Registers ──────────────────────────────────────┐
+│     0  Open       R0, page:3                                              ││  r0 = <cursor>                                  │
+│     1  MoveCursor R0, First                                               ││  r1 = false                                     │
+│     2  GoTo       @3                                                      ││  r2 = 103                                       │
+│     3  MoveCursor R0, First                                               ││  r3 = "Diana"                                   │
+│     4  CanRead    R1, R0                                                  ││  r4 = 2                                         │
+│     5  GoToIfNot  @19, R1                                                 ││  r5 = 2                                         │
+│     6  ReadCursor [R2, R3, R4], R0                                        ││  r6 = 1                                         │
+│     7  MoveCursor R0, Next                                                ││  r7 = false                                     │
+│     8  GoTo       @9                                                      ││  r8 = 102                                       │
+│     9  Copy       R5, R4                                                  ││  r9 = "Charlie"                                 │
+│    10  Store      R6, 1                                                   ││                                                 │
+│    11  Eq         R7, R5, R6                                              ││                                                 │
+│    12  GoToIfNot  @4, R7                                                  ││                                                 │
+│    13  GoTo       @14                                                     ││                                                 │
+│    14  Copy       R8, R2                                                  ││                                                 │
+│    15  Copy       R9, R3                                                  ││                                                 │
+│    16  GoTo       @17                                                     ││                                                 │
+│    17  Yield      [R8, R9]                                                ││                                                 │
+│    18  GoTo       @4                                                      ││                                                 │
+│    19  Halt                                                               ││                                                 │
+└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Steps  [Space/n] Step  [r] Run  [R] Restart  [q] Quit ───────┐┌ Results ─────────────────────────────────────────────────────┐
+│Step 19: Halt  → [halted]                                     ││ id  │ name                                                   │
+│Halted. Press R to restart.                                   ││ ────┼──────────                                              │
+│Halted. Press R to restart.                                   ││ 100 │ "Alice"                                                │
+│Halted. Press R to restart.                                   ││ 102 │ "Charlie"                                              │
+│Halted. Press R to restart.                                   ││ (2 rows)                                                     │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+┌ Query ───────────────────────────────────────────────────────┐┌ Plan ────────────────────────────────────────────────────────┐
+│ SELECT id, name FROM employees WHERE dept_id = 1             ││   0  Project [id:0, name:1]                                  │
+│                                                              ││   1    Filter [dept_id:2 = 1]                                │
+│                                                              ││   2      Scan employees [cols: id, name, dept_id]            │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+┌ Bytecode ─────────────────────────────────────────────────────────────────┐┌ Registers ──────────────────────────────────────┐
+│►    0  Open       R0, page:3                                              ││                                                 │
+│     1  MoveCursor R0, First                                               ││                                                 │
+│     2  GoTo       @3                                                      ││                                                 │
+│     3  MoveCursor R0, First                                               ││                                                 │
+│     4  CanRead    R1, R0                                                  ││                                                 │
+│     5  GoToIfNot  @19, R1                                                 ││                                                 │
+│     6  ReadCursor [R2, R3, R4], R0                                        ││                                                 │
+│     7  MoveCursor R0, Next                                                ││                                                 │
+│     8  GoTo       @9                                                      ││                                                 │
+│     9  Copy       R5, R4                                                  ││                                                 │
+│    10  Store      R6, 1                                                   ││                                                 │
+│    11  Eq         R7, R5, R6                                              ││                                                 │
+│    12  GoToIfNot  @4, R7                                                  ││                                                 │
+│    13  GoTo       @14                                                     ││                                                 │
+│    14  Copy       R8, R2                                                  ││                                                 │
+│    15  Copy       R9, R3                                                  ││                                                 │
+│    16  GoTo       @17                                                     ││                                                 │
+│    17  Yield      [R8, R9]                                                ││                                                 │
+│    18  GoTo       @4                                                      ││                                                 │
+│    19  Halt                                                               ││                                                 │
+└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Steps  [Space/n] Step  [r] Run  [R] Restart  [q] Quit ───────┐┌ Results ─────────────────────────────────────────────────────┐
+│Restarted.                                                    ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+┌ Query ───────────────────────────────────────────────────────┐┌ Plan ────────────────────────────────────────────────────────┐
+│ SELECT id, name FROM employees WHERE dept_id = 1             ││   0  Project [id:0, name:1]                                  │
+│                                                              ││   1    Filter [dept_id:2 = 1]                                │
+│                                                              ││   2      Scan employees [cols: id, name, dept_id]            │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+┌ Bytecode ─────────────────────────────────────────────────────────────────┐┌ Registers ──────────────────────────────────────┐
+│►    0  Open       R0, page:3                                              ││                                                 │
+│     1  MoveCursor R0, First                                               ││                                                 │
+│     2  GoTo       @3                                                      ││                                                 │
+│     3  MoveCursor R0, First                                               ││                                                 │
+│     4  CanRead    R1, R0                                                  ││                                                 │
+│     5  GoToIfNot  @19, R1                                                 ││                                                 │
+│     6  ReadCursor [R2, R3, R4], R0                                        ││                                                 │
+│     7  MoveCursor R0, Next                                                ││                                                 │
+│     8  GoTo       @9                                                      ││                                                 │
+│     9  Copy       R5, R4                                                  ││                                                 │
+│    10  Store      R6, 1                                                   ││                                                 │
+│    11  Eq         R7, R5, R6                                              ││                                                 │
+│    12  GoToIfNot  @4, R7                                                  ││                                                 │
+│    13  GoTo       @14                                                     ││                                                 │
+│    14  Copy       R8, R2                                                  ││                                                 │
+│    15  Copy       R9, R3                                                  ││                                                 │
+│    16  GoTo       @17                                                     ││                                                 │
+│    17  Yield      [R8, R9]                                                ││                                                 │
+│    18  GoTo       @4                                                      ││                                                 │
+│    19  Halt                                                               ││                                                 │
+└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Steps  [Space/n] Step  [r] Run  [R] Restart  [q] Quit ───────┐┌ Results ─────────────────────────────────────────────────────┐
+│Restarted.                                                    ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+│                                                              ││                                                              │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+┌ Query ───────────────────────────────────────────────────────┐┌ Plan ────────────────────────────────────────────────────────┐
+│ SELECT id, name FROM employees WHERE dept_id = 1             ││   0  Project [id:0, name:1]                                  │
+│                                                              ││   1    Filter [dept_id:2 = 1]                                │
+│                                                              ││   2      Scan employees [cols: id, name, dept_id]            │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+┌ Bytecode ─────────────────────────────────────────────────────────────────┐┌ Registers ──────────────────────────────────────┐
+│     0  Open       R0, page:3                                              ││  r0 = <cursor>                                  │
+│     1  MoveCursor R0, First                                               ││  r1 = false                                     │
+│     2  GoTo       @3                                                      ││  r2 = 103                                       │
+│     3  MoveCursor R0, First                                               ││  r3 = "Diana"                                   │
+│     4  CanRead    R1, R0                                                  ││  r4 = 2                                         │
+│     5  GoToIfNot  @19, R1                                                 ││  r5 = 2                                         │
+│     6  ReadCursor [R2, R3, R4], R0                                        ││  r6 = 1                                         │
+│     7  MoveCursor R0, Next                                                ││  r7 = false                                     │
+│     8  GoTo       @9                                                      ││  r8 = 102                                       │
+│     9  Copy       R5, R4                                                  ││  r9 = "Charlie"                                 │
+│    10  Store      R6, 1                                                   ││                                                 │
+│    11  Eq         R7, R5, R6                                              ││                                                 │
+│    12  GoToIfNot  @4, R7                                                  ││                                                 │
+│    13  GoTo       @14                                                     ││                                                 │
+│    14  Copy       R8, R2                                                  ││                                                 │
+│    15  Copy       R9, R3                                                  ││                                                 │
+│    16  GoTo       @17                                                     ││                                                 │
+│    17  Yield      [R8, R9]                                                ││                                                 │
+│    18  GoTo       @4                                                      ││                                                 │
+│    19  Halt                                                               ││                                                 │
+└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Steps  [Space/n] Step  [r] Run  [R] Restart  [q] Quit ───────┐┌ Results ─────────────────────────────────────────────────────┐
+│Halted. Press R to restart.                                   ││ id  │ name                                                   │
+│Halted. Press R to restart.                                   ││ ────┼──────────                                              │
+│Halted. Press R to restart.                                   ││ 100 │ "Alice"                                                │
+│Halted. Press R to restart.                                   ││ 102 │ "Charlie"                                              │
+│Halted. Press R to restart.                                   ││ (2 rows)                                                     │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+┌ Query ───────────────────────────────────────────────────────┐┌ Plan ────────────────────────────────────────────────────────┐
+│ SELECT id, name FROM employees WHERE dept_id = 1             ││   0  Project [id:0, name:1]                                  │
+│                                                              ││   1    Filter [dept_id:2 = 1]                                │
+│                                                              ││   2      Scan employees [cols: id, name, dept_id]            │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+┌ Bytecode ─────────────────────────────────────────────────────────────────┐┌ Registers ──────────────────────────────────────┐
+│     0  Open       R0, page:3                                              ││  r0 = <cursor>                                  │
+│     1  MoveCursor R0, First                                               ││  r1 = false                                     │
+│     2  GoTo       @3                                                      ││  r2 = 103                                       │
+│     3  MoveCursor R0, First                                               ││  r3 = "Diana"                                   │
+│     4  CanRead    R1, R0                                                  ││  r4 = 2                                         │
+│     5  GoToIfNot  @19, R1                                                 ││  r5 = 2                                         │
+│     6  ReadCursor [R2, R3, R4], R0                                        ││  r6 = 1                                         │
+│     7  MoveCursor R0, Next                                                ││  r7 = false                                     │
+│     8  GoTo       @9                                                      ││  r8 = 102                                       │
+│     9  Copy       R5, R4                                                  ││  r9 = "Charlie"                                 │
+│    10  Store      R6, 1                                                   ││                                                 │
+│    11  Eq         R7, R5, R6                                              ││                                                 │
+│    12  GoToIfNot  @4, R7                                                  ││                                                 │
+│    13  GoTo       @14                                                     ││                                                 │
+│    14  Copy       R8, R2                                                  ││                                                 │
+│    15  Copy       R9, R3                                                  ││                                                 │
+│    16  GoTo       @17                                                     ││                                                 │
+│    17  Yield      [R8, R9]                                                ││                                                 │
+│    18  GoTo       @4                                                      ││                                                 │
+│    19  Halt                                                               ││                                                 │
+└───────────────────────────────────────────────────────────────────────────┘└─────────────────────────────────────────────────┘
+┌ Steps  [Space/n] Step  [r] Run  [R] Restart  [q] Quit ───────┐┌ Results ─────────────────────────────────────────────────────┐
+│Halted. Press R to restart.                                   ││ id  │ name                                                   │
+│Halted. Press R to restart.                                   ││ ────┼──────────                                              │
+│Halted. Press R to restart.                                   ││ 100 │ "Alice"                                                │
+│Halted. Press R to restart.                                   ││ 102 │ "Charlie"                                              │
+│Halted. Press R to restart.                                   ││ (2 rows)                                                     │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+│Halted. Press R to restart.                                   ││                                                              │
+└──────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────
+> rm test.db
+> db test.db file tests/sql/inner_join.sql
+Entered file mode
+Table 'departments' created
+Table 'employees' created
+1
+1
+1
+1
+1
+1
+1
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+"Alice", "Engineering"
+"Charlie", "Engineering"
+OK
+Table 'people' created
+1
+1
+1
+"Alice", "Bob"
+100, "Alice", 1, 1, "Engineering"
+"Alice", "Engineering"
+"Bob", "Sales"
+"Charlie", "Engineering"
+"Diana", "Sales"
+> db  test.db
+Path "test.db" exists. opening
+db> enter engine
+Entered engine mode
+────────────────────────────────────────────────────────────────────────────────

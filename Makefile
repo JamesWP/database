@@ -42,36 +42,23 @@ big.db: $(PROG)
 
 # Screenshot GIFs + TXT
 # Tapes that need no preloaded db (tape creates its own)
-doc/screenshots/%.gif doc/screenshots/%.txt &: doc/screenshots/%.tape $(PROG)
+doc/screenshots/%.gif doc/screenshots/%.txt &: doc/screenshots/%.tape demo.db demo-preloaded.db.seed $(PROG)
 	$(VHS) $<
-
-# repl-sql creates demo.db during the session - ensure it starts fresh
-doc/screenshots/repl-sql.gif doc/screenshots/repl-sql.txt &: doc/screenshots/repl-sql.tape $(PROG)
-	rm -f demo.db
-	$(VHS) $<
-
-# Tapes that require a preloaded db — copy seed fresh each run so tape mutations don't persist
-doc/screenshots/repl-index.gif doc/screenshots/repl-index.txt &: doc/screenshots/repl-index.tape $(PROG) demo-preloaded.db.seed
-	cp demo-preloaded.db.seed demo-preloaded.db
-	$(VHS) $<
-
-doc/screenshots/repl-engine.gif doc/screenshots/repl-engine.txt &: doc/screenshots/repl-engine.tape $(PROG) demo-preloaded.db.seed
-	cp demo-preloaded.db.seed demo-preloaded.db
-	$(VHS) $<
-
-NORMALIZE=python3 doc/screenshots/normalize.py
 
 # Verify txt output against committed expected files; stamp avoids re-checking if nothing changed
-doc/screenshots/%.checked: doc/screenshots/%.txt doc/screenshots/%.expected doc/screenshots/normalize.py
-	diff <($(NORMALIZE) < $<) <($(NORMALIZE) < $(word 2,$^))
+doc/screenshots/%.checked: doc/screenshots/%.txt doc/screenshots/%.expected
+	diff $< $(word 2,$^)
 	touch $@
+
+# TODO: replace file listing with globs
 
 # Update committed expected files from current txt output (stores normalized form)
 .PHONY: update-screenshots
-update-screenshots: doc/screenshots/repl-sql.txt doc/screenshots/repl-index.txt doc/screenshots/repl-engine.txt
-	$(NORMALIZE) < doc/screenshots/repl-sql.txt > doc/screenshots/repl-sql.expected
-	$(NORMALIZE) < doc/screenshots/repl-index.txt > doc/screenshots/repl-index.expected
-	$(NORMALIZE) < doc/screenshots/repl-engine.txt > doc/screenshots/repl-engine.expected
+update-screenshots: doc/screenshots/repl-sql.txt doc/screenshots/repl-index.txt doc/screenshots/repl-engine.txt doc/screenshots/repl-debug.txt
+	cp doc/screenshots/repl-sql.txt doc/screenshots/repl-sql.expected
+	cp doc/screenshots/repl-index.txt doc/screenshots/repl-index.expected
+	cp doc/screenshots/repl-engine.txt doc/screenshots/repl-engine.expected
+	cp doc/screenshots/repl-debug.txt doc/screenshots/repl-debug.expected
 
 SCREENSHOTS = \
 	doc/screenshots/repl-sql.gif \
@@ -82,6 +69,10 @@ SCREENSHOTS = \
 CHECKS = \
 	doc/screenshots/repl-sql.checked \
 	doc/screenshots/repl-index.checked \
-	doc/screenshots/repl-engine.checked
+	doc/screenshots/repl-engine.checked \
+	doc/screenshots/repl-debug.checked
 
 screenshots: $(CHECKS) $(SCREENSHOTS)
+
+clean-screenshots:
+	rm -f doc/screenshots/*.txt $(SCREENSHOTS) 
