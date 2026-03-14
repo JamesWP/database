@@ -6,7 +6,7 @@ use database::engine::registers::RegisterValue;
 use database::engine::{Engine, StepSuccess};
 use database::frontend::ast::Statement;
 use database::frontend::parse;
-use database::planner::{extract_select_column_names, plan};
+use database::planner::{extract_select_column_names, plan, LogicalPlan};
 use database::storage::BTree;
 
 struct StepState {
@@ -33,6 +33,10 @@ pub struct EngineMode {
     /// Step-by-step execution state
     #[allow(dead_code)]
     step_state: Option<StepState>,
+    /// Source SQL of the last compiled statement
+    source_sql: Option<String>,
+    /// Logical plan of the last compiled statement
+    logical_plan: Option<LogicalPlan>,
 }
 
 impl std::fmt::Debug for StepState {
@@ -50,6 +54,8 @@ impl EngineMode {
         EngineMode {
             program: None,
             step_state: None,
+            source_sql: None,
+            logical_plan: None,
         }
     }
 
@@ -99,6 +105,8 @@ impl Mode for EngineMode {
                                 compiled.operations.len(),
                                 compiled.num_registers
                             );
+                            self.source_sql = Some(sql.clone());
+                            self.logical_plan = Some(logical_plan);
                             self.program = Some(compiled);
                             self.step_state = None;
                             CommandResult::Message(msg)
@@ -271,7 +279,14 @@ impl Mode for EngineMode {
                         )
                     }
                 };
-                let debugger = TuiDebugger::new(program, (*shared.btree).clone());
+                let source_sql = self.source_sql.clone().unwrap_or_default();
+                let logical_plan = self.logical_plan.as_ref().cloned();
+                let debugger = TuiDebugger::new(
+                    program,
+                    (*shared.btree).clone(),
+                    source_sql,
+                    logical_plan,
+                );
                 match debugger.run() {
                     Ok(()) => CommandResult::Message("Debugger exited.".to_string()),
                     Err(e) => CommandResult::Error(format!("TUI error: {e}")),
@@ -281,6 +296,8 @@ impl Mode for EngineMode {
             ["clear"] | ["reset"] => {
                 self.program = None;
                 self.step_state = None;
+                self.source_sql = None;
+                self.logical_plan = None;
                 CommandResult::Message("Program cleared".to_string())
             }
 
