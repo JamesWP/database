@@ -1,15 +1,18 @@
 # Phase AB — Non-Correlated Subqueries
 
-Add non-correlated subquery support: FROM-clause derived tables, IN (literal list), IN (subquery), and scalar subqueries in SELECT/WHERE. All subqueries compile into a single flat bytecode program using RowBuffer materialization — no nested program execution.
+Add non-correlated subquery support using a minimal set of reusable primitives: a single
+`Materialize` plan node replaces the proposed `DerivedTable` node, `JoinStrategy::Semi`
+replaces the proposed `InSubquery` node, and scalar subqueries compile as a prelude using
+the same `Materialize` infrastructure.
 
 ## Items
 
 | # | Track | Item | Depends on |
 |---|-------|------|------------|
 | 103 | 1 | AST + parser: `Expression::In`, `Expression::ScalarSubquery` | — |
-| 104 | 4 | FROM subqueries (derived tables): planner + compiler | 103 |
-| 105 | 4 | IN operator: literal list (OR desugar) + IN (subquery) via RowBuffer | 103 |
-| 106 | 4 | Scalar subqueries in SELECT list and WHERE | 103 |
+| 104 | 4 | `LogicalPlan::Materialize` node + FROM subquery planner + compiler | 103 |
+| 105 | 4 | `PlanExpr::In` + `JoinStrategy::Semi` — literal IN and IN (subquery) | 103, 104 |
+| 106 | 4 | `PlanExpr::ScalarSubquery` — scalar subqueries in SELECT list and WHERE | 103, 104 |
 
 ---
 Important: Each item should be committed separately, follow 'Git Workflow' in CLAUDE.md
@@ -20,43 +23,49 @@ Important: Each item should be committed separately, follow 'Git Workflow' in CL
 
 ### Why non-correlated first?
 
-Non-correlated subqueries — those that do not reference outer-query columns — can be fully evaluated once as a prelude before the outer query begins. This maps cleanly onto the existing flat-bytecode model: the compiler emits an inner loop that fills a `RowBuffer`, followed by the outer query that reads from it. No new control-flow primitives or register types are needed.
+Non-correlated subqueries — those that do not reference outer-query columns — can be fully
+evaluated once as a prelude before the outer query begins. This maps cleanly onto the
+existing flat-bytecode model: the compiler emits an inner loop that fills a `RowBuffer`,
+followed by the outer query that reads from it. No new control-flow primitives or register
+types are needed.
 
-Correlated subqueries (referencing outer row values, e.g. `EXISTS`) require re-executing the inner loop per outer row; that is left for a later phase.
+Correlated subqueries (referencing outer row values, e.g. `EXISTS`) require re-executing
+the inner loop per outer row; that is left for a later phase.
+
+### Design principle: one new node, not three
+
+The original plan for this phase proposed three new plan-level constructs: `DerivedTable`,
+`InSubquery`, and `PlanExpr::ScalarSubquery`. Two of those can be eliminated by observing:
+
+1. **`DerivedTable` → `Materialize`**: The alias (`AS u`) is a *resolver concern* during
+   planning — it maps column names to indices. By the time the plan is built, all column
+   references are resolved to `ColumnRef(i)` indices. The alias is consumed and discarded;
+   it never needs to appear in the plan tree. `Materialize` is a pure buffering primitive
+   with no alias field.
+
+2. **`InSubquery` → `JoinStrategy::Semi`**: An IN (subquery) filter is structurally a
+   semi-join: for each outer row, check whether the row's key value appears in the inner
+   result set. `codegen_join` (Hash strategy) already materializes the right side into a
+   `RowBuffer` and iterates it per left row. `Semi` reuses this infrastructure, short-
+   circuits after the first match, and yields only left columns. Only ~10 lines of
+   `codegen_join` change.
+
+`PlanExpr::ScalarSubquery` is unavoidable — it is an expression that produces a value, not
+a row stream — but it compiles using the same `Materialize` buffering primitive.
 
 ### Single flat program model
 
-Every subquery compiles into the **same** `CompiledProgram` as the outer query. The inner query becomes a **prelude section** — a loop that runs to completion before the outer query's cursor is even opened. Results are held in a `RowBuffer` register and consumed by the outer query.
+Every subquery compiles into the **same** `CompiledProgram` as the outer query. The inner
+query becomes a **prelude section** — a loop that runs to completion before the outer
+query's cursor is opened. Results are held in a `RowBuffer` register and consumed by the
+outer query.
 
 ```
 [inner prelude loop → fills RowBuffer r_buf]
 RewindRowBuffer r_buf         ; reset read cursor for outer
-[outer query loop → reads from r_buf or checks membership in r_buf]
+[outer query loop → reads from r_buf or checks membership]
 Halt
 ```
-
-This approach:
-- Reuses all existing VM operations
-- Adds exactly one new VM operation (`RowBufferContains`) with a lazy HashSet cache
-- Adds one field to `RowBuffer` (the cache)
-- Requires no new `RegisterValue` variants
-
-### RowBufferContains and lazy HashSet cache
-
-For `IN (subquery)`, the outer loop calls `RowBufferContains` once per outer row. To avoid O(n) linear scan, `RowBuffer` gains an `Option<HashSet<ScalarValue>>` cache field:
-
-```rust
-pub struct RowBuffer {
-    pub rows: Vec<Vec<ScalarValue>>,
-    pub cursor: usize,
-    /// Built lazily on first RowBufferContains call. Indexes rows[i][0].
-    contains_cache: Option<HashSet<ScalarValue>>,
-}
-```
-
-The first `RowBufferContains` execution builds the set from `rows[*][0]`; subsequent calls are O(1). The cache is never built if the buffer is only used for `NextFromRowBuffer` (FROM subqueries, ORDER BY) — zero overhead for those cases.
-
-`ScalarValue` already implements `Hash + Eq`, so `HashSet<ScalarValue>` works directly.
 
 ---
 
@@ -64,7 +73,8 @@ The first `RowBufferContains` execution builds the set from `rows[*][0]`; subseq
 
 ### What Changes
 
-Two new `Expression` variants are added to `src/frontend/ast.rs`. The parser is extended to recognize `IN (...)`, `NOT IN (...)`, and `(SELECT ...)` in expression position.
+Two new `Expression` variants are added to `src/frontend/ast.rs`. The parser is extended to
+recognise `IN (...)`, `NOT IN (...)`, and `(SELECT ...)` in expression position.
 
 ### New AST nodes
 
@@ -93,16 +103,18 @@ pub enum Expression {
 }
 ```
 
-`get_column_references` on `Expression` gains arms for the new variants (returning `vec![]` for `ScalarSubquery`; delegating to `expr` for `In`).
+`get_column_references` on `Expression` gains arms for the new variants (returning `vec![]`
+for `ScalarSubquery`; delegating to `expr` for `In`).
 
 ### Parser changes
 
 **IN / NOT IN** (`src/frontend/parser.rs`):
 
-`IN` is a postfix operator parsed after the primary expression in `parse_expression` (similar to how `IS NULL` / `IS NOT NULL` are handled as `UnaryOp` variants applied after the left-hand side). After parsing a left-hand expression, peek for `IN` or `NOT IN`:
+`IN` is a postfix operator parsed after the primary expression in `parse_expression`
+(similar to how `IS NULL` / `IS NOT NULL` are handled). After parsing a left-hand
+expression, peek for `IN` or `NOT IN`:
 
 ```rust
-// After parsing lhs expression:
 if self.input.peek() == lexer::Type::In
     || (self.input.peek() == lexer::Type::Not && next_is_in) {
     let negated = /* consume NOT if present */;
@@ -110,7 +122,6 @@ if self.input.peek() == lexer::Type::In
     self.input.expect(Expect::LeftParen)?;
 
     if self.input.peek() == lexer::Type::Select {
-        // IN (SELECT ...)
         let subquery = self.parse_select_statement()?;
         self.input.expect(Expect::RightParen)?;
         return Ok(Expression::In {
@@ -119,7 +130,6 @@ if self.input.peek() == lexer::Type::In
             negated,
         });
     } else {
-        // IN (expr, expr, ...)
         let values = self.parse_comma_separated(|p| p.parse_expression())?;
         self.input.expect(Expect::RightParen)?;
         return Ok(Expression::In {
@@ -131,7 +141,8 @@ if self.input.peek() == lexer::Type::In
 }
 ```
 
-**Scalar subquery** — in the primary expression parser, when a `(` is seen, peek ahead: if `SELECT` follows, parse as a subquery rather than a grouped expression:
+**Scalar subquery** — in the primary expression parser, when `(` is seen, peek ahead: if
+`SELECT` follows, parse as a subquery rather than a grouped expression:
 
 ```rust
 lexer::Type::LeftParen => {
@@ -141,7 +152,6 @@ lexer::Type::LeftParen => {
         self.input.expect(Expect::RightParen)?;
         Ok(Expression::ScalarSubquery(Box::new(stmt)))
     } else {
-        // existing: grouped expression
         let expr = self.parse_expression()?;
         self.input.expect(Expect::RightParen)?;
         Ok(expr)
@@ -149,7 +159,7 @@ lexer::Type::LeftParen => {
 }
 ```
 
-**Lexer**: add `In` and `Not` token types if not already present. (`Not` may already exist for `IS NOT NULL`; verify.)
+**Lexer**: add `In` token type if not already present. (`Not` exists for `IS NOT NULL`.)
 
 ### Key Files
 
@@ -158,8 +168,6 @@ lexer::Type::LeftParen => {
 - `src/frontend/lexer.rs` — `In` keyword token (if missing)
 
 ### Tests
-
-Parser unit tests (in `src/frontend/parser.rs` `#[cfg(test)]`):
 
 ```rust
 #[test]
@@ -191,7 +199,8 @@ fn parse_scalar_subquery_in_select() {
 
 #### Step 103.1 — AST: add `InSource`, `Expression::In`, `Expression::ScalarSubquery`
 
-Add the enum variants. Update `get_column_references`. No parser changes yet — the new variants are simply unreachable. All tests pass.
+Add the enum variants. Update `get_column_references`. No parser changes yet — the new
+variants are unreachable. All tests pass.
 
 **Commit:** `AST: add Expression::In and Expression::ScalarSubquery variants`
 
@@ -203,29 +212,30 @@ Add `In` lexer token. Extend the expression parser. Add parser unit tests.
 
 ---
 
-## 104. FROM subqueries (derived tables) (Track 4)
+## 104. `LogicalPlan::Materialize` + FROM subquery support (Track 4)
 
 ### What Changes
 
-`FROM (SELECT ...) AS alias` is already parsed correctly into `TupleSource::Subquery` (the parser code exists and is functional). The planner currently returns `UnsupportedStatement` for this case. This item removes that error and compiles the inner query as a RowBuffer prelude; the outer query iterates the buffer using `NextFromRowBuffer`.
+A new `Materialize` plan node buffers all rows from its child into a `RowBuffer`, then
+yields them. This is the single primitive underlying FROM subqueries, the right side of
+semi-joins, and scalar subquery preludes.
 
-### Background
+`FROM (SELECT ...) AS alias` is already parsed correctly into `TupleSource::Subquery`.
+The planner currently returns `UnsupportedStatement` for this case. This item removes
+that error: the inner query is planned recursively, wrapped in `Materialize`, and the outer
+query iterates the buffer via `NextFromRowBuffer`.
 
-`NamedTupleSource` already holds the alias:
+### Why no alias field on `Materialize`
 
-```rust
-pub enum NamedTupleSource {
-    Named { alias: String, source: TupleSource },
-    Anonymous(TupleSource),
-}
-```
+The alias (`AS u`) exists only to resolve column names during planning. When the planner
+processes `SELECT u.name FROM (SELECT id, name FROM users) AS u`, it builds a
+`MaterializeResolver` that maps `u.name` → `ColumnRef(1)`. By the time the `Materialize`
+node is emitted, all column references in the outer query's expressions are already
+resolved to integer indices. The alias is consumed and discarded — it is never needed again
+at codegen or execution time.
 
-The planner's `extract_table_name` in `resolver.rs` currently panics on `TupleSource::Subquery`. The new path:
-
-1. Detect `TupleSource::Subquery` in `single_table_context` (or the unified `plan_select` after Phase Z).
-2. Plan the inner `SelectStatement` recursively → `inner_plan: LogicalPlan`.
-3. Wrap in a new `LogicalPlan::DerivedTable` node that carries the alias and the inner plan's output column names (for the resolver to use in column lookups).
-4. The compiler emits the inner plan as a RowBuffer prelude, then the outer query iterates with `NextFromRowBuffer`.
+Contrast with `DerivedTable { alias, columns }` from the original proposal: those fields
+would be plan-tree weight carrying information the compiler never uses.
 
 ### New plan node
 
@@ -234,75 +244,81 @@ The planner's `extract_table_name` in `resolver.rs` currently panics on `TupleSo
 pub enum LogicalPlan {
     // ... existing variants ...
 
-    /// FROM (SELECT ...) AS alias — inner plan materialized into a RowBuffer.
-    DerivedTable {
-        source: Box<LogicalPlan>,
-        alias: String,
-        /// Output column names from the inner SELECT (for column resolution in outer query).
-        columns: Vec<String>,
+    /// Buffer all rows from `input` into a RowBuffer, then yield them.
+    /// Used for: FROM subqueries, right side of semi-joins, scalar subquery preludes.
+    /// No alias field — alias is a resolver concern consumed during planning.
+    Materialize {
+        input: Box<LogicalPlan>,
     },
 }
 ```
 
 ### Column resolution
 
-A new `DerivedTableResolver` implements `ColumnResolver`, mapping `alias.col_name` and bare `col_name` to positional indices in the buffer row:
+A new `MaterializeResolver` implements `ColumnResolver`, mapping column names and
+`alias.col_name` references to positional indices:
 
 ```rust
-struct DerivedTableResolver<'a> {
-    alias: &'a str,
-    columns: &'a [String],   // names in order
+struct MaterializeResolver<'a> {
+    alias: &'a str,       // consumed during planning, not stored in the node
+    columns: &'a [String], // output column names of the inner plan, in order
 }
 ```
 
-`resolve_column("col_name")` → index of `col_name` in `columns`.
-`resolve_column("alias.col_name")` → same, with alias prefix stripped.
+`resolve_identifier("name")` → index of `"name"` in `columns`.
+`resolve_qualified("u", "name")` → same, with alias prefix checked and stripped.
+
+This resolver is used only while planning the outer query's expressions. Once column
+indices are resolved, the resolver is dropped.
 
 ### Compiler output
 
-`codegen_derived_table` in `src/compiler/nodes.rs`:
+`codegen_materialize` in `src/compiler/nodes.rs` emits the same prelude pattern already
+used by Sort and Distinct — fill a buffer, rewind, yield from it:
 
 ```
-// Prelude: compile inner plan inline, routing Yield into AppendToRowBuffer
+// INIT section:
 InitRowBuffer          r_buf
 
-[inner plan bytecode, with Yield replaced by AppendToRowBuffer(r_buf, yielded_regs)]
+// BODY — prelude: run inner plan, collect rows
+[inner plan bytecode, Yield → AppendToRowBuffer(r_buf, yielded_regs)]
 
-// After inner plan completes (Halt → jump to here):
+// After inner plan completes:
 RewindRowBuffer        r_buf
 
-// Outer query continuation reads from buffer:
-OuterLoopStart:
-  NextFromRowBuffer    [r0, r1, ...], r_buf → Halt
-  [rest of outer query using r0, r1 ...]
-  GoTo OuterLoopStart
-Halt
+// Outer iteration (driven by parent node):
+OuterLoop:
+  NextFromRowBuffer    [r0, r1, ...], r_buf → on_done
+  GoTo                 on_tuple
 ```
 
-The inner plan's `Yield` instructions are intercepted at codegen time and replaced with `AppendToRowBuffer` + `GoTo` back to the inner loop — the same technique already used to compile `INSERT INTO ... SELECT`.
+The inner plan's `Yield` instructions are intercepted at codegen time and redirected to
+`AppendToRowBuffer` — the same technique used for `INSERT INTO ... SELECT` and the Hash
+join's right-side materialization.
 
 ### EXPLAIN output
 
 ```
-DerivedTable AS alias
-  [inner plan tree indented]
+0, "Materialize"
+1, "  Scan users [cols: id, name]"
 ```
 
 ### Key Files
 
-- `src/planner/mod.rs` — `LogicalPlan::DerivedTable`
-- `src/planner/select.rs` (or `planner.rs`) — detect `TupleSource::Subquery`, build `DerivedTable` node, derive column names from inner plan
-- `src/compiler/nodes.rs` — `codegen_derived_table`
-- `src/explain.rs` — render `DerivedTable` in EXPLAIN
+- `src/planner/mod.rs` — `LogicalPlan::Materialize`
+- `src/planner/select.rs` — detect `TupleSource::Subquery`, build `Materialize` node,
+  construct `MaterializeResolver` for outer column resolution
+- `src/compiler/nodes.rs` — `codegen_materialize`
+- `src/explain.rs` — render `Materialize`
 
 ### Tests
 
 ```rust
-// planner test
 #[test]
-fn plan_from_subquery_produces_derived_table_node() {
+fn plan_from_subquery_produces_materialize_node() {
     // SELECT name FROM (SELECT id, name FROM users) AS u
-    // → Project(DerivedTable(Scan(users)))
+    // → Project(Materialize(Scan(users)))
+    // Note: no alias field in Materialize
 }
 ```
 
@@ -317,82 +333,120 @@ SELECT name FROM (SELECT id, name FROM users WHERE age > 28) AS young ORDER BY n
 -- > alice
 -- > carol
 
+SELECT name FROM (SELECT id, name FROM users) AS u WHERE u.id > 1 ORDER BY name
+-- > bob
+-- > carol
+
 EXPLAIN SELECT name FROM (SELECT id, name FROM users) AS u
 -- > 0, "Project [name:1]"
--- > 1, "  DerivedTable AS u"
+-- > 1, "  Materialize"
 -- > 2, "    Scan users [cols: id, name]"
 ```
 
 ### Implementation Steps (3 commits)
 
-#### Step 104.1 — Planner: `LogicalPlan::DerivedTable`; update EXPLAIN
+#### Step 104.1 — Planner: `LogicalPlan::Materialize`; update EXPLAIN; stub compiler arm
 
-Add the node variant, update `explain.rs`, add a stub compiler arm returning `Err(UnsupportedStatement)`. All tests pass.
+Add the node variant, update `explain.rs`, add a stub compiler arm returning
+`Err(UnsupportedStatement)`. All tests pass.
 
-**Commit:** `Planner: add DerivedTable plan node; update EXPLAIN`
+**Commit:** `Planner: add Materialize plan node; update EXPLAIN`
 
-#### Step 104.2 — Planner: detect `TupleSource::Subquery`, build `DerivedTable`
+#### Step 104.2 — Planner: detect `TupleSource::Subquery`, build `Materialize`
 
-Remove the `UnsupportedStatement` error from `extract_table_name`. Build the `DerivedTable` node and `DerivedTableResolver`. Add planner unit test.
+Remove the `UnsupportedStatement` error from `extract_table_name`. Plan the inner query
+recursively, wrap in `Materialize`. Build `MaterializeResolver` for outer column
+resolution. Add planner unit test.
 
-**Commit:** `Planner: resolve FROM subqueries into DerivedTable nodes`
+**Commit:** `Planner: resolve FROM subqueries into Materialize nodes`
 
-#### Step 104.3 — Compiler: `codegen_derived_table`; add SQL integration tests
+#### Step 104.3 — Compiler: `codegen_materialize`; add SQL integration tests
 
-Implement the codegen: inner plan prelude fills RowBuffer, outer iterates via `NextFromRowBuffer`. Add `tests/sql/subquery_from.sql`.
+Implement the codegen. Add `tests/sql/subquery_from.sql`.
 
-**Commit:** `Compiler: emit RowBuffer prelude for FROM subqueries (derived tables)`
+**Commit:** `Compiler: codegen_materialize — buffer inner plan into RowBuffer`
 
 ---
 
-## 105. IN operator: literal list + IN (subquery) (Track 4)
+## 105. `PlanExpr::In` + `JoinStrategy::Semi` (Track 4)
 
 ### What Changes
 
-`Expression::In` (from item 103) is handled in the planner and compiler.
+Two additions handle the `IN` operator:
 
-- **Literal list** (`IN (1, 2, 3)`): the planner desugars to an OR chain of equality expressions. No new VM operations needed.
-- **Subquery** (`IN (SELECT ...)`): the compiler emits a RowBuffer prelude (inner query materializes results), then uses a new `RowBufferContains` VM operation with a **lazy HashSet cache** for O(1) membership testing.
+- **Literal list** (`IN (1, 2, 3)`): a new `PlanExpr::In` variant keeps the plan clean
+  (avoids polluting EXPLAIN with deep OR chains). The compiler desugars it to an equality
+  OR chain at codegen time; a later optimization can emit a HashSet probe.
+- **Subquery** (`IN (SELECT ...)`): a new `JoinStrategy::Semi` variant extends the
+  existing `Join` node. No new plan node is needed — the infrastructure from `codegen_join`
+  is reused almost verbatim.
 
-### Literal list desugar (planner)
+### Why `JoinStrategy::Semi` instead of a new `InSubquery` node
 
-In `convert_expr` in `resolver.rs`:
+`IN (subquery)` is semantically a semi-join: retain outer rows whose key value appears in
+the inner result set. Structurally it is almost identical to `JoinStrategy::Hash`:
 
-```rust
-Expression::In { expr, source: InSource::Values(values), negated } => {
-    // Desugar: expr IN (a, b, c) → (expr = a OR expr = b OR expr = c)
-    // negated: expr NOT IN (a, b, c) → (expr != a AND expr != b AND expr != c)
-    let equalities: Vec<PlanExpr> = values.iter().map(|v| {
-        PlanExpr::BinaryOp {
-            op: if negated { BinaryOp::NotEquals } else { BinaryOp::Equals },
-            lhs: convert_expr(expr, resolver)?,
-            rhs: convert_expr(v, resolver)?,
-        }
-    }).collect()?;
-    // fold with OR (non-negated) or AND (negated)
-    Ok(equalities.into_iter().reduce(|acc, e| PlanExpr::BinaryOp {
-        op: if negated { BinaryOp::And } else { BinaryOp::Or },
-        lhs: Box::new(acc),
-        rhs: Box::new(e),
-    }).unwrap())
-}
-```
+| Step | Hash join | Semi join |
+|------|-----------|-----------|
+| Prelude | Materialize right → RowBuffer | Materialize right → RowBuffer |
+| Per left row | Rewind + iterate buffer, eval `on_condition` | `RowBufferContains` with lazy HashSet |
+| Yield | Left + right columns | Left columns only (on match) |
 
-### Subquery IN: new plan node
+The delta from `codegen_join` is about 10 lines. Expressing this as a new `JoinStrategy`
+variant is both the most economical and the most semantically accurate choice.
+
+`NOT IN` maps to `Semi { negated: true }` — the codegen inverts the `RowBufferContains`
+result before the conditional jump.
+
+### New `PlanExpr` variant
 
 ```rust
 // src/planner/mod.rs
-pub enum LogicalPlan {
-    // ...
-    /// Semi-join filter: retain outer rows whose key column appears in the subquery result set.
-    InSubquery {
-        input: Box<LogicalPlan>,
-        /// The expression to test (usually a column reference from the outer query).
-        key_expr: PlanExpr,
-        /// The subquery producing the candidate set (single-column output expected).
-        subquery: Box<LogicalPlan>,
+pub enum PlanExpr {
+    // ... existing variants ...
+
+    /// expr IN (val, val, ...) — kept as a plan node for clean EXPLAIN output.
+    /// The compiler desugars to an OR equality chain at codegen time.
+    In {
+        expr: Box<PlanExpr>,
+        values: Vec<PlanExpr>,
         negated: bool,
     },
+}
+```
+
+The planner converts `Expression::In { source: InSource::Values(vals), negated }` by
+calling `convert_expr` on each value and collecting into `PlanExpr::In`.
+
+### New `JoinStrategy` variant
+
+```rust
+// src/planner/mod.rs
+pub enum JoinStrategy {
+    Hash,
+    NestedLoop,
+    /// Semi-join: retain left rows whose key appears in the (materialised) right set.
+    /// `negated: true` → anti-semi-join (NOT IN).
+    Semi { negated: bool },
+}
+```
+
+The `Join` node's existing `on_condition` field carries the semi-join key expression:
+for `WHERE id IN (SELECT user_id FROM admins)`, the planner sets
+`on_condition = PlanExpr::ColumnRef(left_id_idx)`. The codegen reads this as the value
+to probe via `RowBufferContains`.
+
+The planner converts `Expression::In { source: InSource::Subquery(stmt), negated }` as:
+
+```rust
+let inner_plan = plan_select(*stmt, btree)?;
+let key_expr = convert_expr(expr, resolver)?;
+LogicalPlan::Join {
+    left: outer_plan,
+    right: Box::new(inner_plan),
+    on_condition: key_expr,    // left-side key, probed in right buffer
+    strategy: JoinStrategy::Semi { negated },
+    left_column_count: outer_column_count,
 }
 ```
 
@@ -402,92 +456,89 @@ pub enum LogicalPlan {
 // src/engine/program.rs
 /// RowBufferContains(dest, buffer, val):
 /// Sets dest = Boolean(true) if any row in buffer has row[0] == val.
-/// Builds and caches a HashSet<ScalarValue> on the first call.
+/// Builds and caches a HashSet<ScalarValue> on the first call (lazy).
 RowBufferContains(Reg, Reg, Reg),
 ```
 
-### RowBuffer lazy cache
+### RowBuffer lazy HashSet cache
 
 ```rust
 // src/engine/registers.rs
 pub struct RowBuffer {
     pub rows: Vec<Vec<ScalarValue>>,
     pub cursor: usize,
-    /// Lazily built on first RowBufferContains. Indexes rows[i][0].
+    /// Lazily built on first RowBufferContains call. Indexes rows[i][0].
     contains_cache: Option<std::collections::HashSet<ScalarValue>>,
 }
 ```
 
-`InitRowBuffer` initialises `contains_cache: None`. `AppendToRowBuffer` sets `contains_cache = None` (invalidate cache if rows are added after it was built — though in practice the prelude always completes before `RowBufferContains` is called).
+`InitRowBuffer` sets `contains_cache: None`. `AppendToRowBuffer` clears the cache
+(invalidate on write — in practice the prelude always completes before any
+`RowBufferContains` call, so this is a safety guard, not a hot path).
 
-VM execution of `RowBufferContains(dest, buf_reg, val_reg)`:
+### Compiler output for `Semi` join
 
-```rust
-let val = registers.get(val_reg).scalar().cloned();
-let buf = registers.get_mut(buf_reg).row_buffer_mut().unwrap();
-if buf.contains_cache.is_none() {
-    buf.contains_cache = Some(
-        buf.rows.iter().filter_map(|r| r.first().cloned()).collect()
-    );
-}
-let found = match &val {
-    Some(v) => buf.contains_cache.as_ref().unwrap().contains(v),
-    None => false,  // NULL IN (...) → false
-};
-*registers.get_mut(dest) = RegisterValue::ScalarValue(ScalarValue::Boolean(found));
-```
-
-### Compiler output for IN (subquery)
-
-`codegen_in_subquery` in `nodes.rs`:
+`codegen_join_semi` in `nodes.rs` (called from the `Join` match arm):
 
 ```
-// Prelude: materialize inner plan into r_set
-InitRowBuffer         r_set
-[inner plan, Yield → AppendToRowBuffer(r_set, ...)]
+// INIT: materialize right side (identical to Hash join prelude)
+InitRowBuffer           r_set
+[right plan, Yield → AppendToRowBuffer(r_set, right_regs)]
 
-// Outer loop (from outer plan codegen):
-[outer scan / NextFromRowBuffer loop]
+// Outer loop:
+OuterLoop:
+  [left child drives outer iteration]
 
-  // For each outer row, evaluate key_expr → r_key
-  [key_expr codegen → r_key]
-  RowBufferContains     r_match, r_set, r_key
-  // If negated: invert r_match with NotValue
-  GoToIfFalse           r_match → NextOuterRow
-
-  Yield [...]
+  LEFT_ON_TUPLE:
+    [eval on_condition (key_expr from left row) → r_key]
+    RowBufferContains   r_match, r_set, r_key
+    // if negated: NotValue r_match
+    GoToIfFalse         r_match → OuterLoop
+    Yield               [left_regs...]
+    GoTo                OuterLoop
+Halt
 ```
 
 ### EXPLAIN output
 
 ```
-InSubquery [NOT] key_expr
-  [outer plan]
-  [subquery plan]
+0, "Project [name:1]"
+1, "  Join [Semi] on id"
+2, "    Scan users [cols: id, name]"
+3, "    Scan admins [cols: user_id]"
 ```
 
 ### Key Files
 
-- `src/planner/mod.rs` — `LogicalPlan::InSubquery`
-- `src/planner/resolver.rs` — desugar `InSource::Values`; convert `InSource::Subquery` to `InSubquery` node
-- `src/engine/registers.rs` — `contains_cache` field on `RowBuffer`; update `InitRowBuffer`/`AppendToRowBuffer` execution
+- `src/planner/mod.rs` — `PlanExpr::In`; `JoinStrategy::Semi { negated }`
+- `src/planner/resolver.rs` — `convert_expr` arms for `InSource::Values` and
+  `InSource::Subquery`
+- `src/engine/registers.rs` — `contains_cache` on `RowBuffer`; update
+  `InitRowBuffer`/`AppendToRowBuffer` execution
 - `src/engine/program.rs` — `RowBufferContains` operation + Display
 - `src/engine/mod.rs` — execute `RowBufferContains`
-- `src/compiler/nodes.rs` — `codegen_in_subquery`
-- `src/explain.rs` — render `InSubquery`
+- `src/compiler/nodes.rs` — `codegen_join_semi`; desugar `PlanExpr::In` in `codegen_expr`
+- `src/explain.rs` — render `PlanExpr::In`; render `Join [Semi]`
 
 ### Tests
 
 ```rust
 #[test]
-fn plan_in_literal_desugars_to_or_chain() {
-    // WHERE id IN (1, 2, 3) → Filter(OR(id=1, OR(id=2, id=3)))
-    // No InSubquery node in plan
+fn plan_in_literal_produces_plan_expr_in() {
+    // WHERE id IN (1, 2, 3) → Filter(PlanExpr::In { values: [1,2,3], negated: false })
+    // No Semi join in plan
 }
 
 #[test]
-fn plan_in_subquery_produces_in_subquery_node() {
-    // WHERE id IN (SELECT user_id FROM admins) → InSubquery(Scan(users), Scan(admins))
+fn plan_in_subquery_produces_semi_join() {
+    // WHERE id IN (SELECT user_id FROM admins)
+    // → Join { strategy: Semi { negated: false }, on_condition: ColumnRef(0), ... }
+}
+
+#[test]
+fn plan_not_in_subquery_produces_anti_semi_join() {
+    // WHERE id NOT IN (SELECT user_id FROM admins)
+    // → Join { strategy: Semi { negated: true }, ... }
 }
 ```
 
@@ -516,34 +567,46 @@ SELECT name FROM users WHERE id IN (SELECT user_id FROM admins) ORDER BY name
 SELECT name FROM users WHERE id NOT IN (SELECT user_id FROM admins) ORDER BY name
 -- > bob
 
--- NULL IN: should return no rows (NULL comparisons are false)
+-- Empty right side: no rows match (NULL-safe: empty set → false)
 SELECT name FROM users WHERE id IN (SELECT user_id FROM admins WHERE user_id > 100)
 -- > (no rows)
+
+EXPLAIN SELECT name FROM users WHERE id IN (SELECT user_id FROM admins)
+-- > 0, "Project [name:1]"
+-- > 1, "  Join [Semi] on id"
+-- > 2, "    Scan users [cols: id, name]"
+-- > 3, "    Scan admins [cols: user_id]"
 ```
 
 ### Implementation Steps (4 commits)
 
-#### Step 105.1 — Planner: desugar `IN (literals)` to OR chain; add SQL tests for literal IN
+#### Step 105.1 — Planner: `PlanExpr::In`; desugar literal IN in resolver; literal IN SQL tests
 
-No new VM ops. Add `tests/sql/subquery_in.sql` with literal IN cases only.
+No new VM ops. Update `explain.rs` for `PlanExpr::In`. Add `tests/sql/subquery_in.sql`
+with literal IN cases only.
 
-**Commit:** `Planner: desugar IN (literal list) to OR equality chain`
+**Commit:** `Planner: add PlanExpr::In; compile literal IN list`
 
-#### Step 105.2 — Planner: `LogicalPlan::InSubquery`; update EXPLAIN; stub compiler arm
+#### Step 105.2 — Planner: `JoinStrategy::Semi { negated }`; update EXPLAIN; stub codegen
 
-**Commit:** `Planner: add InSubquery plan node; update EXPLAIN`
+Add the variant, extend the `Join` match arm in the compiler with
+`Err(UnsupportedStatement)`, update `explain.rs` to show `[Semi]` in join display. Add
+planner unit tests.
 
-#### Step 105.3 — VM: add `RowBufferContains` + lazy HashSet cache in `RowBuffer`
+**Commit:** `Planner: add JoinStrategy::Semi for IN (subquery)`
 
-Add the cache field, update `InitRowBuffer`/`AppendToRowBuffer` execution, implement `RowBufferContains`.
+#### Step 105.3 — VM: `RowBufferContains` + lazy HashSet cache
+
+Add `contains_cache` to `RowBuffer`. Update `InitRowBuffer`/`AppendToRowBuffer` execution.
+Implement and test `RowBufferContains`.
 
 **Commit:** `VM: add RowBufferContains with lazy HashSet cache`
 
-#### Step 105.4 — Compiler: `codegen_in_subquery`; complete SQL integration tests
+#### Step 105.4 — Compiler: `codegen_join_semi`; complete SQL integration tests
 
-Add the subquery IN cases to `tests/sql/subquery_in.sql`.
+Implement `codegen_join_semi`. Add the subquery IN cases to `tests/sql/subquery_in.sql`.
 
-**Commit:** `Compiler: emit RowBuffer prelude + RowBufferContains for IN (subquery)`
+**Commit:** `Compiler: codegen_join_semi — semi-join using RowBufferContains`
 
 ---
 
@@ -551,7 +614,10 @@ Add the subquery IN cases to `tests/sql/subquery_in.sql`.
 
 ### What Changes
 
-`Expression::ScalarSubquery` (from item 103) is handled in the planner and compiler. A scalar subquery compiles as a RowBuffer prelude (same as the others) that captures exactly one value. The outer query reads it once with `NextFromRowBuffer` and holds the result in a scalar register for the lifetime of the outer query.
+`Expression::ScalarSubquery` (from item 103) is handled in the planner and compiler. A
+scalar subquery compiles as a `Materialize` prelude that captures exactly one value. The
+outer query reads it once with `NextFromRowBuffer` and holds the result in a scalar
+register for the lifetime of the outer query.
 
 ### Background
 
@@ -560,18 +626,22 @@ A scalar subquery must return at most one row and one column. At runtime:
 2. After the prelude, `NextFromRowBuffer` reads the single value into a register.
 3. That register is used as a constant throughout the outer query.
 
-If the inner query returns zero rows, the register holds `NULL`. If it returns more than one row, a runtime error is raised (`ScalarSubqueryReturnedMultipleRows`).
+If the inner query returns zero rows, the register holds `NULL`. If it returns more than
+one row, the first row is used (matching SQLite behaviour — document as undefined for
+multi-row scalar subqueries; strict checking can be added later).
 
-This is clean because the scalar value is computed once and stored in a register — the outer query treats it exactly like a `StoreValue` constant.
+The scalar prelude is the same `Materialize` buffering infrastructure from item 104,
+specialised to extract a single value after the prelude loop completes.
 
-### New plan node
+### New `PlanExpr` variant
 
 ```rust
 // src/planner/mod.rs
 pub enum PlanExpr {
     // ... existing variants ...
 
-    /// (SELECT expr FROM ...) — evaluated once; used as a scalar constant.
+    /// (SELECT expr FROM ...) — evaluated once before the outer query begins.
+    /// The inner plan must produce exactly one output column.
     ScalarSubquery {
         plan: Box<LogicalPlan>,
     },
@@ -583,7 +653,6 @@ The planner converts `Expression::ScalarSubquery(stmt)` in `convert_expr`:
 ```rust
 Expression::ScalarSubquery(stmt) => {
     let inner_plan = plan_select(*stmt, btree)?;
-    // Validate: inner plan must produce exactly 1 output column
     if output_width(&inner_plan) != 1 {
         return Err(PlanError::ScalarSubqueryMustReturnOneColumn);
     }
@@ -591,17 +660,20 @@ Expression::ScalarSubquery(stmt) => {
 }
 ```
 
+`output_width` is a helper that returns the number of output columns of a `LogicalPlan`
+(already needed elsewhere — add to `mod.rs` if not present).
+
 ### Compiler output
 
-In `codegen_expr`, when a `PlanExpr::ScalarSubquery` is encountered, the compiler emits a **prelude** into the init section (before the outer loop) and returns the register holding the captured value:
+In `codegen_expr`, when a `PlanExpr::ScalarSubquery` is encountered, the compiler emits a
+prelude into the init section and returns the scalar register:
 
 ```
 // In program init section:
 InitRowBuffer            r_buf_scalar
-
 [inner plan, Yield → AppendToRowBuffer(r_buf_scalar, [yielded_col])]
 
-// After inner plan:
+// After inner plan (single-value extraction):
 NextFromRowBuffer         [r_scalar], r_buf_scalar → ScalarNull
 GoTo                      AfterScalarPrelude
 ScalarNull:
@@ -609,29 +681,25 @@ ScalarNull:
 AfterScalarPrelude:
 ```
 
-`r_scalar` is then used wherever the scalar subquery expression appears in the outer query — in `Project` expressions, `Filter` expressions, etc.
-
-> **Multiple rows check**: if the inner plan could yield more than one row, the compiler inserts a guard:
-> after the first `AppendToRowBuffer`, emit `MoveCursor inner_cursor Next; GoToIf EOF → done; Halt(Err(ScalarSubqueryMultipleRows))`.
-> In practice this is a code-size concern; for the initial implementation a simpler approach is to just take the first row and ignore the rest (document as "undefined for multi-row scalar subqueries", matching SQLite's behaviour of returning the first row with a warning).
-
-### EXPLAIN output
-
-Scalar subqueries appear inline in the expression display:
-
-```
-0, "Project [(ScalarSubquery):0, name:1]"
-1, "  Scan users [cols: id, name]"
-```
-
-And EXPLAIN for the scalar subquery's inner plan is shown as a sub-tree.
+`r_scalar` is then used wherever the scalar subquery expression appears in the outer query
+— in `Project` expressions, `Filter` expressions, etc. — as though it were a
+`StoreValue` constant.
 
 ### New error variant
 
 ```rust
-// src/planner/mod.rs or error module
+// src/planner/mod.rs
 PlanError::ScalarSubqueryMustReturnOneColumn,
 ```
+
+### EXPLAIN output
+
+```
+0, "Project [(ScalarSubquery), name:1]"
+1, "  Scan users [cols: id, name]"
+```
+
+The subquery inner plan appears as a sub-tree indented below.
 
 ### Key Files
 
@@ -646,12 +714,12 @@ PlanError::ScalarSubqueryMustReturnOneColumn,
 #[test]
 fn plan_scalar_subquery_in_select() {
     // SELECT (SELECT COUNT(*) FROM orders), name FROM users
-    // → Project([ScalarSubquery(Count(Scan(orders))), col:1], Scan(users))
+    // → Project([ScalarSubquery(...), ColumnRef(1)], Scan(users))
 }
 
 #[test]
 fn plan_scalar_subquery_multi_column_error() {
-    // SELECT (SELECT id, name FROM users LIMIT 1) → PlanError
+    // SELECT (SELECT id, name FROM users LIMIT 1) → PlanError::ScalarSubqueryMustReturnOneColumn
 }
 ```
 
@@ -666,7 +734,7 @@ INSERT INTO users VALUES (1, 'alice'), (2, 'bob')
 INSERT INTO orders VALUES (10, 1), (11, 1), (12, 2)
 -- > 3 rows inserted
 
--- Scalar subquery in SELECT list
+-- Scalar subquery in SELECT list — same value for every row
 SELECT name, (SELECT COUNT(*) FROM orders) AS total_orders FROM users ORDER BY name
 -- > alice | 3
 -- > bob | 3
@@ -686,13 +754,17 @@ SELECT (SELECT id, name FROM users LIMIT 1)
 
 ### Implementation Steps (3 commits)
 
-#### Step 106.1 — Planner: `PlanExpr::ScalarSubquery`; update EXPLAIN; add error variant
+#### Step 106.1 — Planner: `PlanExpr::ScalarSubquery`; error variant; update EXPLAIN
+
+Add the variant. Add `PlanError::ScalarSubqueryMustReturnOneColumn`. Implement
+`convert_expr` arm. Update `explain.rs`. Add planner unit tests.
 
 **Commit:** `Planner: add PlanExpr::ScalarSubquery; validate single-column output`
 
 #### Step 106.2 — Compiler: emit scalar prelude into init section
 
-Implement `codegen_expr` arm for `PlanExpr::ScalarSubquery`. The scalar prelude is emitted into the init section; `r_scalar` is returned as the register for the expression.
+Implement `codegen_expr` arm for `PlanExpr::ScalarSubquery`. The prelude is emitted into
+the init section; `r_scalar` is returned as the expression's register.
 
 **Commit:** `Compiler: emit scalar subquery prelude; capture result in scalar register`
 
@@ -706,12 +778,14 @@ Implement `codegen_expr` arm for `PlanExpr::ScalarSubquery`. The scalar prelude 
 
 - [ ] `cargo test` — all tests pass
 - [ ] `cargo fmt && cargo build 2>&1 | grep -i warning` — zero warnings
-- [ ] `SELECT name FROM users WHERE id IN (1, 3)` returns correct rows
-- [ ] `SELECT name FROM users WHERE id IN (SELECT user_id FROM admins)` returns correct rows
-- [ ] `SELECT name FROM (SELECT name FROM users WHERE age > 28) AS young` returns correct rows
-- [ ] `SELECT (SELECT COUNT(*) FROM orders) FROM users` returns the count for every user row
-- [ ] `EXPLAIN` shows `DerivedTable`, `InSubquery`, `ScalarSubquery` nodes
-- [ ] `RowBufferContains` with 0-row buffer returns false (not a crash)
-- [ ] `RowBufferContains` lazy cache: correct results on first and subsequent calls
-- [ ] Scalar subquery returning 0 rows yields NULL (not a crash)
+- [ ] `SELECT name FROM users WHERE id IN (1, 3)` — correct rows, EXPLAIN shows `PlanExpr::In`
+- [ ] `SELECT name FROM users WHERE id IN (SELECT user_id FROM admins)` — correct rows,
+      EXPLAIN shows `Join [Semi]`
+- [ ] `SELECT name FROM users WHERE id NOT IN (SELECT user_id FROM admins)` — correct rows
+- [ ] `SELECT name FROM (SELECT name FROM users WHERE age > 28) AS young` — correct rows,
+      EXPLAIN shows `Materialize` (no `DerivedTable`)
+- [ ] `SELECT (SELECT COUNT(*) FROM orders) FROM users` — count for every user row
+- [ ] `RowBufferContains` with 0-row buffer → false (not a crash)
+- [ ] `RowBufferContains` lazy cache — correct on first and subsequent calls
+- [ ] Scalar subquery returning 0 rows → NULL (not a crash)
 - [ ] Each commit is independently testable
