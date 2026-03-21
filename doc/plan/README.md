@@ -70,19 +70,19 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AG** | Workspace Split: Core Library + CLI Crate | 4 | [phase-ag-workspace-split.md](phase-ag-workspace-split.md) | Planned |
 | **AH** | Decouple `colored` from Core Library | 4 | [phase-ah-decouple-colored.md](phase-ah-decouple-colored.md) | Planned |
 | **AI** | Move `inspect_page` to CLI | 2 | [phase-ai-inspect-to-cli.md](phase-ai-inspect-to-cli.md) | Planned |
-| **AJ** | Type System & Schema Compatibility | — | — | Planned |
-| **AK** | String Operators & Functions | — | — | Planned |
-| **AL** | CASE Expressions | — | — | Planned |
-| **AM** | LEFT / RIGHT OUTER JOIN | — | — | Planned |
-| **AN** | Views | — | — | Planned |
-| **AO** | Triggers | — | — | Planned |
-| **AP** | Aggregate Enhancements & Text Indexes | — | — | Planned |
-| **AQ** | UNION / UNION ALL / INTERSECT / EXCEPT | — | — | Planned |
-| **AR** | Date / Time Functions | — | — | Planned |
-| **AS** | Transactions | — | — | Planned |
-| **AT** | Window Functions | — | — | Planned |
-| **AU** | CTEs (Common Table Expressions) | — | — | Planned |
-| **AV** | Foreign Key Enforcement | — | — | Planned |
+| **AJ** | Type System & Schema Compatibility | — | — | Backlog |
+| **AK** | String Operators & Functions | — | — | Backlog |
+| **AL** | CASE Expressions | — | — | Backlog |
+| **AM** | LEFT / RIGHT OUTER JOIN | — | — | Backlog |
+| **AN** | Views | — | — | Backlog |
+| **AO** | Triggers | — | — | Backlog |
+| **AP** | Aggregate Enhancements & Text Indexes | — | — | Backlog |
+| **AQ** | UNION / UNION ALL / INTERSECT / EXCEPT | — | — | Backlog |
+| **AR** | Date / Time Functions | — | — | Backlog |
+| **AS** | Transactions | — | — | Backlog |
+| **AT** | Window Functions | — | — | Backlog |
+| **AU** | CTEs (Common Table Expressions) | — | — | Backlog |
+| **AV** | Foreign Key Enforcement | — | — | Backlog |
 
 ## Sakila Compatibility
 
