@@ -70,12 +70,43 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AG** | Workspace Split: Core Library + CLI Crate | 4 | [phase-ag-workspace-split.md](phase-ag-workspace-split.md) | Planned |
 | **AH** | Decouple `colored` from Core Library | 4 | [phase-ah-decouple-colored.md](phase-ah-decouple-colored.md) | Planned |
 | **AI** | Move `inspect_page` to CLI | 2 | [phase-ai-inspect-to-cli.md](phase-ai-inspect-to-cli.md) | Planned |
+| **AJ** | Type System & Schema Compatibility | — | — | Planned |
+| **AK** | String Operators & Functions | — | — | Planned |
+| **AL** | CASE Expressions | — | — | Planned |
+| **AM** | LEFT / RIGHT OUTER JOIN | — | — | Planned |
+| **AN** | Views | — | — | Planned |
+| **AO** | Triggers | — | — | Planned |
+| **AP** | Aggregate Enhancements & Text Indexes | — | — | Planned |
+| **AQ** | UNION / UNION ALL / INTERSECT / EXCEPT | — | — | Planned |
+| **AR** | Date / Time Functions | — | — | Planned |
+| **AS** | Transactions | — | — | Planned |
+| **AT** | Window Functions | — | — | Planned |
+| **AU** | CTEs (Common Table Expressions) | — | — | Planned |
+| **AV** | Foreign Key Enforcement | — | — | Planned |
+
+## Sakila Compatibility
+
+Phases AJ–AV are ordered to progressively support the [sqlite-sakila-db](https://github.com/jOOQ/sakila/tree/main/sqlite-sakila-db) benchmark schema. Each phase unlocks more of the schema/data/views:
+
+| After Phase | Sakila milestone |
+|-------------|-----------------|
+| AJ | All 18 CREATE TABLEs execute; INSERT data loads |
+| AK + AL + AM | View SELECT bodies work as standalone queries |
+| AN | All 5 views queryable (customer_list, film_list, staff_list, sales_by_store, sales_by_film_category) |
+| AB + AN | IN/subquery patterns + views |
+| AO | Full schema loads without stripping triggers |
+| AP | Text indexes optimized; GROUP_CONCAT queries |
+| AQ | Set-operation queries |
+| AR | Date/time expressions in triggers and queries |
+| AS | Safe transactional bulk data loading |
+| AT | Analytical / ranking queries |
+| AU | CTE-based reporting |
+| AV | Full referential integrity enforced |
 
 ## Future
 
 * support aggregation for joins
 * multi-column joins — extend planner and JoinResolver to support multiple JOIN clauses and multi-column ON conditions (a.x = b.x AND a.y = b.y)
-* take the example sql db, extract missing features and order them here [example](https://github.com/jOOQ/sakila/tree/main/sqlite-sakila-db)
 
 ## Verification (all phases)
 
