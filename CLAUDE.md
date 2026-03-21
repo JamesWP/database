@@ -45,6 +45,29 @@ CREATE TABLE users (id INTEGER, name TEXT)
 
 **Manual Tests:** See `manual_tests/README.md` for end-to-end scenarios and REPL tests.
 
+## Workflow Rules
+
+- When asked to create a plan or design document, do NOT start implementing code. Only write the plan document unless explicitly asked to implement.
+
+## Phase Planning
+
+- Before assigning a new phase ID (e.g., Phase AD, Phase Y), always check existing phases on both local and remote branches to avoid conflicts.
+
+## Git Workflow
+
+- When creating PRs or commits, ensure each plan/feature goes on its own branch. Never commit plan documents to the wrong branch.
+- When working with git operations, keep changes local unless explicitly asked to push. Never use `gh pr merge` unless the user explicitly requests it.
+
+## Testing
+
+- Always run `cargo test` after changes and ensure all tests pass before committing.
+- Use the project's `update-sql-tests` binary for updating SQL test expected outputs — never manually edit test output.
+
+## Architecture Principles
+
+- Prefer extending existing abstractions (e.g., reusing IndexScan) over creating new node types or complex abstractions.
+- Ask before introducing new architectural patterns.
+
 ## Development Workflow
 
 **TDD Process:**
