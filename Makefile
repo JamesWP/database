@@ -1,6 +1,9 @@
 DOT=dot
 SHELL=/bin/bash
 
+install-hooks:
+	git config core.hooksPath .githooks
+
 PROG=target/release/database
 
 VHS=PATH="$(PWD)/.bin:$(PATH)" vhs

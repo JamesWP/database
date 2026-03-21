@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+echo "Running tests before commit..."
+cargo test --quiet 2>&1 | tail -5

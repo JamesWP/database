@@ -68,6 +68,14 @@ cargo test                       # All tests must pass
 
 **Task Tracking:** Use TaskCreate/TaskUpdate to track multi-step work. Update status: pending → in_progress → completed.
 
+## Git Hooks
+
+A pre-commit hook lives in `.githooks/pre-commit` and runs `cargo test` before each commit. Activate it once after cloning:
+
+```bash
+make install-hooks
+```
+
 ## Git & Commits
 
 **Merge Strategy:** PRs are merged with **rebase** (not merge commits). Keep branches clean — avoid revert commits. If a commit needs undoing before merge, drop it with `git reset` + `git push --force-with-lease` rather than adding a revert on top.
