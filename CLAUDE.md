@@ -49,25 +49,6 @@ CREATE TABLE users (id INTEGER, name TEXT)
 
 - When asked to create a plan or design document, do NOT start implementing code. Only write the plan document unless explicitly asked to implement.
 
-## Phase Planning
-
-- Before assigning a new phase ID (e.g., Phase AD, Phase Y), always check existing phases on both local and remote branches to avoid conflicts.
-
-## Git Workflow
-
-- When creating PRs or commits, ensure each plan/feature goes on its own branch. Never commit plan documents to the wrong branch.
-- When working with git operations, keep changes local unless explicitly asked to push. Never use `gh pr merge` unless the user explicitly requests it.
-
-## Testing
-
-- Always run `cargo test` after changes and ensure all tests pass before committing.
-- Use the project's `update-sql-tests` binary for updating SQL test expected outputs — never manually edit test output.
-
-## Architecture Principles
-
-- Prefer extending existing abstractions (e.g., reusing IndexScan) over creating new node types or complex abstractions.
-- Ask before introducing new architectural patterns.
-
 ## Development Workflow
 
 **TDD Process:**
@@ -83,6 +64,8 @@ cargo build 2>&1 | grep warning  # Zero warnings policy - fix all warnings
 cargo test                       # All tests must pass
 ```
 
+- Use the project's `update-sql-tests` binary for updating SQL test expected outputs — never manually edit test output.
+
 **Task Tracking:** Use TaskCreate/TaskUpdate to track multi-step work. Update status: pending → in_progress → completed.
 
 ## Git & Commits
@@ -95,6 +78,9 @@ cargo test                       # All tests must pass
 - For multi-item phases: commit each item separately, infrastructure changes first
 - Wait for user approval after staging, before committing
 - Keep each branch to a single concern — unrelated commits belong on their own branch and PR
+- Each plan/feature goes on its own branch; never commit plan documents to the wrong branch
+- Keep changes local unless explicitly asked to push; never use `gh pr merge` unless explicitly requested
+- Before assigning a new phase ID (e.g., Phase AD, Phase Y), check existing phases on both local and remote branches to avoid conflicts
 
 **Standard Workflow:**
 ```bash
@@ -109,6 +95,9 @@ git commit -m "message"                 # After approval
 **Phase Completion:** Run final verification, show summary (`git log --oneline -N`), update documentation.
 
 ## Architecture
+
+- Prefer extending existing abstractions (e.g., reusing IndexScan) over creating new node types or complex abstractions.
+- Ask before introducing new architectural patterns.
 
 The database follows a layered architecture:
 
