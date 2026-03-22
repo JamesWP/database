@@ -991,16 +991,22 @@ mod tests {
             rootpage: 5,
             columns: vec![
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "id".to_string(),
                 },
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "name".to_string(),
                 },
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "age".to_string(),
@@ -1083,16 +1089,22 @@ mod tests {
             rootpage: 1,
             columns: vec![
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "id".to_string(),
                 },
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "name".to_string(),
                 },
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "dept_id".to_string(),
@@ -1105,11 +1117,15 @@ mod tests {
             rootpage: 2,
             columns: vec![
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "id".to_string(),
                 },
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "name".to_string(),
@@ -1176,11 +1192,15 @@ mod tests {
             rootpage: 1,
             columns: vec![
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "id".to_string(),
                 },
                 schema::Column {
+                    data_type: None,
+                    default: None,
                     primary_key: false,
                     unique: false,
                     name: "dept_id".to_string(),
@@ -1192,6 +1212,8 @@ mod tests {
             name: "departments".to_string(),
             rootpage: 2,
             columns: vec![schema::Column {
+                data_type: None,
+                default: None,
                 primary_key: false,
                 unique: false,
                 name: "id".to_string(),
