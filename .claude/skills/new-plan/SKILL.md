@@ -61,6 +61,16 @@ When the answer is unclear, present both options to the user with a short before
 
 Pick the next available phase identifier following the existing sequence visible in `doc/plan/README.md`. Use a letter (e.g. `L`) or a numbered suffix (e.g. `G5`) depending on the context of the phase.
 
+## Stubs and Partial Implementations
+
+When a planned item intentionally implements something only partially — e.g. a constraint is parsed but not enforced, a syntax is accepted but ignored, a feature returns a placeholder — call it out explicitly in the plan document:
+
+- Label the item or step as a **stub** in the plan text.
+- Note what `// TODO(phase-<id>): ...` comment will be added at implementation time.
+- Note which future phase will complete it (if known).
+
+This ensures that when `next-phase` implements the plan, it knows where to place TODO markers, and the `doc/plan/README.md` **Stubbed Features** table stays accurate.
+
 ## Write the Plan File
 
 Create `doc/plan/phase-<id>-<short-slug>.md` following the structure used in existing phase files:
