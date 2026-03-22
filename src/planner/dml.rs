@@ -1,7 +1,7 @@
 //! DML planning: INSERT, UPDATE, DELETE.
 
 use crate::catalog::Catalog;
-use crate::frontend::ast;
+use crate::frontend::ast::{self, DataType};
 
 use schema::resolve_table;
 
@@ -46,9 +46,12 @@ pub(super) fn plan_insert(
                 }
                 let literals: Vec<Literal> = value_row
                     .iter()
-                    .map(|expr| {
+                    .enumerate()
+                    .map(|(i, expr)| {
                         let plan_expr = convert_expr(expr, &no_resolver)?;
-                        eval_constant(&plan_expr)
+                        let lit = eval_constant(&plan_expr)?;
+                        let target_type = table.columns[table_columns[i]].data_type.as_ref();
+                        coerce_literal(lit, target_type)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 rows.push(literals);
@@ -88,7 +91,7 @@ pub(super) fn plan_insert(
         indexes.push(IndexMaintenanceInfo {
             rootpage: index_info.rootpage,
             column_idxs,
-            unique: index_info.unique,
+            unique: index_sql_is_unique(&index_info.sql),
         });
     }
 
@@ -153,7 +156,7 @@ pub(super) fn plan_update(
         indexes.push(IndexMaintenanceInfo {
             rootpage: index_info.rootpage,
             column_idxs,
-            unique: index_info.unique,
+            unique: index_sql_is_unique(&index_info.sql),
         });
     }
 
@@ -202,7 +205,7 @@ pub(super) fn plan_delete(
         indexes.push(IndexMaintenanceInfo {
             rootpage: index_info.rootpage,
             column_idxs,
-            unique: index_info.unique,
+            unique: index_sql_is_unique(&index_info.sql),
         });
     }
 
@@ -213,6 +216,43 @@ pub(super) fn plan_delete(
         indexes,
     })
 }
+
+/// Coerce a literal value to the target column type for INSERT.
+fn coerce_literal(lit: Literal, target_type: Option<&DataType>) -> Result<Literal, PlanError> {
+    match (lit, target_type) {
+        (Literal::String(s), Some(DataType::Integer)) => s
+            .parse::<i64>()
+            .map(Literal::Integer)
+            .map_err(|_| PlanError::TypeMismatch {
+                expected: "INTEGER".into(),
+                got: s,
+            }),
+        (Literal::String(s), Some(DataType::Real)) => {
+            s.parse::<f64>()
+                .map(Literal::Float)
+                .map_err(|_| PlanError::TypeMismatch {
+                    expected: "REAL".into(),
+                    got: s,
+                })
+        }
+        (Literal::Integer(n), Some(DataType::Real)) => Ok(Literal::Float(n as f64)),
+        (other, _) => Ok(other),
+    }
+}
+
+/// Returns true if the index DDL SQL represents a unique index.
+/// The DDL is `CREATE UNIQUE INDEX ...` for unique indexes and `CREATE INDEX ...` otherwise.
+fn index_sql_is_unique(sql: &str) -> bool {
+    let upper = sql.to_uppercase();
+    // Match "CREATE UNIQUE INDEX" (with any whitespace between tokens)
+    let after_create = upper
+        .trim_start()
+        .strip_prefix("CREATE")
+        .unwrap_or("")
+        .trim_start();
+    after_create.starts_with("UNIQUE")
+}
+
 
 // ============================================================================
 // Tests

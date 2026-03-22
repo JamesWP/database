@@ -128,8 +128,10 @@ pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, Execut
                     let prefix = if is_pk { "_pk_" } else { "_uq_" };
                     let index_name = format!("{}{}_{}", prefix, name, col.name);
                     let index_rootpage = catalog.btree_mut().create_tree();
-                    let index_sql =
-                        format!("CREATE INDEX {} ON {}({})", index_name, name, col.name);
+                    let index_sql = format!(
+                        "CREATE UNIQUE INDEX {} ON {}({})",
+                        index_name, name, col.name
+                    );
                     catalog.insert_entry("index", &index_name, name, index_rootpage, &index_sql);
                 }
             }

@@ -7,13 +7,22 @@ pub struct IndexInfo {
     pub index_name: String,
     pub column_names: Vec<String>,
     pub rootpage: u32,
-    /// Derived from name prefix: `_pk_` = primary key, `_uq_` = unique.
-    /// Phase 109.1 will replace this heuristic with DDL parsing.
-    pub unique: bool,
+    /// The DDL SQL stored in the catalog (e.g. `CREATE UNIQUE INDEX ...`).
+    /// Use this to determine uniqueness rather than the index name prefix.
+    pub sql: String,
 }
 
 /// Schema catalog layer: owns a BTree and provides all SQL-level schema
 /// lookup and mutation operations. The underlying BTree is pure K-V storage.
+///
+/// # API design principle
+///
+/// Methods on `Catalog` should return pre-parsed, structured data — callers
+/// must not need to inspect raw DDL strings to answer semantic questions.
+/// For example, index lookup should return a `unique: bool` field rather than
+/// a raw SQL string that the caller parses to determine uniqueness.
+/// Raw DDL may be stored internally and exposed for display or persistence,
+/// but keep the semantic interpretation here, at the catalog boundary.
 pub struct Catalog {
     btree: BTree,
 }
@@ -150,12 +159,11 @@ impl Catalog {
                             let rp = values[3].as_u64().unwrap() as u32;
                             let sql = values[4].as_str().unwrap_or("");
                             let column_names = extract_columns_from_index_sql(sql);
-                            let unique = name.starts_with("_pk_") || name.starts_with("_uq_");
                             indexes.push(IndexInfo {
                                 index_name: name,
                                 column_names,
                                 rootpage: rp,
-                                unique,
+                                sql: sql.to_string(),
                             });
                         }
                     }
@@ -559,10 +567,10 @@ mod tests {
             "_pk_t_id",
             "t",
             idx_rp,
-            "CREATE INDEX _pk_t_id ON t(id)",
+            "CREATE UNIQUE INDEX _pk_t_id ON t(id)",
         );
         let indexes = cat.lookup_indexes_for_table("t");
-        assert!(indexes[0].unique);
+        assert!(indexes[0].sql.to_uppercase().contains("UNIQUE"));
     }
 
     #[test]
@@ -576,10 +584,10 @@ mod tests {
             "_uq_t_email",
             "t",
             idx_rp,
-            "CREATE INDEX _uq_t_email ON t(email)",
+            "CREATE UNIQUE INDEX _uq_t_email ON t(email)",
         );
         let indexes = cat.lookup_indexes_for_table("t");
-        assert!(indexes[0].unique);
+        assert!(indexes[0].sql.to_uppercase().contains("UNIQUE"));
     }
 
     #[test]
@@ -596,7 +604,7 @@ mod tests {
             "CREATE INDEX idx_t_age ON t(age)",
         );
         let indexes = cat.lookup_indexes_for_table("t");
-        assert!(!indexes[0].unique);
+        assert!(!indexes[0].sql.to_uppercase().contains("UNIQUE"));
     }
 
     // ---- PRIMARY KEY / UNIQUE implicit index entries ----
@@ -619,12 +627,15 @@ mod tests {
             "_pk_t_id",
             "t",
             idx_rp,
-            "CREATE INDEX _pk_t_id ON t(id)",
+            "CREATE UNIQUE INDEX _pk_t_id ON t(id)",
         );
         let indexes = cat.lookup_indexes_for_table("t");
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].column_names, vec!["id"]);
-        assert!(indexes[0].unique, "PRIMARY KEY index must be unique");
+        assert!(
+            indexes[0].sql.to_uppercase().contains("UNIQUE"),
+            "PRIMARY KEY index must be unique"
+        );
     }
 
     #[test]
@@ -645,12 +656,15 @@ mod tests {
             "_uq_t_name",
             "t",
             idx_rp,
-            "CREATE INDEX _uq_t_name ON t(name)",
+            "CREATE UNIQUE INDEX _uq_t_name ON t(name)",
         );
         let indexes = cat.lookup_indexes_for_table("t");
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].column_names, vec!["name"]);
-        assert!(indexes[0].unique, "UNIQUE index must be unique");
+        assert!(
+            indexes[0].sql.to_uppercase().contains("UNIQUE"),
+            "UNIQUE index must be unique"
+        );
     }
 
     // ---- persistence ----
