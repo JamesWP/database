@@ -161,6 +161,26 @@ cargo run -- mydb.db planner plan "SELECT name FROM users WHERE id = 1"
 cargo run -- mydb.db btree inspect all
 ```
 
+### Running a SQL script file
+
+Use `file` mode to execute a `.sql` script containing multiple statements. Statements are split on `;`; `--` line comments and `/* */` block comments are stripped before execution.
+
+```bash
+cargo run -- mydb.db file path/to/script.sql
+```
+
+This is how the sakila sample database is loaded:
+
+```bash
+# Strip triggers/views, then load schema and data
+make sakila-schema-stripped.sql
+cargo run --release -- sakila.db file sakila-schema-stripped.sql
+cargo run --release -- sakila.db file path/to/sqlite-sakila-insert-data.sql
+
+# Or with the Makefile target (clones sakila repo automatically if ../sakila is absent):
+make test-sakila
+```
+
 ## References
 
 - B-tree design: https://cglab.ca/~abeinges/blah/rust-btree-case/

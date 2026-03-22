@@ -1,6 +1,29 @@
 DOT=dot
 SHELL=/bin/bash
 
+# Path to the sakila sqlite repo (clone it automatically if absent)
+SAKILA_DIR ?= $(dir $(abspath $(lastword $(MAKEFILE_LIST))))../sakila
+SAKILA_REPO ?= https://github.com/jOOQ/sakila.git
+SAKILA_SCHEMA = $(SAKILA_DIR)/sqlite-sakila-db/sqlite-sakila-schema.sql
+SAKILA_DATA   = $(SAKILA_DIR)/sqlite-sakila-db/sqlite-sakila-insert-data.sql
+
+# Fetch sakila repo if not present
+$(SAKILA_SCHEMA):
+	git clone --depth 1 $(SAKILA_REPO) $(SAKILA_DIR)
+
+# Strip triggers/views to produce a schema our engine can load
+sakila-schema-stripped.sql: $(SAKILA_SCHEMA) scripts/strip-sakila.py
+	python3 scripts/strip-sakila.py $(SAKILA_SCHEMA) > $@
+
+# Run the full sakila test: load schema + insert data
+test-sakila: sakila-schema-stripped.sql $(SAKILA_DATA) target/release/database
+	@echo "=== Loading sakila schema ==="
+	rm -f sakila.db
+	$(PROG) sakila.db file sakila-schema-stripped.sql
+	@echo "=== Loading sakila data ==="
+	$(PROG) sakila.db file $(SAKILA_DATA)
+	@echo "=== sakila load complete ==="
+
 install-hooks:
 	git config core.hooksPath .githooks
 
