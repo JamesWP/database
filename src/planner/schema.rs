@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::catalog::Catalog;
-use crate::frontend::ast::{ColumnConstraint, Statement};
+use crate::frontend::ast::{ColumnConstraint, DataType, DefaultValue, Statement};
 use crate::frontend::parse;
 
 use super::PlanError;
@@ -23,6 +23,8 @@ pub struct Table {
 #[derive(Debug, Clone)]
 pub struct Column {
     pub name: String,
+    pub data_type: Option<DataType>,
+    pub default: Option<DefaultValue>,
     pub primary_key: bool,
     pub unique: bool,
 }
@@ -83,6 +85,33 @@ mod tests {
         assert!(table.columns[1].unique);
         assert!(!table.columns[1].primary_key);
     }
+
+    #[test]
+    fn test_schema_preserves_varchar_as_text() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE t (id INTEGER, name VARCHAR(45))",
+            &mut db.catalog,
+        )
+        .unwrap();
+        let table = resolve_table("t", &db.catalog).unwrap();
+        assert_eq!(table.columns[1].data_type, Some(DataType::Text));
+    }
+
+    #[test]
+    fn test_index_on_varchar_column_succeeds() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE t (id INTEGER, name VARCHAR(45))",
+            &mut db.catalog,
+        )
+        .unwrap();
+        let result = execute("CREATE INDEX idx_name ON t(name)", &mut db.catalog);
+        assert!(
+            result.is_ok(),
+            "Expected index creation to succeed, got: {result:?}"
+        );
+    }
 }
 
 pub fn resolve_table(table_name: &str, catalog: &Catalog) -> Result<Table, PlanError> {
@@ -102,6 +131,8 @@ pub fn resolve_table(table_name: &str, catalog: &Catalog) -> Result<Table, PlanE
         .into_iter()
         .map(|col| Column {
             name: col.name,
+            data_type: col.type_name,
+            default: col.default,
             primary_key: col.constraints.contains(&ColumnConstraint::PrimaryKey),
             unique: col.constraints.contains(&ColumnConstraint::Unique)
                 || col.constraints.contains(&ColumnConstraint::PrimaryKey),
