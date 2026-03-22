@@ -70,7 +70,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AG** | Workspace Split: Core Library + CLI Crate | 4 | [phase-ag-workspace-split.md](phase-ag-workspace-split.md) | Planned |
 | **AH** | Decouple `colored` from Core Library | 4 | [phase-ah-decouple-colored.md](phase-ah-decouple-colored.md) | Planned |
 | **AI** | Move `inspect_page` to CLI | 2 | [phase-ai-inspect-to-cli.md](phase-ai-inspect-to-cli.md) | Planned |
-| **AJ** | Type System & Schema Compatibility | — | — | Backlog |
+| **AJ** | Type System & Schema Compatibility | 8 | [phase-aj-type-system.md](phase-aj-type-system.md) | Planned |
 | **AK** | String Operators & Functions | — | — | Backlog |
 | **AL** | CASE Expressions | — | — | Backlog |
 | **AM** | LEFT / RIGHT OUTER JOIN | — | — | Backlog |
