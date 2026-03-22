@@ -103,6 +103,16 @@ Phases AJ–AV are ordered to progressively support the [sqlite-sakila-db](https
 | AU | CTE-based reporting |
 | AV | Full referential integrity enforced |
 
+## Stubbed Features
+
+Features that are currently parsed or partially handled but not fully implemented. Updated at the end of each phase.
+
+| Feature | Stub behaviour | Tracking |
+|---------|---------------|----------|
+| FOREIGN KEY constraints | Parsed and silently ignored (phase AJ) | TODO phase-av |
+| CHECK constraints | Parsed and silently ignored (phase AJ) | TODO phase-av |
+| NOT NULL enforcement for INSERT defaults | Omitted columns without defaults are NULL, not rejected (phase AJ) | TODO phase-aj |
+
 ## Future
 
 * support aggregation for joins

@@ -40,12 +40,34 @@ provide a recomended next step.
 - Use TaskCreate to track progress through multi-step phases
 - Run `cargo test` before and after changes
 
+## Stub / Partial Implementation Tracking
+
+Some items are intentionally implemented partially — e.g. a constraint is parsed but not enforced, a type is accepted but coercion is deferred, a feature is recognised but returns a placeholder. These are **stubs**.
+
+At the end of the phase (not per-commit), for every stub introduced:
+
+1. Add a `// TODO(phase-<id>): <description>` comment at the stub site in the code.
+2. Add or update a **Stubbed Features** section in `doc/plan/README.md` listing every currently active stub. Use this format:
+
+```markdown
+## Stubbed Features
+
+| Feature | Stub behaviour | Tracking |
+|---------|---------------|----------|
+| FOREIGN KEY constraints | Parsed and silently ignored | TODO phase-av |
+| CHECK constraints | Parsed and silently ignored | TODO phase-av |
+| NOT NULL on DEFAULT-less omitted columns | Treated as NULL (permissive) | TODO phase-aj |
+```
+
+Remove a row from the table when the stub is fully implemented. The table gives users and future Claude sessions a quick picture of current limitations.
+
 ## Completion Steps
 
 After implementing all items in the phase:
 
-1. Move the phase file to `doc/plan/completed/`
-2. Update `doc/plan/README.md` to mark the phase as Completed
-3. Commit: `git add doc/plan/ && git commit -m "Mark Phase <X> as completed"`
-4. Push the branch: `git push -u origin <branch>`
-5. Create a PR: `gh pr create --title "Phase <X>: <title>" --body "..."`
+1. Add/update the **Stubbed Features** table in `doc/plan/README.md` as described above.
+2. Move the phase file to `doc/plan/completed/`
+3. Update the phase row in `doc/plan/README.md` to mark it as Completed.
+4. Commit: `git add doc/plan/ && git commit -m "Mark Phase <X> as completed"`
+5. Push the branch: `git push -u origin <branch>`
+6. Create a PR: `gh pr create --title "Phase <X>: <title>" --body "..."`
