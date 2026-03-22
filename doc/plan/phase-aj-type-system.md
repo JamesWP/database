@@ -8,7 +8,8 @@ Make the sakila `sqlite-sakila-schema.sql` CREATE TABLE statements execute succe
 |---|-------|------|------------|
 | 107 | 1 | Lexer: block comment support `/* ... */` | — |
 | 108 | 1 | Parser: type aliases — VARCHAR, CHAR, INT, SMALLINT, DECIMAL, TIMESTAMP, etc. | — |
-| 109 | 1 | Parser: `CREATE UNIQUE INDEX` syntax | — |
+| 109.1 | 1 | Refactor: move unique determination to planner; store UNIQUE DDL for implicit indexes | — |
+| 109.2 | 1 | Parser: `CREATE UNIQUE INDEX` syntax | 109.1 |
 | 110 | 1 | Parser: table-level constraints — skip CONSTRAINT, FOREIGN KEY, CHECK | 108 |
 | 111 | 1 | Parser + AST: DEFAULT value in column definitions | 108 |
 | 112 | 2 | Schema: propagate `DataType` through `Column`; fix index validation | 108 |
@@ -135,7 +136,7 @@ fn parse_optional_data_type(&mut self) -> Option<ast::DataType> {
             if let lexer::Type::Identifier(s) = self.input.peek() {
                 if s.to_lowercase() == "sub_type" {
                     self.input.advance(); // consume SUB_TYPE
-                    self.input.advance(); // consume TEXT (any identifier)
+                    self.input.advance(); // consume TEXT (Type::Text keyword)
                 }
             }
             Some(ast::DataType::Blob)
@@ -237,11 +238,25 @@ The parser currently handles `CREATE INDEX` but not `CREATE UNIQUE INDEX`. After
 
 ### Implementation Approach
 
+#### Step 109.1 — Refactor: move unique determination out of the storage layer (preparatory)
+
+`lookup_indexes_for_table()` in `btree.rs` currently derives `unique` from the `_pk_`/`_uq_` name prefix. This is wrong in principle — the storage layer should not interpret DDL semantics. SQLite's model is the right one: uniqueness is recorded in the DDL and inferred by parsing it at a higher layer.
+
+Changes (existing code only, no new SQL syntax):
+
+1. **`db.rs`** — fix the implicit index DDL stored for PRIMARY KEY and UNIQUE column constraints to use `CREATE UNIQUE INDEX` instead of `CREATE INDEX`. The stored SQL becomes the single source of truth for uniqueness.
+2. **`btree.rs`** — `IndexInfo` drops `unique: bool` and adds `sql: String`. `lookup_indexes_for_table()` removes the `_pk_`/`_uq_` prefix check entirely and returns the raw SQL. The `_pk_`/`_uq_` names are retained for namespacing but are no longer load-bearing.
+3. **`dml.rs`** — when building `IndexMaintenanceInfo` from `IndexInfo`, call `parse(&info.sql)` to get a `CreateIndexStatement` and read `stmt.unique`. This mirrors `resolve_table()`.
+
+After this step, existing PRIMARY KEY and UNIQUE column constraint enforcement is unchanged — only the mechanism for determining uniqueness has moved to the correct layer.
+
+#### Step 109.2 — Parser + AST: `CREATE UNIQUE INDEX` syntax (new feature)
+
 In the `Statement::Create` arm of the top-level parser, after consuming `CREATE`, peek:
 - If `UNIQUE` → advance past `UNIQUE`, expect `INDEX`, then call `parse_create_index_statement()`
 - If `INDEX` → call `parse_create_index_statement()` as before
 
-The `CreateIndexStatement` already has a name, table, and column list. Add a `unique: bool` field so the unique constraint is honoured at creation time (it already creates a B-tree index; the `UNIQUE` constraint is enforced via the existing unique-index machinery).
+Add a `unique: bool` field to `CreateIndexStatement`:
 
 ```rust
 #[derive(Debug)]
@@ -273,13 +288,15 @@ lexer::Type::Create => {
 }
 ```
 
-In `db.rs`, when handling `CreateIndex`, pass `ci.unique` to `insert_schema_entry` so the index is recorded with the `unique` flag (this already works for the implicit `_pk_` and `_uq_` indexes).
+In `db.rs`, the `CreateIndex` handler stores `CREATE UNIQUE INDEX` in the catalog DDL when `ci.unique` is true — consistent with step 109.1's convention. The planner (`dml.rs`) already parses the SQL after step 109.1, so unique enforcement for the new index is automatic.
 
 ### Key Files
 
-- `src/frontend/ast.rs` — `CreateIndexStatement.unique` field
-- `src/frontend/parser.rs` — `CREATE UNIQUE INDEX` dispatch
-- `src/db.rs` — honour `unique` flag from `CreateIndexStatement`
+- `src/storage/btree.rs` — `IndexInfo`: drop `unique`, add `sql`; remove prefix check (step 109.1)
+- `src/db.rs` — store `CREATE UNIQUE INDEX` for implicit unique indexes (step 109.1) and explicit (step 109.2)
+- `src/planner/dml.rs` — parse `IndexInfo.sql` to determine `unique` (step 109.1)
+- `src/frontend/ast.rs` — `CreateIndexStatement.unique` field (step 109.2)
+- `src/frontend/parser.rs` — `CREATE UNIQUE INDEX` dispatch (step 109.2)
 
 ### Tests
 
@@ -298,9 +315,13 @@ INSERT INTO rental VALUES (2, '2005-05-24', 367, 130)
 -- > ERROR: UNIQUE constraint violation
 ```
 
-### Implementation Steps (1 commit)
+### Implementation Steps (2 commits)
 
-#### Step 109.1 — Parser + AST: `CREATE UNIQUE INDEX`; propagate `unique` flag
+#### Step 109.1 — Refactor: unique determination via DDL parse; remove name-prefix check from storage
+
+**Commit:** `Storage: move unique index determination to planner; store UNIQUE DDL for implicit indexes`
+
+#### Step 109.2 — Parser + AST: `CREATE UNIQUE INDEX`; propagate `unique` flag through db.rs
 
 **Commit:** `Parser: support CREATE UNIQUE INDEX syntax`
 
@@ -328,12 +349,12 @@ The fix: after consuming a `,`, peek at the next token. If it indicates a table-
 
 ```rust
 fn is_table_level_constraint(t: &lexer::Type) -> bool {
-    matches!(t,
-        lexer::Type::Primary
-        | lexer::Type::Unique
-        | lexer::Type::Identifier(s) if matches!(s.to_lowercase().as_str(),
-            "constraint" | "foreign" | "check")
-    )
+    match t {
+        lexer::Type::Primary | lexer::Type::Unique => true,
+        lexer::Type::Identifier(s) => matches!(s.as_str(),
+            "constraint" | "foreign" | "check"),
+        _ => false,
+    }
 }
 
 fn skip_table_constraint(&mut self) {
@@ -735,9 +756,9 @@ SELECT id, label, score FROM t WHERE id = 2
 - [ ] `cargo test` — all existing tests pass
 - [ ] `cargo fmt && cargo build 2>&1 | grep -i warning` — zero warnings
 - [ ] Parse the full sakila schema (with triggers and views stripped): `cargo run -- sakila.db sql < sqlite-sakila-schema-stripped.sql`
-- [ ] All 18 CREATE TABLE statements succeed
-- [ ] All 25 CREATE INDEX statements succeed (including `CREATE UNIQUE INDEX`)
-- [ ] Load the full INSERT data: all ~16k rows inserted across 18 tables
+- [ ] All 16 CREATE TABLE statements succeed
+- [ ] All 24 CREATE INDEX statements succeed (23 regular + 1 `CREATE UNIQUE INDEX`)
+- [ ] Load the full INSERT data: all ~46k rows inserted across 16 tables
 - [ ] Integer coercion: `'1'` inserted into an INTEGER column reads back as integer 1
 - [ ] DEFAULT: omitting a column with a DEFAULT uses the default value
 - [ ] Block comments `/* ... */` at the start of the schema file are skipped
