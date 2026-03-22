@@ -468,16 +468,20 @@ impl Parser {
     fn parse_column_def(&mut self) -> ParseResult<ast::ColumnDef> {
         let name = self.parse_identifier()?;
         let type_name = self.parse_optional_data_type();
-        let constraints = self.parse_column_constraints();
+        let (constraints, default) = self.parse_column_constraints();
         Ok(ast::ColumnDef {
             name,
             type_name,
             constraints,
+            default,
         })
     }
 
-    fn parse_column_constraints(&mut self) -> Vec<ast::ColumnConstraint> {
+    fn parse_column_constraints(
+        &mut self,
+    ) -> (Vec<ast::ColumnConstraint>, Option<ast::DefaultValue>) {
         let mut cs = Vec::new();
+        let mut default = None;
         loop {
             match self.input.peek() {
                 lexer::Type::Primary => {
@@ -494,10 +498,52 @@ impl Parser {
                     self.input.expect(Expect::Null).ok();
                     cs.push(ast::ColumnConstraint::NotNull);
                 }
+                lexer::Type::Default => {
+                    self.input.advance(); // consume DEFAULT
+                    default = match self.input.peek() {
+                        lexer::Type::Null => {
+                            self.input.advance();
+                            Some(ast::DefaultValue::Null)
+                        }
+                        lexer::Type::String(s) => {
+                            self.input.advance();
+                            Some(ast::DefaultValue::Text(s))
+                        }
+                        lexer::Type::IntegerNumber(n) => {
+                            self.input.advance();
+                            Some(ast::DefaultValue::Integer(n))
+                        }
+                        lexer::Type::FloatingPointNumber(f) => {
+                            self.input.advance();
+                            Some(ast::DefaultValue::Float(f))
+                        }
+                        lexer::Type::Minus => {
+                            self.input.advance();
+                            match self.input.peek() {
+                                lexer::Type::IntegerNumber(n) => {
+                                    self.input.advance();
+                                    Some(ast::DefaultValue::Integer(-n))
+                                }
+                                lexer::Type::FloatingPointNumber(f) => {
+                                    self.input.advance();
+                                    Some(ast::DefaultValue::Float(-f))
+                                }
+                                _ => None,
+                            }
+                        }
+                        lexer::Type::LeftParen => {
+                            // DEFAULT (expr) — skip the whole parenthesized expression
+                            // TODO(phase-aj): evaluate expression defaults
+                            self.consume_optional_type_param();
+                            None
+                        }
+                        _ => None,
+                    };
+                }
                 _ => break,
             }
         }
-        cs
+        (cs, default)
     }
 
     fn parse_optional_data_type(&mut self) -> Option<ast::DataType> {

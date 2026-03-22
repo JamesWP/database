@@ -89,6 +89,7 @@ pub enum Type {
     Primary,
     Key,
     Unique,
+    Default,
 
     #[allow(dead_code)]
     Error(Error),
@@ -536,6 +537,7 @@ impl<'a> Lexer<'a> {
                 Some('e') => match ident.chars().nth(2) {
                     Some('l') => match_reserved(ident, "delete", Type::Delete),
                     Some('s') => match_reserved(ident, "desc", Type::Desc),
+                    Some('f') => match_reserved(ident, "default", Type::Default),
                     _ => Type::Identifier(ident.to_owned()),
                 },
                 Some('i') => match_reserved(ident, "distinct", Type::Distinct),

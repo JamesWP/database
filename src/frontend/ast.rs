@@ -68,6 +68,7 @@ pub struct ColumnDef {
     #[allow(dead_code)]
     pub type_name: Option<DataType>,
     pub constraints: Vec<ColumnConstraint>,
+    pub default: Option<DefaultValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +77,15 @@ pub enum DataType {
     Text,
     Real,
     Blob,
+}
+
+/// A DEFAULT value as parsed from a column definition.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DefaultValue {
+    Null,
+    Integer(i64),
+    Float(f64),
+    Text(String),
 }
 
 #[derive(Debug)]
