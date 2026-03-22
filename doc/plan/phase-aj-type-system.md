@@ -39,6 +39,17 @@ For the "AG/AJ milestone" of running sakila, triggers and views are still remove
 
 ---
 
+## Stubs
+
+| Stub | Behaviour | TODO marker | Completed by |
+|------|-----------|-------------|--------------|
+| FOREIGN KEY constraints | Parsed and silently ignored by `skip_table_constraint()` | `TODO(phase-aj): enforce FK referential integrity` | Phase AV |
+| CHECK constraints | Parsed and silently ignored by `skip_table_constraint()` | `TODO(phase-aj): enforce CHECK expressions` | Phase AV |
+| NOT NULL + missing default on INSERT | Omitted columns without a DEFAULT are filled with NULL rather than rejected | `TODO(phase-aj): reject NOT NULL columns with no default` | Future (NOT NULL enforcement phase) |
+| Expression DEFAULTs e.g. `DEFAULT (DATETIME('now'))` | Parenthesised expression consumed and treated as no default | `TODO(phase-aj): evaluate expression defaults` | Phase AO (date/time functions) |
+
+---
+
 ## 107. Lexer: block comment support `/* ... */` (Track 1)
 
 ### What Changes

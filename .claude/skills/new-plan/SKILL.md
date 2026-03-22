@@ -63,13 +63,24 @@ Pick the next available phase identifier following the existing sequence visible
 
 ## Stubs and Partial Implementations
 
-When a planned item intentionally implements something only partially — e.g. a constraint is parsed but not enforced, a syntax is accepted but ignored, a feature returns a placeholder — call it out explicitly in the plan document:
+When a planned item intentionally implements something only partially — e.g. a constraint is parsed but not enforced, a syntax is accepted but ignored, a feature returns a placeholder — call it out explicitly in the plan document.
 
-- Label the item or step as a **stub** in the plan text.
-- Note what `// TODO(phase-<id>): ...` comment will be added at implementation time.
-- Note which future phase will complete it (if known).
+Each phase file must include a **Stubs** section (between the Overview and the per-item sections) listing every stub the phase introduces. This makes stubs visible and reviewable at planning time, before any code is written.
 
-This ensures that when `next-phase` implements the plan, it knows where to place TODO markers, and the `doc/plan/README.md` **Stubbed Features** table stays accurate.
+```markdown
+## Stubs
+
+| Stub | Behaviour | TODO marker | Completed by |
+|------|-----------|-------------|--------------|
+| FOREIGN KEY | Parsed and silently ignored | `TODO(phase-aj): enforce FK` | Phase AV |
+| NOT NULL + missing default | Treated as NULL (permissive) | `TODO(phase-aj): reject if NOT NULL` | Phase AJ (later item) |
+```
+
+When `next-phase` implements the plan, it:
+1. Places the `// TODO(phase-<id>): ...` comment at the stub site in code.
+2. Adds the stub row to the **Stubbed Features** table in `doc/plan/README.md`.
+
+If the phase introduces no stubs, include `## Stubs\n\nNone.` to make the absence explicit.
 
 ## Write the Plan File
 
@@ -94,6 +105,16 @@ Important: Each item should be committed separately, follow 'Git Workflow' in CL
 ## Overview
 
 Why this phase exists. What problem it solves. How it fits with other phases.
+
+---
+
+## Stubs
+
+| Stub | Behaviour | TODO marker | Completed by |
+|------|-----------|-------------|--------------|
+| Example | Parsed and ignored | `TODO(phase-<id>): ...` | Phase XX |
+
+_(Remove this table and replace with "None." if the phase introduces no stubs.)_
 
 ---
 
