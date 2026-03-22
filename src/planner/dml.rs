@@ -44,17 +44,19 @@ pub(super) fn plan_insert(
                         got: value_row.len(),
                     });
                 }
-                let literals: Vec<Literal> = value_row
+                let provided: Vec<(usize, Literal)> = value_row
                     .iter()
                     .enumerate()
                     .map(|(i, expr)| {
                         let plan_expr = convert_expr(expr, &no_resolver)?;
                         let lit = eval_constant(&plan_expr)?;
                         let target_type = table.columns[table_columns[i]].data_type.as_ref();
-                        coerce_literal(lit, target_type)
+                        let lit = coerce_literal(lit, target_type)?;
+                        Ok((table_columns[i], lit))
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
-                rows.push(literals);
+                    .collect::<Result<Vec<_>, PlanError>>()?;
+                let full_row = make_full_row(&provided, &table.columns);
+                rows.push(full_row);
             }
             LogicalPlan::Values { rows }
         }
@@ -97,7 +99,7 @@ pub(super) fn plan_insert(
 
     Ok(LogicalPlan::Insert {
         rootpage: table.rootpage,
-        table_columns,
+        table_columns: (0..num_table_columns).collect(),
         input: Box::new(input_plan),
         indexes,
     })
@@ -217,6 +219,35 @@ pub(super) fn plan_delete(
     })
 }
 
+/// Convert a `DefaultValue` from the AST to a `Literal` for use in INSERT.
+fn default_value_to_literal(dv: &ast::DefaultValue) -> Literal {
+    match dv {
+        ast::DefaultValue::Null => Literal::Null,
+        ast::DefaultValue::Integer(n) => Literal::Integer(*n),
+        ast::DefaultValue::Float(f) => Literal::Float(*f),
+        ast::DefaultValue::Text(s) => Literal::String(s.clone()),
+    }
+}
+
+/// Expand a partial set of `(column_index, value)` pairs into a full row, filling omitted
+/// columns with their DEFAULT value or NULL.
+fn make_full_row(provided: &[(usize, Literal)], all_columns: &[schema::Column]) -> Vec<Literal> {
+    let mut row: Vec<Literal> = all_columns
+        .iter()
+        .map(|col| {
+            col.default
+                .as_ref()
+                .map(default_value_to_literal)
+                // TODO(phase-aj): reject NOT NULL columns with no default
+                .unwrap_or(Literal::Null)
+        })
+        .collect();
+    for (col_idx, lit) in provided {
+        row[*col_idx] = lit.clone();
+    }
+    row
+}
+
 /// Coerce a literal value to the target column type for INSERT.
 fn coerce_literal(lit: Literal, target_type: Option<&DataType>) -> Result<Literal, PlanError> {
     match (lit, target_type) {
@@ -315,13 +346,15 @@ mod tests {
 
         let result = plan(stmt, &test.catalog).expect("Planning failed");
 
+        // After item 114: omitted columns are filled with NULL; table_columns is always full-width.
         let expected = LogicalPlan::Insert {
             rootpage: users_root,
-            table_columns: vec![2, 1], // age=2, name=1
+            table_columns: vec![0, 1, 2], // all columns
             input: Box::new(LogicalPlan::Values {
                 rows: vec![vec![
-                    Literal::Integer(30),
-                    Literal::String("alice".to_string()),
+                    Literal::Null,                        // id (omitted, no default)
+                    Literal::String("alice".to_string()), // name
+                    Literal::Integer(30),                 // age
                 ]],
             }),
             indexes: vec![],
