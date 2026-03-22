@@ -235,8 +235,14 @@ impl Parser {
                         self.parse_create_table_statement_after_create()?,
                     )),
                     lexer::Type::Index => Ok(ast::Statement::CreateIndex(
-                        self.parse_create_index_statement()?,
+                        self.parse_create_index_statement(false)?,
                     )),
+                    lexer::Type::Unique => {
+                        self.input.advance(); // consume UNIQUE
+                        Ok(ast::Statement::CreateIndex(
+                            self.parse_create_index_statement(true)?,
+                        ))
+                    }
                     t => Err(ParseError::UnexpectedToken(Expect::Table, t)),
                 }
             }
@@ -394,9 +400,12 @@ impl Parser {
         })
     }
 
-    fn parse_create_index_statement(&mut self) -> ParseResult<ast::CreateIndexStatement> {
-        // CREATE INDEX idx_name ON table_name(col1, col2, ...)
-        // (CREATE already consumed by caller)
+    fn parse_create_index_statement(
+        &mut self,
+        unique: bool,
+    ) -> ParseResult<ast::CreateIndexStatement> {
+        // CREATE [UNIQUE] INDEX idx_name ON table_name(col1, col2, ...)
+        // (CREATE [UNIQUE] already consumed by caller)
         self.input.expect(Expect::Index)?;
         let index_name = self.parse_identifier()?;
         self.input.expect(Expect::On)?;
@@ -412,6 +421,7 @@ impl Parser {
             index_name,
             table_name,
             column_names,
+            unique,
         })
     }
 
