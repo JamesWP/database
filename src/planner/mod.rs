@@ -396,4 +396,8 @@ pub enum PlanError {
         got: usize,
     },
     InvalidHaving(String),
+    TypeMismatch {
+        expected: String,
+        got: String,
+    },
 }
