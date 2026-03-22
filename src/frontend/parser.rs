@@ -389,7 +389,11 @@ impl Parser {
         columns.push(self.parse_column_def()?);
         while let lexer::Type::Comma = self.input.peek() {
             self.input.advance();
-            columns.push(self.parse_column_def()?);
+            if self.is_table_level_constraint() {
+                self.skip_table_constraint();
+            } else {
+                columns.push(self.parse_column_def()?);
+            }
         }
 
         self.input.expect(Expect::RightParen)?;
@@ -398,6 +402,42 @@ impl Parser {
             table_name,
             columns,
         })
+    }
+
+    fn is_table_level_constraint(&mut self) -> bool {
+        match self.input.peek() {
+            lexer::Type::Primary | lexer::Type::Unique => true,
+            lexer::Type::Identifier(s) => {
+                matches!(
+                    s.to_lowercase().as_str(),
+                    "constraint" | "foreign" | "check"
+                )
+            }
+            _ => false,
+        }
+    }
+
+    /// Consume tokens until the next unbalanced `,` or `)` at depth 0.
+    /// Used to skip table-level constraints (FOREIGN KEY, CHECK, etc.).
+    fn skip_table_constraint(&mut self) {
+        let mut depth = 0usize;
+        loop {
+            match self.input.peek() {
+                lexer::Type::LeftParen => {
+                    depth += 1;
+                    self.input.advance();
+                }
+                lexer::Type::RightParen if depth > 0 => {
+                    depth -= 1;
+                    self.input.advance();
+                }
+                lexer::Type::RightParen | lexer::Type::Eof => break,
+                lexer::Type::Comma if depth == 0 => break,
+                _ => {
+                    self.input.advance();
+                }
+            }
+        }
     }
 
     fn parse_create_index_statement(
