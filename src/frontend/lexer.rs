@@ -308,6 +308,25 @@ impl<'a> Lexer<'a> {
                         break;
                     }
                 }
+                '/' if self.peek_next() == '*' => {
+                    self.advance(); // consume '/'
+                    self.advance(); // consume '*'
+                    loop {
+                        if self.is_at_end() {
+                            break;
+                        }
+                        if self.peek() == '*' && self.peek_next() == '/' {
+                            self.advance(); // consume '*'
+                            self.advance(); // consume '/'
+                            break;
+                        }
+                        if self.peek() == '\n' {
+                            self.line += 1;
+                            self.column = 0;
+                        }
+                        self.advance();
+                    }
+                }
                 _ => break,
             }
         }
@@ -823,5 +842,23 @@ mod test {
         assert!(has_inner, "Should contain an Inner token");
         assert!(has_join2, "Should contain a Join token");
         assert!(has_on2, "Should contain an On token");
+    }
+
+    #[test]
+    fn test_block_comment_ignored() {
+        let tokens = lex("/* this is a comment */ SELECT");
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.tipe(), super::Type::Select)));
+    }
+
+    #[test]
+    fn test_block_comment_multiline() {
+        let tokens = lex("/*\nline one\nline two\n*/ 42");
+        assert!(
+            matches!(tokens[0].tipe(), super::Type::IntegerNumber(42)),
+            "Expected integer 42, got {:?}",
+            tokens[0].tipe()
+        );
     }
 }
