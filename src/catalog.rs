@@ -599,6 +599,60 @@ mod tests {
         assert!(!indexes[0].unique);
     }
 
+    // ---- PRIMARY KEY / UNIQUE implicit index entries ----
+
+    #[test]
+    fn test_primary_key_implicit_index_is_unique() {
+        // Simulates what db::execute does for CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)
+        let mut cat = TempCatalog::new();
+        let tbl_rp = cat.btree_mut().create_tree();
+        let idx_rp = cat.btree_mut().create_tree();
+        cat.insert_entry(
+            "table",
+            "t",
+            "t",
+            tbl_rp,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)",
+        );
+        cat.insert_entry(
+            "index",
+            "_pk_t_id",
+            "t",
+            idx_rp,
+            "CREATE INDEX _pk_t_id ON t(id)",
+        );
+        let indexes = cat.lookup_indexes_for_table("t");
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes[0].column_names, vec!["id"]);
+        assert!(indexes[0].unique, "PRIMARY KEY index must be unique");
+    }
+
+    #[test]
+    fn test_unique_column_implicit_index_is_unique() {
+        // Simulates what db::execute does for CREATE TABLE t (id INTEGER, name TEXT UNIQUE)
+        let mut cat = TempCatalog::new();
+        let tbl_rp = cat.btree_mut().create_tree();
+        let idx_rp = cat.btree_mut().create_tree();
+        cat.insert_entry(
+            "table",
+            "t",
+            "t",
+            tbl_rp,
+            "CREATE TABLE t (id INTEGER, name TEXT UNIQUE)",
+        );
+        cat.insert_entry(
+            "index",
+            "_uq_t_name",
+            "t",
+            idx_rp,
+            "CREATE INDEX _uq_t_name ON t(name)",
+        );
+        let indexes = cat.lookup_indexes_for_table("t");
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes[0].column_names, vec!["name"]);
+        assert!(indexes[0].unique, "UNIQUE index must be unique");
+    }
+
     // ---- persistence ----
 
     #[test]
