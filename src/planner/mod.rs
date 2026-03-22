@@ -3,8 +3,8 @@
 //! Converts AST to a tree of logical operators (LogicalPlan).
 //! The compiler (future) will convert LogicalPlan to bytecode.
 
+use crate::catalog::Catalog;
 use crate::frontend::ast::{self, Statement};
-use crate::storage::BTree;
 use schema::resolve_table;
 
 pub mod ddl;
@@ -318,8 +318,11 @@ pub mod schema;
 /// Extract output column names from a SELECT statement's column list.
 ///
 /// Returns the names in SELECT column order. Wildcards are expanded using the
-/// btree catalog to look up the table's column names.
-pub fn extract_select_column_names(select: &ast::SelectStatement, btree: &BTree) -> Vec<String> {
+/// catalog to look up the table's column names.
+pub fn extract_select_column_names(
+    select: &ast::SelectStatement,
+    catalog: &Catalog,
+) -> Vec<String> {
     let mut names = Vec::new();
     for col_expr in &select.columns {
         match col_expr {
@@ -347,7 +350,7 @@ pub fn extract_select_column_names(select: &ast::SelectStatement, btree: &BTree)
                         }
                     }
                 };
-                if let Ok(table) = resolve_table(&table_name, btree) {
+                if let Ok(table) = resolve_table(&table_name, catalog) {
                     for col in &table.columns {
                         names.push(col.name.clone());
                     }
@@ -359,18 +362,18 @@ pub fn extract_select_column_names(select: &ast::SelectStatement, btree: &BTree)
 }
 
 /// Convert an AST Statement to a LogicalPlan by querying the db_schema catalog.
-pub fn plan(statement: Statement, btree: &BTree) -> Result<LogicalPlan, PlanError> {
+pub fn plan(statement: Statement, catalog: &Catalog) -> Result<LogicalPlan, PlanError> {
     let naive = match statement {
-        Statement::Select(select) => plan_select(select, btree)?,
+        Statement::Select(select) => plan_select(select, catalog)?,
         Statement::CreateTable(_) | Statement::CreateIndex(_) | Statement::Drop(_) => {
             return Err(PlanError::UnsupportedStatement);
         }
-        Statement::Insert(insert) => plan_insert(insert, btree)?,
-        Statement::Update(update) => plan_update(update, btree)?,
-        Statement::Delete(delete) => plan_delete(delete, btree)?,
-        Statement::Explain(inner) => return plan(*inner, btree),
+        Statement::Insert(insert) => plan_insert(insert, catalog)?,
+        Statement::Update(update) => plan_update(update, catalog)?,
+        Statement::Delete(delete) => plan_delete(delete, catalog)?,
+        Statement::Explain(inner) => return plan(*inner, catalog),
     };
-    Ok(fuse_projects(optimize(naive, btree)))
+    Ok(fuse_projects(optimize(naive, catalog)))
 }
 
 #[derive(Debug, Clone, PartialEq)]

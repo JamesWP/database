@@ -55,20 +55,17 @@ impl Mode for BTreeMode {
                 if shared.btree.lookup_table(name).is_some() {
                     return CommandResult::Error(format!("Table '{}' already exists", name));
                 }
-                let root_page = shared.btree.create_tree();
+                let root_page = shared.btree.btree_mut().create_tree();
                 shared
                     .btree
-                    .insert_schema_entry("table", name, name, root_page, &sql);
+                    .insert_entry("table", name, name, root_page, &sql);
                 CommandResult::Message(format!("Created table '{}' at page {}", name, root_page))
             }
 
             ["tables"] | ["list", "tables"] => {
-                let schema_root = match shared.btree.schema_root_page() {
-                    Some(root) => root,
-                    None => return CommandResult::Error("Database not initialized".to_string()),
-                };
+                let schema_root: u32 = 1;
 
-                let mut cursor = shared.btree.open(schema_root);
+                let mut cursor = shared.btree.btree_mut().open(schema_root);
                 let mut c = cursor.open_readonly();
 
                 println!("Tables:");
@@ -113,7 +110,7 @@ impl Mode for BTreeMode {
 
                 match shared.btree.lookup_table(&name) {
                     Some((root_page, _)) => {
-                        let handle = shared.btree.open(root_page);
+                        let handle = shared.btree.btree_mut().open(root_page);
                         self.cursor = Some(CursorState {
                             table_name: name.clone(),
                             handle,
@@ -252,7 +249,7 @@ impl Mode for BTreeMode {
                 // Scan the catalog to collect all table and index names and root pages.
                 // db_schema is included because it has a self-referencing row.
                 let entries = {
-                    let mut cursor = shared.btree.open(schema_root);
+                    let mut cursor = shared.btree.btree_mut().open(schema_root);
                     let mut c = cursor.open_readonly();
                     c.first();
                     let mut entries = Vec::new();
@@ -283,7 +280,7 @@ impl Mode for BTreeMode {
                 // Verify each B-tree
                 let mut failures = Vec::new();
                 for (name, kind, rootpage) in &entries {
-                    let mut handle = shared.btree.open(*rootpage);
+                    let mut handle = shared.btree.btree_mut().open(*rootpage);
                     let result = handle.open_readonly().verify();
                     if let Err(e) = result {
                         failures.push(format!("  {} ({}): {:?}", name, kind, e));
@@ -309,17 +306,17 @@ impl Mode for BTreeMode {
                     Err(_) => return CommandResult::Error("Invalid page number".to_string()),
                 };
 
-                match shared.btree.inspect_page(page_num) {
+                match shared.btree.btree().inspect_page(page_num) {
                     Ok(_) => CommandResult::Ok,
                     Err(e) => CommandResult::Error(e),
                 }
             }
 
             ["inspect", "pages"] | ["inspect", "all"] => {
-                let file_size = shared.btree.file_size_pages();
+                let file_size = shared.btree.btree().file_size_pages();
 
                 for page_num in 0..file_size {
-                    if let Err(e) = shared.btree.inspect_page(page_num) {
+                    if let Err(e) = shared.btree.btree().inspect_page(page_num) {
                         return CommandResult::Error(e);
                     }
                     println!();
@@ -333,7 +330,7 @@ impl Mode for BTreeMode {
                 }
 
                 let path = std::path::Path::new(*path);
-                match shared.btree.dump_to_file(path) {
+                match shared.btree.btree().dump_to_file(path) {
                     Ok(_) => CommandResult::Message(format!("Dumped graph to {:?}", path)),
                     Err(e) => CommandResult::Error(format!("Error dumping: {}", e)),
                 }

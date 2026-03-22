@@ -1,8 +1,8 @@
 //! Query optimizer: rewrites a naive LogicalPlan tree to use indexes and elide redundant sorts.
 
+use crate::catalog::Catalog;
 use crate::frontend::ast::Statement;
 use crate::frontend::parse;
-use crate::storage::BTree;
 
 use super::{BinaryOp, JoinStrategy, Literal, LogicalPlan, PlanExpr, UnaryOp};
 
@@ -126,18 +126,19 @@ fn substitute_column_refs(expr: PlanExpr, inner_cols: &[PlanExpr]) -> PlanExpr {
 ///
 /// Rule 1: Filter(predicate, Scan) → IndexScan+RowidLookup when a matching index exists.
 /// Rule 2: Sort(keys, plan) → plan when an IndexScan below already provides the ordering.
-pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
+pub(super) fn optimize(plan: LogicalPlan, catalog: &Catalog) -> LogicalPlan {
     match plan {
         // Rule 1: Scan+Filter → IndexScan+RowidLookup when a matching index exists.
         LogicalPlan::Filter { predicate, input } => {
-            let opt_input = optimize(*input, btree);
+            let opt_input = optimize(*input, catalog);
             if let LogicalPlan::Scan {
                 rootpage,
                 ref columns,
                 ..
             } = opt_input
             {
-                if let Some(index_plan) = try_index_scan_plan(&predicate, rootpage, columns, btree)
+                if let Some(index_plan) =
+                    try_index_scan_plan(&predicate, rootpage, columns, catalog)
                 {
                     return index_plan;
                 }
@@ -150,7 +151,7 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
 
         // Rule 2: Sort → elided when IndexScan below already provides the ordering.
         LogicalPlan::Sort { sort_keys, input } => {
-            let opt_input = optimize(*input, btree);
+            let opt_input = optimize(*input, catalog);
             // Elide sort if there is exactly one ASC key and an IndexScan provides the order.
             let elide = if sort_keys.len() == 1 && !sort_keys[0].descending {
                 if let PlanExpr::ColumnRef(proj_idx) = sort_keys[0].expr {
@@ -174,14 +175,14 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
         // Single-child nodes: recurse.
         LogicalPlan::Project { columns, input } => LogicalPlan::Project {
             columns,
-            input: Box::new(optimize(*input, btree)),
+            input: Box::new(optimize(*input, catalog)),
         },
         LogicalPlan::Limit { count, input } => LogicalPlan::Limit {
             count,
-            input: Box::new(optimize(*input, btree)),
+            input: Box::new(optimize(*input, catalog)),
         },
         LogicalPlan::Count { input } => LogicalPlan::Count {
-            input: Box::new(optimize(*input, btree)),
+            input: Box::new(optimize(*input, catalog)),
         },
         LogicalPlan::Aggregate {
             input,
@@ -189,13 +190,13 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
             aggregates,
             having,
         } => LogicalPlan::Aggregate {
-            input: Box::new(optimize(*input, btree)),
+            input: Box::new(optimize(*input, catalog)),
             group_keys,
             aggregates,
             having,
         },
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
-            input: Box::new(optimize(*input, btree)),
+            input: Box::new(optimize(*input, catalog)),
         },
         // Rule 3: RowidLookup(IndexScan) → covering IndexScan when all requested
         // columns are present in the index key. The primary B-tree lookup is elided.
@@ -204,9 +205,9 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
             table_rootpage,
             columns,
         } => {
-            let opt_input = optimize(*input, btree);
+            let opt_input = optimize(*input, catalog);
             if let Some(covering) =
-                try_covering_index_scan(&opt_input, table_rootpage, &columns, btree)
+                try_covering_index_scan(&opt_input, table_rootpage, &columns, catalog)
             {
                 return covering;
             }
@@ -221,7 +222,7 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
             index_rootpage,
             column_idxs,
         } => LogicalPlan::PopulateIndex {
-            input: Box::new(optimize(*input, btree)),
+            input: Box::new(optimize(*input, catalog)),
             index_rootpage,
             column_idxs,
         },
@@ -234,14 +235,14 @@ pub(super) fn optimize(plan: LogicalPlan, btree: &BTree) -> LogicalPlan {
             strategy,
             left_column_count,
         } => {
-            let opt_left = optimize(*left, btree);
-            let opt_right = optimize(*right, btree);
+            let opt_left = optimize(*left, catalog);
+            let opt_right = optimize(*right, catalog);
 
             // For NestedLoop: try to substitute right Scan with IndexProbe when an equi-join
             // condition matches an index on the right table. If no index found, promote to Hash.
             if strategy == JoinStrategy::NestedLoop {
                 if let Some((new_right, residual)) =
-                    try_index_probe_plan(&on_condition, &opt_right, left_column_count, btree)
+                    try_index_probe_plan(&on_condition, &opt_right, left_column_count, catalog)
                 {
                     return LogicalPlan::Join {
                         left: Box::new(opt_left),
@@ -276,10 +277,10 @@ fn try_index_scan_plan(
     predicate: &PlanExpr,
     table_rootpage: u32,
     scan_columns: &[usize],
-    btree: &BTree,
+    catalog: &Catalog,
 ) -> Option<LogicalPlan> {
-    let table_name = btree.lookup_table_name_by_rootpage(table_rootpage)?;
-    let indexes = btree.lookup_indexes_for_table(&table_name);
+    let table_name = catalog.lookup_table_by_rootpage(table_rootpage)?;
+    let indexes = catalog.lookup_indexes_for_table(&table_name);
     if indexes.is_empty() {
         return None;
     }
@@ -295,7 +296,7 @@ fn try_index_scan_plan(
             .first()
             .and_then(|col_name| {
                 // Resolve the column name to a table column index.
-                btree.lookup_table(&table_name).and_then(|(_, sql)| {
+                catalog.lookup_table(&table_name).and_then(|(_, sql)| {
                     parse(&sql).ok().and_then(|stmt| match stmt {
                         Statement::CreateTable(ct) => {
                             ct.columns.iter().position(|c| c.name == *col_name)
@@ -319,7 +320,7 @@ fn try_index_scan_plan(
     // Try the covering index optimisation: if all requested scan columns are
     // present in the index key, skip the primary B-tree lookup entirely.
     if let Some(covering) =
-        try_covering_index_scan(&index_scan, table_rootpage, scan_columns, btree)
+        try_covering_index_scan(&index_scan, table_rootpage, scan_columns, catalog)
     {
         return Some(covering);
     }
@@ -347,7 +348,7 @@ fn try_index_probe_plan(
     on_condition: &PlanExpr,
     right: &LogicalPlan,
     left_column_count: usize,
-    btree: &BTree,
+    catalog: &Catalog,
 ) -> Option<(LogicalPlan, PlanExpr)> {
     // Right side must be a plain Scan (or possibly RowidLookup wrapping a scan that
     // the sub-optimizer already rewrote — we only handle the Scan case here).
@@ -358,8 +359,8 @@ fn try_index_probe_plan(
         _ => return None,
     };
 
-    let table_name = btree.lookup_table_name_by_rootpage(right_rootpage)?;
-    let indexes = btree.lookup_indexes_for_table(&table_name);
+    let table_name = catalog.lookup_table_by_rootpage(right_rootpage)?;
+    let indexes = catalog.lookup_indexes_for_table(&table_name);
     if indexes.is_empty() {
         return None;
     }
@@ -374,7 +375,7 @@ fn try_index_probe_plan(
             idx.column_names
                 .first()
                 .and_then(|col_name| {
-                    btree.lookup_table(&table_name).and_then(|(_, sql)| {
+                    catalog.lookup_table(&table_name).and_then(|(_, sql)| {
                         parse(&sql).ok().and_then(|stmt| match stmt {
                             Statement::CreateTable(ct) => {
                                 ct.columns.iter().position(|c| c.name == *col_name)
@@ -657,7 +658,7 @@ fn try_covering_index_scan(
     input: &LogicalPlan,
     table_rootpage: u32,
     scan_columns: &[usize],
-    btree: &BTree,
+    catalog: &Catalog,
 ) -> Option<LogicalPlan> {
     // Only applies when the direct child is a plain IndexScan.
     let (index_rootpage, index_col_idx, lower_bound, upper_bound) = match input {
@@ -672,15 +673,15 @@ fn try_covering_index_scan(
     };
 
     // Look up the table's column names to map table-col-idx → name.
-    let table_name = btree.lookup_table_name_by_rootpage(table_rootpage)?;
-    let (_, table_sql) = btree.lookup_table(&table_name)?;
+    let table_name = catalog.lookup_table_by_rootpage(table_rootpage)?;
+    let (_, table_sql) = catalog.lookup_table(&table_name)?;
     let table_cols: Vec<String> = match parse(&table_sql).ok()? {
         Statement::CreateTable(ct) => ct.columns.into_iter().map(|c| c.name).collect(),
         _ => return None,
     };
 
     // Look up the index's column names.
-    let indexes = btree.lookup_indexes_for_table(&table_name);
+    let indexes = catalog.lookup_indexes_for_table(&table_name);
     let index = indexes.iter().find(|idx| idx.rootpage == index_rootpage)?;
     let index_cols = &index.column_names;
 
@@ -715,8 +716,8 @@ mod tests {
     /// Create a test database with users(id, name, age) table.
     fn make_users_db() -> (TestDb, u32) {
         let mut db = TestDb::default();
-        let root = db.btree.create_tree();
-        db.btree.insert_schema_entry(
+        let root = db.catalog.btree_mut().create_tree();
+        db.catalog.insert_entry(
             "table",
             "users",
             "users",
@@ -729,8 +730,8 @@ mod tests {
     /// Create a test database with users(id, name, age) and an index on age.
     fn make_users_db_with_age_index() -> (TestDb, u32) {
         let (mut db, root) = make_users_db();
-        let idx_root = db.btree.create_tree();
-        db.btree.insert_schema_entry(
+        let idx_root = db.catalog.btree_mut().create_tree();
+        db.catalog.insert_entry(
             "index",
             "idx_age",
             "users",
@@ -788,7 +789,7 @@ mod tests {
                 crate::frontend::ast::Statement::Select(s) => s,
                 _ => panic!("expected select"),
             },
-            &db.btree,
+            &db.catalog,
         )
         .expect("plan_select failed");
 
@@ -818,7 +819,7 @@ mod tests {
             }),
         };
 
-        let optimized = optimize(naive, &db.btree);
+        let optimized = optimize(naive, &db.catalog);
         assert!(
             matches!(&optimized, LogicalPlan::RowidLookup { input, .. }
                 if matches!(input.as_ref(), LogicalPlan::IndexScan { .. })),
@@ -831,7 +832,7 @@ mod tests {
     fn optimizer_elides_sort_over_index_scan() {
         // Build Sort(age ASC, Project(RowidLookup(IndexScan(age)))) and assert Sort is absent.
         let (db, root) = make_users_db_with_age_index();
-        let idx_root = db.btree.lookup_indexes_for_table("users")[0].rootpage;
+        let idx_root = db.catalog.lookup_indexes_for_table("users")[0].rootpage;
 
         let index_plan = make_index_scan(root, idx_root, 2); // age is col 2
 
@@ -853,7 +854,7 @@ mod tests {
             input: Box::new(project),
         };
 
-        let optimized = optimize(sort_plan, &db.btree);
+        let optimized = optimize(sort_plan, &db.catalog);
         assert!(
             !matches!(optimized, LogicalPlan::Sort { .. }),
             "expected Sort to be elided, got: {:?}",
@@ -892,7 +893,7 @@ mod tests {
             }),
         };
 
-        let optimized = optimize(plan, &db.btree);
+        let optimized = optimize(plan, &db.catalog);
         assert!(
             matches!(optimized, LogicalPlan::Sort { .. }),
             "expected Sort to remain when no index, got: {:?}",
@@ -1010,8 +1011,8 @@ mod tests {
     #[test]
     fn optimizer_promotes_nested_loop_to_hash_when_no_index() {
         let (mut db, users_root) = make_users_db();
-        let orders_root = db.btree.create_tree();
-        db.btree.insert_schema_entry(
+        let orders_root = db.catalog.btree_mut().create_tree();
+        db.catalog.insert_entry(
             "table",
             "orders",
             "orders",
@@ -1041,7 +1042,7 @@ mod tests {
             left_column_count: 3,
         };
 
-        let optimized = optimize(plan, &db.btree);
+        let optimized = optimize(plan, &db.catalog);
         assert!(
             matches!(
                 &optimized,
@@ -1062,16 +1063,16 @@ mod tests {
         // Join { NestedLoop, Scan(users), Scan(orders), on: users.id = orders.user_id }
         // = ColumnRef(0) = ColumnRef(3)  [0 is left.id; 3 = left_col_count(3) + 0 (user_id)]
         let (mut db, users_root) = make_users_db();
-        let orders_root = db.btree.create_tree();
-        db.btree.insert_schema_entry(
+        let orders_root = db.catalog.btree_mut().create_tree();
+        db.catalog.insert_entry(
             "table",
             "orders",
             "orders",
             orders_root,
             "CREATE TABLE orders (user_id INTEGER, amount INTEGER)",
         );
-        let idx_root = db.btree.create_tree();
-        db.btree.insert_schema_entry(
+        let idx_root = db.catalog.btree_mut().create_tree();
+        db.catalog.insert_entry(
             "index",
             "idx_orders_user",
             "orders",
@@ -1099,7 +1100,7 @@ mod tests {
             left_column_count: 3,
         };
 
-        let optimized = optimize(plan, &db.btree);
+        let optimized = optimize(plan, &db.catalog);
 
         // Should keep NestedLoop with IndexProbe as right child
         assert!(

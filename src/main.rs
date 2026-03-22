@@ -1,8 +1,7 @@
 mod repl;
 
-use database::storage;
+use database::catalog::Catalog;
 use repl::{Repl, SharedState};
-use storage::BTree;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -52,8 +51,8 @@ fn main() {
 
     let db_path = db_path.canonicalize().unwrap();
 
-    let btree = BTree::new(db_path.to_str().unwrap());
-    let shared = SharedState::new(db_path.clone(), btree);
+    let catalog = Catalog::create(db_path.to_str().unwrap());
+    let shared = SharedState::new(db_path.clone(), catalog);
 
     let mut repl = Repl::new(shared);
 

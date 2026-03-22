@@ -97,21 +97,21 @@ impl Mode for EngineMode {
                             vec![]
                         };
                         match plan(stmt, &shared.btree) {
-                        Ok(logical_plan) => {
-                            let mut compiled = compile(&logical_plan);
-                            compiled.column_names = column_names;
-                            let msg = format!(
-                                "Compiled: {} operations, {} registers",
-                                compiled.operations.len(),
-                                compiled.num_registers
-                            );
-                            self.source_sql = Some(sql.clone());
-                            self.logical_plan = Some(logical_plan);
-                            self.program = Some(compiled);
-                            self.step_state = None;
-                            CommandResult::Message(msg)
-                        }
-                        Err(e) => CommandResult::Error(format!("Plan error: {:?}", e)),
+                            Ok(logical_plan) => {
+                                let mut compiled = compile(&logical_plan);
+                                compiled.column_names = column_names;
+                                let msg = format!(
+                                    "Compiled: {} operations, {} registers",
+                                    compiled.operations.len(),
+                                    compiled.num_registers
+                                );
+                                self.source_sql = Some(sql.clone());
+                                self.logical_plan = Some(logical_plan);
+                                self.program = Some(compiled);
+                                self.step_state = None;
+                                CommandResult::Message(msg)
+                            }
+                            Err(e) => CommandResult::Error(format!("Plan error: {:?}", e)),
                         }
                     }
                     Err(e) => CommandResult::Error(format!("Parse error: {:?}", e)),
@@ -149,7 +149,7 @@ impl Mode for EngineMode {
 
                 let state = self
                     .step_state
-                    .get_or_insert_with(|| StepState::new(program, (*shared.btree).clone()));
+                    .get_or_insert_with(|| StepState::new(program, shared.btree.btree().clone()));
 
                 if state.halted {
                     return CommandResult::Message(
@@ -202,7 +202,7 @@ impl Mode for EngineMode {
 
                 let state = self
                     .step_state
-                    .get_or_insert_with(|| StepState::new(program, (*shared.btree).clone()));
+                    .get_or_insert_with(|| StepState::new(program, shared.btree.btree().clone()));
 
                 if state.halted {
                     return CommandResult::Message(
@@ -262,7 +262,7 @@ impl Mode for EngineMode {
 
             ["restart"] => match &self.program {
                 Some(p) => {
-                    self.step_state = Some(StepState::new(p, (*shared.btree).clone()));
+                    self.step_state = Some(StepState::new(p, shared.btree.btree().clone()));
                     CommandResult::Message("Execution restarted from instruction 0.".to_string())
                 }
                 None => CommandResult::Message(
@@ -283,7 +283,7 @@ impl Mode for EngineMode {
                 let logical_plan = self.logical_plan.as_ref().cloned();
                 let debugger = TuiDebugger::new(
                     program,
-                    (*shared.btree).clone(),
+                    shared.btree.btree().clone(),
                     source_sql,
                     logical_plan,
                 );

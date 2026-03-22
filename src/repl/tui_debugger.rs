@@ -14,6 +14,7 @@ use ratatui::{
     Terminal,
 };
 
+use database::catalog::Catalog;
 use database::compiler::CompiledProgram;
 use database::db::build_explain_schema;
 use database::engine::registers::RegisterValue;
@@ -62,7 +63,7 @@ impl TuiDebugger {
             .collect();
 
         let plan_strs: Vec<String> = if let Some(plan) = &logical_plan {
-            let schema = build_explain_schema(&btree);
+            let schema = build_explain_schema(&Catalog::from(btree.clone()));
             format_plan(plan, &schema)
                 .into_iter()
                 .map(|(id, text)| format!("{id:>3}  {text}"))
@@ -260,14 +261,19 @@ impl TuiDebugger {
             .iter()
             .enumerate()
             .map(|(i, op)| {
-                let prefix = if i == pc && !self.halted { "► " } else { "  " };
+                let prefix = if i == pc && !self.halted {
+                    "► "
+                } else {
+                    "  "
+                };
                 let ansi_str = format!("{prefix}{i:4}  {op}");
                 let mut text = ansi_str.into_text().unwrap_or_default();
                 if i == pc && !self.halted {
                     for line in &mut text.lines {
                         for span in &mut line.spans {
-                            span.style =
-                                span.style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                            span.style = span
+                                .style
+                                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
                         }
                     }
                 }
@@ -409,7 +415,11 @@ fn build_results_table(column_names: &[String], rows: &[Vec<ScalarValue>]) -> St
         out += "\n";
     }
 
-    out += &format!("({} row{})", rows.len(), if rows.len() == 1 { "" } else { "s" });
+    out += &format!(
+        "({} row{})",
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
+    );
     out
 }
 

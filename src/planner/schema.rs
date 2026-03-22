@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
+use crate::catalog::Catalog;
 use crate::frontend::ast::{ColumnConstraint, Statement};
 use crate::frontend::parse;
-use crate::storage::BTree;
 
 use super::PlanError;
 
@@ -60,10 +60,10 @@ mod tests {
         let mut db = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
-            &mut db.btree,
+            &mut db.catalog,
         )
         .unwrap();
-        let table = resolve_table("users", &db.btree).unwrap();
+        let table = resolve_table("users", &db.catalog).unwrap();
         assert!(table.columns[0].primary_key);
         assert!(table.columns[0].unique);
         assert!(!table.columns[1].primary_key);
@@ -75,18 +75,18 @@ mod tests {
         let mut db = TestDb::default();
         execute(
             "CREATE TABLE emails (id INTEGER, addr TEXT UNIQUE)",
-            &mut db.btree,
+            &mut db.catalog,
         )
         .unwrap();
-        let table = resolve_table("emails", &db.btree).unwrap();
+        let table = resolve_table("emails", &db.catalog).unwrap();
         assert!(!table.columns[0].unique);
         assert!(table.columns[1].unique);
         assert!(!table.columns[1].primary_key);
     }
 }
 
-pub fn resolve_table(table_name: &str, btree: &BTree) -> Result<Table, PlanError> {
-    let (rootpage, sql) = btree
+pub fn resolve_table(table_name: &str, catalog: &Catalog) -> Result<Table, PlanError> {
+    let (rootpage, sql) = catalog
         .lookup_table(table_name)
         .ok_or_else(|| PlanError::TableNotFound(table_name.to_string()))?;
 
