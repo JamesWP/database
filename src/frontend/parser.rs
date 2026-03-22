@@ -466,9 +466,64 @@ impl Parser {
             }
             lexer::Type::Blob => {
                 self.input.advance();
+                // Handle "BLOB SUB_TYPE TEXT" (Firebird annotation)
+                if let lexer::Type::Identifier(s) = self.input.peek() {
+                    if s.to_lowercase() == "sub_type" {
+                        self.input.advance(); // consume SUB_TYPE
+                        self.input.advance(); // consume TEXT keyword
+                    }
+                }
                 Some(ast::DataType::Blob)
             }
+            lexer::Type::Identifier(s) => match s.to_lowercase().as_str() {
+                "varchar" | "char" | "nvarchar" | "nchar" => {
+                    self.input.advance();
+                    self.consume_optional_type_param();
+                    Some(ast::DataType::Text)
+                }
+                "int" | "smallint" | "tinyint" | "bigint" | "int4" | "int8" => {
+                    self.input.advance();
+                    Some(ast::DataType::Integer)
+                }
+                "decimal" | "numeric" => {
+                    self.input.advance();
+                    self.consume_optional_type_param();
+                    Some(ast::DataType::Real)
+                }
+                "timestamp" | "datetime" | "date" | "time" => {
+                    self.input.advance();
+                    Some(ast::DataType::Text)
+                }
+                _ => None,
+            },
             _ => None,
+        }
+    }
+
+    /// Consume an optional `(...)` parameter list after a type name, e.g. `(45)` or `(5,2)`.
+    fn consume_optional_type_param(&mut self) {
+        if matches!(self.input.peek(), lexer::Type::LeftParen) {
+            self.input.advance(); // consume '('
+            let mut depth = 1usize;
+            loop {
+                match self.input.peek() {
+                    lexer::Type::LeftParen => {
+                        depth += 1;
+                        self.input.advance();
+                    }
+                    lexer::Type::RightParen => {
+                        depth -= 1;
+                        self.input.advance();
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    lexer::Type::Eof => break,
+                    _ => {
+                        self.input.advance();
+                    }
+                }
+            }
         }
     }
 
