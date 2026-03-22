@@ -390,6 +390,8 @@ impl Parser {
         while let lexer::Type::Comma = self.input.peek() {
             self.input.advance();
             if self.is_table_level_constraint() {
+                // TODO(phase-aj): enforce FK referential integrity (FOREIGN KEY constraints)
+                // TODO(phase-aj): enforce CHECK expressions
                 self.skip_table_constraint();
             } else {
                 columns.push(self.parse_column_def()?);

@@ -71,7 +71,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AH** | Decouple `colored` from Core Library | 4 | [phase-ah-decouple-colored.md](phase-ah-decouple-colored.md) | Planned |
 | **AI** | Move `inspect_page` to CLI | 2 | [phase-ai-inspect-to-cli.md](phase-ai-inspect-to-cli.md) | Planned |
 | **AJ-1** | Extract Catalog Layer from BTree | 3 | [phase-aj1-catalog-layer.md](completed/phase-aj1-catalog-layer.md) | Completed |
-| **AJ** | Type System & Schema Compatibility | 8 | [phase-aj-type-system.md](phase-aj-type-system.md) | Planned |
+| **AJ** | Type System & Schema Compatibility | 8 | [phase-aj-type-system.md](completed/phase-aj-type-system.md) | Completed |
 | **AK** | String Operators & Functions | — | — | Backlog |
 | **AL** | CASE Expressions | — | — | Backlog |
 | **AM** | LEFT / RIGHT OUTER JOIN | — | — | Backlog |
@@ -110,9 +110,10 @@ Features that are currently parsed or partially handled but not fully implemente
 
 | Feature | Stub behaviour | Tracking |
 |---------|---------------|----------|
-| FOREIGN KEY constraints | Parsed and silently ignored (phase AJ) | TODO phase-av |
-| CHECK constraints | Parsed and silently ignored (phase AJ) | TODO phase-av |
-| NOT NULL enforcement for INSERT defaults | Omitted columns without defaults are NULL, not rejected (phase AJ) | TODO phase-aj |
+| FOREIGN KEY constraints | Parsed and silently ignored (`skip_table_constraint`) | TODO phase-av |
+| CHECK constraints | Parsed and silently ignored (`skip_table_constraint`) | TODO phase-av |
+| NOT NULL enforcement for INSERT omitted columns | Omitted columns without a DEFAULT are filled with NULL rather than rejected | TODO phase-aj |
+| Expression DEFAULTs e.g. `DEFAULT (DATETIME('now'))` | Parenthesised expression consumed and treated as no default | TODO phase-aj |
 
 ## Future
 
