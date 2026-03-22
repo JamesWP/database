@@ -1,0 +1,2 @@
+CREATE TABLE t (id INTEGER NOT NULL, label VARCHAR(20) DEFAULT 'unlabelled', score DECIMAL(4,2) DEFAULT 0.0, active SMALLINT DEFAULT 1 NOT NULL, note TEXT DEFAULT NULL)
+-- > Table 't' created
