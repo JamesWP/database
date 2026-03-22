@@ -15,6 +15,7 @@ pub struct CreateIndexStatement {
     pub index_name: String,
     pub table_name: String,
     pub column_names: Vec<String>,
+    pub unique: bool,
 }
 
 #[derive(Debug)]
