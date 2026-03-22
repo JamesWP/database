@@ -11,6 +11,7 @@ mod btree;
 mod btree_graph;
 mod btree_verify;
 
+pub use crate::catalog::IndexInfo;
 pub use btree::decode_integer_key;
 pub use btree::decode_u64_key;
 pub use btree::encode_index_value;
@@ -18,5 +19,4 @@ pub use btree::encode_integer_key;
 pub use btree::encode_u64_key;
 pub use btree::BTree;
 pub use btree::CursorHandle;
-pub use btree::IndexInfo;
 pub use cell_reader::CellReader;

@@ -1,7 +1,7 @@
 //! DML planning: INSERT, UPDATE, DELETE.
 
+use crate::catalog::Catalog;
 use crate::frontend::ast;
-use crate::storage::BTree;
 
 use schema::resolve_table;
 
@@ -11,9 +11,9 @@ use super::{schema, IndexMaintenanceInfo, Literal, LogicalPlan, PlanError, PlanE
 
 pub(super) fn plan_insert(
     insert: ast::InsertStatement,
-    btree: &BTree,
+    catalog: &Catalog,
 ) -> Result<LogicalPlan, PlanError> {
-    let table = resolve_table(&insert.table_name, btree)?;
+    let table = resolve_table(&insert.table_name, catalog)?;
     let num_table_columns = table.columns.len();
 
     // Determine which columns we're inserting into
@@ -56,7 +56,7 @@ pub(super) fn plan_insert(
             LogicalPlan::Values { rows }
         }
         ast::InsertSource::Query(select) => {
-            let input = super::plan_select(*select, btree)?;
+            let input = super::plan_select(*select, catalog)?;
             let produced = output_width(&input);
             if produced != table_columns.len() {
                 return Err(PlanError::ColumnCountMismatch {
@@ -69,7 +69,7 @@ pub(super) fn plan_insert(
     };
 
     // Look up indexes for this table
-    let index_infos = btree.lookup_indexes_for_table(&insert.table_name);
+    let index_infos = catalog.lookup_indexes_for_table(&insert.table_name);
     let mut indexes = Vec::new();
     for index_info in index_infos {
         // Find column indexes
@@ -102,9 +102,9 @@ pub(super) fn plan_insert(
 
 pub(super) fn plan_update(
     update: ast::UpdateStatement,
-    btree: &BTree,
+    catalog: &Catalog,
 ) -> Result<LogicalPlan, PlanError> {
-    let table = resolve_table(&update.table_name, btree)?;
+    let table = resolve_table(&update.table_name, catalog)?;
 
     // Build column mapping: all table columns in order
     let column_map = table.column_name_map();
@@ -142,7 +142,7 @@ pub(super) fn plan_update(
     let table_columns: Vec<usize> = (0..table.columns.len()).collect();
 
     // Gather secondary index maintenance info (mirrors plan_delete)
-    let index_infos = btree.lookup_indexes_for_table(&update.table_name);
+    let index_infos = catalog.lookup_indexes_for_table(&update.table_name);
     let mut indexes = Vec::new();
     for index_info in index_infos {
         let column_idxs = index_info
@@ -168,9 +168,9 @@ pub(super) fn plan_update(
 
 pub(super) fn plan_delete(
     delete: ast::DeleteStatement,
-    btree: &BTree,
+    catalog: &Catalog,
 ) -> Result<LogicalPlan, PlanError> {
-    let table = resolve_table(&delete.table_name, btree)?;
+    let table = resolve_table(&delete.table_name, catalog)?;
 
     // Build column mapping: all table columns in order
     let column_map = table.column_name_map();
@@ -191,7 +191,7 @@ pub(super) fn plan_delete(
     let table_columns: Vec<usize> = (0..table.columns.len()).collect();
 
     // Gather secondary index maintenance info (mirrors plan_insert)
-    let index_infos = btree.lookup_indexes_for_table(&delete.table_name);
+    let index_infos = catalog.lookup_indexes_for_table(&delete.table_name);
     let mut indexes = Vec::new();
     for index_info in index_infos {
         let column_idxs = index_info
@@ -226,8 +226,8 @@ mod tests {
 
     fn make_users_db() -> (TestDb, u32) {
         let mut test = TestDb::default();
-        let users_root = test.btree.create_tree();
-        test.btree.insert_schema_entry(
+        let users_root = test.catalog.btree_mut().create_tree();
+        test.catalog.insert_entry(
             "table",
             "users",
             "users",
@@ -250,7 +250,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("INSERT INTO users VALUES (1, 'alice', 30)");
 
-        let result = plan(stmt, &test.btree).expect("Planning failed");
+        let result = plan(stmt, &test.catalog).expect("Planning failed");
 
         let expected = LogicalPlan::Insert {
             rootpage: users_root,
@@ -273,7 +273,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("INSERT INTO users (age, name) VALUES (30, 'alice')");
 
-        let result = plan(stmt, &test.btree).expect("Planning failed");
+        let result = plan(stmt, &test.catalog).expect("Planning failed");
 
         let expected = LogicalPlan::Insert {
             rootpage: users_root,
@@ -295,7 +295,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("INSERT INTO users VALUES (1, 'alice')");
 
-        let result = plan(stmt, &test.btree);
+        let result = plan(stmt, &test.catalog);
 
         assert_eq!(
             result,
@@ -311,7 +311,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("INSERT INTO users VALUES (1+1, 'alice', 10*3)");
 
-        let result = plan(stmt, &test.btree).expect("Planning failed");
+        let result = plan(stmt, &test.catalog).expect("Planning failed");
 
         let expected = LogicalPlan::Insert {
             rootpage: users_root,
@@ -334,7 +334,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("INSERT INTO nonexistent VALUES (1)");
 
-        let result = plan(stmt, &test.btree);
+        let result = plan(stmt, &test.catalog);
 
         assert_eq!(
             result,
@@ -348,19 +348,20 @@ mod tests {
 
     #[test]
     fn test_plan_delete_gathers_indexes() {
-        let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut test = TestDb::default();
 
         let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
-        let users_root = btree.create_tree();
-        btree.insert_schema_entry("table", "users", "users", users_root, sql_table);
+        let users_root = test.catalog.btree_mut().create_tree();
+        test.catalog
+            .insert_entry("table", "users", "users", users_root, sql_table);
 
         let sql_index = "CREATE INDEX idx_age ON users(age)";
-        let index_root = btree.create_tree();
-        btree.insert_schema_entry("index", "idx_age", "users", index_root, sql_index);
+        let index_root = test.catalog.btree_mut().create_tree();
+        test.catalog
+            .insert_entry("index", "idx_age", "users", index_root, sql_index);
 
         let stmt = parse_sql("DELETE FROM users WHERE id = 1");
-        let plan = plan(stmt, &btree).expect("Planning failed");
+        let plan = plan(stmt, &test.catalog).expect("Planning failed");
 
         if let LogicalPlan::Delete { indexes, .. } = plan {
             assert_eq!(indexes.len(), 1);
@@ -377,19 +378,20 @@ mod tests {
 
     #[test]
     fn test_plan_update_gathers_indexes() {
-        let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut test = TestDb::default();
 
         let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
-        let users_root = btree.create_tree();
-        btree.insert_schema_entry("table", "users", "users", users_root, sql_table);
+        let users_root = test.catalog.btree_mut().create_tree();
+        test.catalog
+            .insert_entry("table", "users", "users", users_root, sql_table);
 
         let sql_index = "CREATE INDEX idx_age ON users(age)";
-        let index_root = btree.create_tree();
-        btree.insert_schema_entry("index", "idx_age", "users", index_root, sql_index);
+        let index_root = test.catalog.btree_mut().create_tree();
+        test.catalog
+            .insert_entry("index", "idx_age", "users", index_root, sql_index);
 
         let stmt = parse_sql("UPDATE users SET age = 30 WHERE id = 1");
-        let plan = plan(stmt, &btree).expect("Planning failed");
+        let plan = plan(stmt, &test.catalog).expect("Planning failed");
 
         if let LogicalPlan::Update { indexes, .. } = plan {
             assert_eq!(indexes.len(), 1);

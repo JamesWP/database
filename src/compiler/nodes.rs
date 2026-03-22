@@ -2048,6 +2048,7 @@ mod tests {
     use crate::engine::scalarvalue::ScalarValue;
     use crate::engine::Engine;
     use crate::planner::{BinaryOp, PlanExpr};
+    use crate::storage::BTree;
     use crate::test::TestDb;
     use crate::{body, init};
 
@@ -2096,7 +2097,7 @@ mod tests {
     fn test_count_scan() {
         // Create test database with 3 rows
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         {
@@ -2141,7 +2142,7 @@ mod tests {
     fn test_count_empty_table() {
         // Create test database with empty table
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let plan = LogicalPlan::Count {
@@ -2168,7 +2169,7 @@ mod tests {
     fn test_scan_reads_values() {
         // Create test database with data
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         {
@@ -2225,7 +2226,7 @@ mod tests {
 
         // Values doesn't need a btree, but Engine::with_program requires one
         let test = TestDb::default();
-        let btree = test.btree;
+        let btree: BTree = test.catalog.into();
 
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         let yields = engine.run();
@@ -2253,7 +2254,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(&plan);
 
         let test = TestDb::default();
-        let btree = test.btree;
+        let btree: BTree = test.catalog.into();
 
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         let yields = engine.run();
@@ -2279,7 +2280,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(&plan);
 
         let test = TestDb::default();
-        let btree = test.btree;
+        let btree: BTree = test.catalog.into();
 
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         let yields = engine.run();
@@ -2303,7 +2304,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(&plan);
 
         let test = TestDb::default();
-        let btree = test.btree;
+        let btree: BTree = test.catalog.into();
 
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         let yields = engine.run();
@@ -2327,7 +2328,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(&plan);
 
         let test = TestDb::default();
-        let btree = test.btree;
+        let btree: BTree = test.catalog.into();
 
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         let yields = engine.run();
@@ -2346,7 +2347,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(&plan);
 
         let test = TestDb::default();
-        let btree = test.btree;
+        let btree: BTree = test.catalog.into();
 
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         let yields = engine.run();
@@ -2364,7 +2365,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(&plan);
 
         let test = TestDb::default();
-        let btree = test.btree;
+        let btree: BTree = test.catalog.into();
 
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         let yields = engine.run();
@@ -2393,7 +2394,7 @@ mod tests {
     fn run_plan(plan: &LogicalPlan) -> Vec<Vec<ScalarValue>> {
         let (ops, num_registers) = compile_plan(plan);
         let test = TestDb::default();
-        let btree = test.btree;
+        let btree: BTree = test.catalog.into();
         let mut engine = Engine::with_program(&ops, num_registers, btree);
         engine.run()
     }
@@ -2878,7 +2879,7 @@ mod tests {
     #[test]
     fn test_insert_yields_count() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let plan = LogicalPlan::Insert {
@@ -2915,7 +2916,7 @@ mod tests {
     #[test]
     fn test_insert_then_scan() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // First: INSERT
@@ -2970,7 +2971,7 @@ mod tests {
     #[test]
     fn test_insert_into_empty_table() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let plan = LogicalPlan::Insert {
@@ -3090,7 +3091,7 @@ mod tests {
     #[test]
     fn test_codegen_delete_bytecode_structure() {
         let test = TestDb::default();
-        let _btree = test.btree;
+        let _btree: BTree = test.catalog.into();
         let root = 42; // Dummy root page
 
         // Test DELETE with no filter (delete all)
@@ -3167,7 +3168,7 @@ mod tests {
         // users(id, val): [(1,10),(2,20)]; orders(user_id, amount): [(1,100),(1,200),(2,300)]
         // ON users.id = orders.user_id → 3 combined rows
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let left_root = btree.create_tree();
         let right_root = btree.create_tree();
         insert_rows2(&mut btree, left_root, &[(1, 10), (2, 20)]);
@@ -3224,7 +3225,7 @@ mod tests {
         // right has 3 rows; filter keeps only amount > 100
         // ON left.id = right.user_id → (1,10,1,200), (2,20,2,300)
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let left_root = btree.create_tree();
         let right_root = btree.create_tree();
         insert_rows2(&mut btree, left_root, &[(1, 10), (2, 20)]);
@@ -3262,7 +3263,7 @@ mod tests {
     #[test]
     fn nested_loop_join_empty_right() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let left_root = btree.create_tree();
         let right_root = btree.create_tree();
         insert_rows2(&mut btree, left_root, &[(1, 10), (2, 20)]);
@@ -3289,7 +3290,7 @@ mod tests {
     #[test]
     fn nested_loop_join_empty_left() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let left_root = btree.create_tree();
         let right_root = btree.create_tree();
         // left is empty
@@ -3341,7 +3342,7 @@ mod tests {
         // Plan: Join { NestedLoop, Scan(users), RowidLookup(IndexProbe(key=ColumnRef(0))), on: true }
         // Expected: (1,10,1,100), (1,10,1,200), (2,20,2,300)
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let left_root = btree.create_tree();
         let right_root = btree.create_tree(); // orders table
         let idx_root = btree.create_tree(); // index on orders.user_id

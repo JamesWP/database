@@ -83,13 +83,14 @@ impl<'a> CellReader<'a> {
 #[cfg(test)]
 mod tests {
     use crate::engine::scalarvalue::ScalarValue;
+    use crate::storage::BTree;
     use crate::test::TestDb;
     use std::io::Read;
 
     #[test]
     fn test_cell_reader_basic() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root_page = btree.create_tree();
 
         // Insert a small value (no overflow)
@@ -120,7 +121,7 @@ mod tests {
     #[test]
     fn test_cell_overflow_value() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root_page = btree.create_tree();
 
         // Insert a value larger than CHUNK_THRESHOLD (55 bytes)
@@ -156,7 +157,7 @@ mod tests {
     #[test]
     fn test_cell_multi_page_overflow() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root_page = btree.create_tree();
 
         // Insert a value that spans multiple overflow pages (> 155 bytes)
@@ -192,7 +193,7 @@ mod tests {
     #[test]
     fn test_decode_as_array() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root_page = btree.create_tree();
 
         // Insert an array like [1, "alice", 30]
@@ -229,7 +230,7 @@ mod tests {
     #[test]
     fn test_decode_as_array_types() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root_page = btree.create_tree();
 
         // Insert an array with various types
@@ -270,7 +271,7 @@ mod tests {
     #[test]
     fn test_cell_empty_value() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root_page = btree.create_tree();
 
         // Insert an empty array

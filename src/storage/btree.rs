@@ -8,7 +8,6 @@ use std::{
 
 use colored::Colorize;
 
-use crate::engine::scalarvalue::ScalarValue;
 use crate::storage::cell::Cell;
 use crate::storage::node::{NodePage, OverflowPage, SearchResult};
 
@@ -44,15 +43,6 @@ pub struct CursorState {
 }
 
 impl CursorState {}
-
-/// Metadata for a single index from the catalog
-#[derive(Debug, Clone)]
-pub struct IndexInfo {
-    pub index_name: String,
-    pub column_names: Vec<String>,
-    pub rootpage: u32,
-    pub unique: bool,
-}
 
 #[derive(Debug, Clone)]
 pub struct CursorHandle {
@@ -723,49 +713,10 @@ impl BTree {
         let btree = BTree {
             pager: Arc::new(RefCell::new(Pager::new(path))),
         };
-
-        // Bootstrap db_schema table if this is a new (empty) database
-        if btree.pager.borrow().get_file_size_pages() == 0 {
-            btree.bootstrap_schema();
-        } else {
-            // Validate format version for existing databases
+        if btree.pager.borrow().get_file_size_pages() > 0 {
             btree.pager.borrow().validate_format_version();
         }
-
         btree
-    }
-
-    /// Bootstrap a new database by creating the db_schema catalog table.
-    /// Inserts a self-referencing row so the catalog describes itself.
-    fn bootstrap_schema(&self) {
-        let schema_root = {
-            let mut pager = self.pager.borrow_mut();
-            let idx = pager.allocate();
-            let empty_leaf = node::LeafNodePage::default();
-            pager
-                .encode_and_set(idx, node::NodePage::Leaf(empty_leaf))
-                .unwrap();
-            idx
-        };
-
-        self.insert_schema_entry(
-            "table",
-            "db_schema",
-            "db_schema",
-            schema_root,
-            "CREATE TABLE db_schema (type TEXT, name TEXT, tbl_name TEXT, rootpage INTEGER, sql TEXT)",
-        );
-    }
-
-    /// Returns the root page of the db_schema catalog table.
-    /// The catalog is always at page 1 on every database created with
-    /// format version ≥ 2.
-    pub fn schema_root_page(&self) -> Option<u32> {
-        if self.pager.borrow().get_file_size_pages() > 0 {
-            Some(1)
-        } else {
-            None
-        }
     }
 
     pub fn open(&self, root_page: u32) -> CursorHandle {
@@ -793,230 +744,6 @@ impl BTree {
         let empty_root_node = node::NodePage::Leaf(empty_leaf_node);
         pager.encode_and_set(idx, empty_root_node).unwrap();
         idx
-    }
-
-    /// Insert a row into the db_schema catalog table.
-    /// Allocates a new sequential key by scanning the catalog for the maximum key.
-    /// Returns the next available key (max + 1, or 0 if catalog is empty).
-    fn allocate_schema_key(&self) -> u64 {
-        let Some(schema_root) = self.schema_root_page() else {
-            return 0;
-        };
-
-        let mut cursor = self.open(schema_root);
-        let mut c = cursor.open_readonly();
-
-        // Find the maximum key by scanning backwards from the last entry
-        c.last();
-        if let Some(entry) = c.get_entry() {
-            decode_u64_key(entry.key()) + 1
-        } else {
-            0
-        }
-    }
-
-    /// Insert a new entry into the db_schema catalog table with an auto-allocated key.
-    /// The row is stored as a CBOR array: [type, name, tbl_name, rootpage, sql].
-    ///
-    /// If the insert causes the catalog's root page to split, the new root
-    /// is automatically persisted to ZeroPage.
-    pub fn insert_schema_entry(
-        &self,
-        obj_type: &str,
-        name: &str,
-        tbl_name: &str,
-        rootpage: u32,
-        sql: &str,
-    ) {
-        let schema_root = self.schema_root_page().expect("db_schema not bootstrapped");
-        let key = self.allocate_schema_key();
-
-        let row_values = vec![
-            ScalarValue::String(obj_type.to_string()),
-            ScalarValue::String(name.to_string()),
-            ScalarValue::String(tbl_name.to_string()),
-            ScalarValue::Integer(rootpage as i64),
-            ScalarValue::String(sql.to_string()),
-        ];
-
-        let mut row = Vec::new();
-        ciborium::ser::into_writer(&row_values, &mut row).unwrap();
-        let mut cursor = self.open(schema_root);
-        cursor.open_readwrite().insert_u64(key, row);
-    }
-
-    /// Look up a table's root page and DDL by scanning db_schema for a matching name.
-    /// Returns (rootpage, sql) if found.
-    pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> {
-        let schema_root = self.schema_root_page()?;
-        let mut cursor = self.open(schema_root);
-        let mut c = cursor.open_readonly();
-        c.first();
-        loop {
-            let entry = c.get_entry();
-            match entry {
-                None => return None,
-                Some(mut reader) => {
-                    let values = reader.decode_as_array();
-                    // Row format: [type, name, tbl_name, rootpage, sql]
-                    if values.len() >= 5 {
-                        let obj_type = values[0].as_str().unwrap_or("");
-                        let name = values[1].as_str().unwrap_or("");
-                        if obj_type == "table" && name == table_name {
-                            let rootpage = values[3].as_u64().unwrap() as u32;
-                            let sql = values[4].as_str().unwrap_or("").to_string();
-                            return Some((rootpage, sql));
-                        }
-                    }
-                }
-            }
-            c.next();
-        }
-    }
-
-    /// Find the name of the table with the given rootpage by scanning db_schema.
-    pub fn lookup_table_name_by_rootpage(&self, rootpage: u32) -> Option<String> {
-        let schema_root = self.schema_root_page()?;
-        let mut cursor = self.open(schema_root);
-        let mut c = cursor.open_readonly();
-        c.first();
-        loop {
-            let entry = c.get_entry();
-            match entry {
-                None => return None,
-                Some(mut reader) => {
-                    let values = reader.decode_as_array();
-                    if values.len() >= 4 {
-                        let obj_type = values[0].as_str().unwrap_or("");
-                        let name = values[1].as_str().unwrap_or("").to_string();
-                        let rp = values[3].as_u64().unwrap_or(0) as u32;
-                        if obj_type == "table" && rp == rootpage {
-                            return Some(name);
-                        }
-                    }
-                }
-            }
-            c.next();
-        }
-    }
-
-    /// Look up all indexes for a table by scanning db_schema.
-    pub fn lookup_indexes_for_table(&self, table_name: &str) -> Vec<IndexInfo> {
-        let schema_root = match self.schema_root_page() {
-            Some(root) => root,
-            None => return vec![],
-        };
-
-        let mut indexes = Vec::new();
-        let mut cursor = self.open(schema_root);
-        let mut c = cursor.open_readonly();
-        c.first();
-
-        loop {
-            let entry = c.get_entry();
-            match entry {
-                None => break,
-                Some(mut reader) => {
-                    let values = reader.decode_as_array();
-                    // Row format: [type, name, tbl_name, rootpage, sql]
-                    if values.len() >= 5 {
-                        let obj_type = values[0].as_str().unwrap_or("");
-                        let tbl_name = values[2].as_str().unwrap_or("");
-
-                        if obj_type == "index" && tbl_name == table_name {
-                            let name = values[1].as_str().unwrap_or("").to_string();
-                            let rootpage = values[3].as_u64().unwrap() as u32;
-                            let sql = values[4].as_str().unwrap_or("");
-                            let column_names = extract_columns_from_index_sql(sql);
-
-                            let unique = name.starts_with("_pk_") || name.starts_with("_uq_");
-                            indexes.push(IndexInfo {
-                                index_name: name,
-                                column_names,
-                                rootpage,
-                                unique,
-                            });
-                        }
-                    }
-                }
-            }
-            c.next();
-        }
-
-        indexes
-    }
-
-    /// Return all schema entries as (type, name, tbl_name, rootpage, sql) tuples.
-    pub fn scan_schema_entries(&self) -> Vec<(String, String, String, u32, String)> {
-        let schema_root = match self.schema_root_page() {
-            Some(root) => root,
-            None => return vec![],
-        };
-        let mut entries = Vec::new();
-        let mut cursor = self.open(schema_root);
-        let mut c = cursor.open_readonly();
-        c.first();
-        loop {
-            match c.get_entry() {
-                None => break,
-                Some(mut reader) => {
-                    let values = reader.decode_as_array();
-                    if values.len() >= 5 {
-                        let obj_type = values[0].as_str().unwrap_or("").to_string();
-                        let name = values[1].as_str().unwrap_or("").to_string();
-                        let tbl_name = values[2].as_str().unwrap_or("").to_string();
-                        let rootpage = values[3].as_u64().unwrap_or(0) as u32;
-                        let sql = values[4].as_str().unwrap_or("").to_string();
-                        entries.push((obj_type, name, tbl_name, rootpage, sql));
-                    }
-                }
-            }
-            c.next();
-        }
-        entries
-    }
-
-    /// Delete all schema entries (table and indexes) from the catalog by table name.
-    /// Returns true if any entry was found and deleted.
-    pub fn delete_schema_entries_for_table(&mut self, table_name: &str) -> bool {
-        let schema_root = match self.schema_root_page() {
-            Some(root) => root,
-            None => return false,
-        };
-
-        let mut deleted_any = false;
-        let mut cursor = self.open(schema_root);
-        let mut c = cursor.open_readwrite();
-        c.first();
-        loop {
-            let mut entry = match c.get_entry() {
-                None => break, // End of scan
-                Some(reader) => reader,
-            };
-
-            let values = entry.decode_as_array();
-            // Row format: [type, name, tbl_name, rootpage, sql]
-            if values.len() >= 5 {
-                let obj_type = values[0].as_str().unwrap_or("");
-                let name = values[1].as_str().unwrap_or("");
-                let tbl_name = values[2].as_str().unwrap_or("");
-
-                // Delete if it's the table itself or an index on this table
-                if (obj_type == "table" && name == table_name)
-                    || (obj_type == "index" && tbl_name == table_name)
-                {
-                    c.delete_current();
-                    deleted_any = true;
-                    // c.delete_current() might invalidate the iterator or move it,
-                    // but our B-tree delete_current implementation handles it.
-                    // Let's re-read the current entry or just continue.
-                    continue;
-                }
-            }
-
-            c.next();
-        }
-        deleted_any
     }
 
     #[allow(dead_code)]
@@ -1085,8 +812,10 @@ impl BTree {
                             }
 
                             // Try to decode as CBOR Vec<ScalarValue>
-                            if let Ok(values) =
-                                ciborium::de::from_reader::<Vec<ScalarValue>, _>(&value[..])
+                            if let Ok(values) = ciborium::de::from_reader::<
+                                Vec<crate::engine::scalarvalue::ScalarValue>,
+                                _,
+                            >(&value[..])
                             {
                                 println!("    {}={:?}", "decoded".cyan(), values);
                             } else {
@@ -1171,8 +900,8 @@ impl BTree {
 
 impl Display for BTree {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        btree_graph::dump(f, self)?;
-
+        let catalog = crate::catalog::Catalog::from(self.clone());
+        btree_graph::dump(f, &catalog)?;
         Ok(())
     }
 }
@@ -1248,37 +977,21 @@ pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Ve
     }
 }
 
-/// Extract column name from a CREATE INDEX SQL string.
-/// "CREATE INDEX idx ON table(col)" → "col"
-fn extract_columns_from_index_sql(sql: &str) -> Vec<String> {
-    if let Some(start) = sql.find('(') {
-        if let Some(end) = sql[start..].find(')') {
-            let inside = &sql[start + 1..start + end];
-            return inside
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-        }
-    }
-    vec![]
-}
-
 #[cfg(test)]
 mod test {
 
-    use crate::engine::scalarvalue::ScalarValue;
+    use crate::storage::BTree;
     use crate::test::TestDb;
     use proptest::prelude::*;
     use std::collections::BTreeMap;
     use std::io::Read;
 
-    use super::{BTree, CursorPosition, CHUNK_THRESHOLD, OVERFLOW_LIMIT};
+    use super::{CursorPosition, CHUNK_THRESHOLD, OVERFLOW_LIMIT};
 
     #[test]
     fn test_create_blank() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
 
         let root = btree.create_tree();
 
@@ -1310,7 +1023,7 @@ mod test {
     #[test]
     fn test_create_and_insert() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
 
         let root = btree.create_tree();
 
@@ -1338,7 +1051,7 @@ mod test {
     #[test]
     fn test_insert_many() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
 
         let root = btree.create_tree();
 
@@ -1374,7 +1087,7 @@ mod test {
     #[test]
     fn test_search_many() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
 
         let root = btree.create_tree();
 
@@ -1410,7 +1123,7 @@ mod test {
     #[test]
     fn multi_level_insertion() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
 
         let root = btree.create_tree();
 
@@ -1501,7 +1214,7 @@ mod test {
         let large_test_case = [(28, ('A', 976))];
 
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         do_test_ordering(&large_test_case, &mut btree, true);
 
         println!("{btree}");
@@ -1511,7 +1224,7 @@ mod test {
         #[test]
         fn test_ordering(ordering: bool, elements in prop::collection::vec(&(50..60u64, &(prop::char::range('A', 'Z'), 500..600usize)), 10..20usize)) {
             let test = TestDb::default();
-            let mut btree = test.btree;
+            let mut btree: BTree = test.catalog.into();
             do_test_ordering(elements.as_slice(), &mut btree, ordering);
         }
 
@@ -1528,7 +1241,7 @@ mod test {
             mut keys in prop::collection::vec(0u64..100_000, 200..300usize),
         ) {
             let test = TestDb::default();
-            let mut btree = test.btree;
+            let mut btree: BTree = test.catalog.into();
             let root = btree.create_tree();
 
             // Deduplicate so every key is unique
@@ -1568,61 +1281,6 @@ mod test {
         }
     }
 
-    // ========================================================================
-    // Schema catalog tests
-    // ========================================================================
-
-    #[test]
-    fn test_bootstrap_creates_schema() {
-        let test = TestDb::default();
-        let btree = test.btree;
-
-        // db_schema root page should exist
-        let schema_root = btree.schema_root_page();
-        assert!(schema_root.is_some());
-        let schema_root = schema_root.unwrap();
-
-        // Read the self-referencing row from db_schema
-        let mut cursor = btree.open(schema_root);
-        let mut c = cursor.open_readonly();
-        c.first();
-        let entry = c.get_entry();
-        assert!(entry.is_some());
-
-        let values = entry.unwrap().decode_as_array();
-        assert_eq!(values[0], ScalarValue::String("table".to_string()));
-        assert_eq!(values[1], ScalarValue::String("db_schema".to_string()));
-        assert_eq!(values[2], ScalarValue::String("db_schema".to_string()));
-        assert_eq!(values[3], ScalarValue::Integer(schema_root as i64));
-        assert!(values[4]
-            .as_str()
-            .unwrap()
-            .starts_with("CREATE TABLE db_schema"));
-    }
-
-    #[test]
-    fn test_lookup_table_self() {
-        let test = TestDb::default();
-        let btree = test.btree;
-
-        // Should be able to look up db_schema itself
-        let result = btree.lookup_table("db_schema");
-        assert!(result.is_some());
-
-        let (rootpage, sql) = result.unwrap();
-        assert_eq!(rootpage, btree.schema_root_page().unwrap());
-        assert!(sql.starts_with("CREATE TABLE db_schema"));
-    }
-
-    #[test]
-    fn test_lookup_table_not_found() {
-        let test = TestDb::default();
-        let btree = test.btree;
-
-        let result = btree.lookup_table("nonexistent");
-        assert!(result.is_none());
-    }
-
     #[test]
     fn test_integer_key_encoding_order() {
         use super::{decode_integer_key, encode_integer_key};
@@ -1645,204 +1303,13 @@ mod test {
     }
 
     #[test]
-    fn test_lookup_indexes_empty() {
-        let test = TestDb::default();
-        let btree = test.btree;
-
-        let indexes = btree.lookup_indexes_for_table("users");
-        assert_eq!(indexes.len(), 0);
-    }
-
-    #[test]
-    fn test_lookup_indexes_for_table() {
-        let test = TestDb::default();
-        let mut btree = test.btree;
-
-        // Insert a table and an index entry
-        let table_root = btree.create_tree();
-        btree.insert_schema_entry(
-            "table",
-            "users",
-            "users",
-            table_root,
-            "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-        );
-        let index_root = btree.create_tree();
-        btree.insert_schema_entry(
-            "index",
-            "idx_age",
-            "users",
-            index_root,
-            "CREATE INDEX idx_age ON users(age)",
-        );
-
-        let indexes = btree.lookup_indexes_for_table("users");
-        assert_eq!(indexes.len(), 1);
-        assert_eq!(indexes[0].index_name, "idx_age");
-        assert_eq!(indexes[0].column_names, vec!["age"]);
-        assert_eq!(indexes[0].rootpage, index_root);
-    }
-
-    #[test]
-    fn test_insert_and_lookup_schema_entry() {
-        let test = TestDb::default();
-        let mut btree = test.btree;
-
-        // Create a new table
-        let root = btree.create_tree();
-        btree.insert_schema_entry(
-            "table",
-            "users",
-            "users",
-            root,
-            "CREATE TABLE users (id INTEGER, name TEXT)",
-        );
-
-        // Look it up
-        let result = btree.lookup_table("users");
-        assert!(result.is_some());
-
-        let (rootpage, sql) = result.unwrap();
-        assert_eq!(rootpage, root);
-        assert_eq!(sql, "CREATE TABLE users (id INTEGER, name TEXT)");
-    }
-
-    #[test]
-    fn test_insert_multiple_schema_entries() {
-        let test = TestDb::default();
-        let mut btree = test.btree;
-
-        let users_root = btree.create_tree();
-        btree.insert_schema_entry(
-            "table",
-            "users",
-            "users",
-            users_root,
-            "CREATE TABLE users (id INTEGER, name TEXT)",
-        );
-
-        let orders_root = btree.create_tree();
-        btree.insert_schema_entry(
-            "table",
-            "orders",
-            "orders",
-            orders_root,
-            "CREATE TABLE orders (id INTEGER, user_id INTEGER, total REAL)",
-        );
-
-        // Both should be findable
-        let (rp, _) = btree.lookup_table("users").unwrap();
-        assert_eq!(rp, users_root);
-
-        let (rp, _) = btree.lookup_table("orders").unwrap();
-        assert_eq!(rp, orders_root);
-
-        // db_schema still works
-        let (rp, _) = btree.lookup_table("db_schema").unwrap();
-        assert_eq!(rp, btree.schema_root_page().unwrap());
-    }
-
-    #[test]
-    fn test_scan_schema_via_cursor() {
-        // db_schema can be scanned with the regular cursor API, just like any other table.
-        let test = TestDb::default();
-        let mut btree = test.btree;
-
-        let users_root = btree.create_tree();
-        btree.insert_schema_entry(
-            "table",
-            "users",
-            "users",
-            users_root,
-            "CREATE TABLE users (id INTEGER)",
-        );
-        let orders_root = btree.create_tree();
-        btree.insert_schema_entry(
-            "table",
-            "orders",
-            "orders",
-            orders_root,
-            "CREATE TABLE orders (id INTEGER)",
-        );
-
-        // Look up db_schema's rootpage via lookup_table, then scan it with a cursor
-        let (schema_root, _) = btree.lookup_table("db_schema").unwrap();
-        let mut cursor = btree.open(schema_root);
-        let mut c = cursor.open_readonly();
-        c.first();
-        let mut names = Vec::new();
-        loop {
-            match c.get_entry() {
-                None => break,
-                Some(mut reader) => {
-                    let row = reader.decode_as_array();
-                    if row.len() >= 5 && row[0].as_str() == Some("table") {
-                        names.push(row[1].as_str().unwrap().to_string());
-                    }
-                }
-            }
-            c.next();
-        }
-        assert_eq!(names.len(), 3);
-        assert!(names.contains(&"db_schema".to_string()));
-        assert!(names.contains(&"users".to_string()));
-        assert!(names.contains(&"orders".to_string()));
-    }
-
-    #[test]
-    fn test_catalog_root_stable_after_splits() {
-        // Insert enough schema entries to force the db_schema B-tree root to split.
-        // With stable root pages, schema_root_page() must stay the same,
-        // and all entries must still be accessible via lookup_table().
-        let test = TestDb::default();
-        let mut btree = test.btree;
-
-        let initial_root = btree.schema_root_page().unwrap();
-
-        let mut roots = Vec::new();
-        for i in 0..40 {
-            let name = format!("table_{:03}", i);
-            let ddl = format!("CREATE TABLE {} (id INTEGER, data TEXT)", name);
-            let root = btree.create_tree();
-            roots.push((name.clone(), root));
-            btree.insert_schema_entry("table", &name, &name, root, &ddl);
-        }
-
-        // The root page should remain stable
-        let final_root = btree.schema_root_page().unwrap();
-        assert_eq!(
-            initial_root, final_root,
-            "Schema root page should stay stable after splits"
-        );
-
-        // All entries should still be accessible
-        for (name, root) in &roots {
-            let result = btree.lookup_table(name);
-            assert!(result.is_some(), "Failed to find table '{}'", name);
-            let (rp, _) = result.unwrap();
-            assert_eq!(rp, *root, "Wrong rootpage for table '{}'", name);
-        }
-
-        // db_schema self-reference should still work
-        let (rp, _) = btree.lookup_table("db_schema").unwrap();
-        assert_eq!(rp, initial_root);
-    }
-
-    #[test]
     fn test_user_table_root_stable_after_splits() {
         // User table root pages should remain stable after many inserts
         // that cause multiple levels of splits.
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
 
         let initial_root = btree.create_tree();
-        btree.insert_schema_entry(
-            "table",
-            "big_table",
-            "big_table",
-            initial_root,
-            "CREATE TABLE big_table (id INTEGER, data TEXT)",
-        );
 
         // Insert enough rows to force multiple root splits
         {
@@ -1853,10 +1320,6 @@ mod test {
                 c.insert_u64(i, value.into_bytes());
             }
         }
-
-        // The catalog entry should still have the original rootpage
-        let (catalog_root, _) = btree.lookup_table("big_table").unwrap();
-        assert_eq!(catalog_root, initial_root, "Root page should stay stable");
 
         // Data should be accessible through the original rootpage
         let mut read_cursor = btree.open(initial_root);
@@ -1874,7 +1337,7 @@ mod test {
     fn test_empty_table_scan() {
         // Verify first() on empty tree returns None
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let mut cursor_handle = btree.open(root);
@@ -1891,7 +1354,7 @@ mod test {
     fn test_duplicate_key_insert() {
         // Insert same key twice with different values, verify overwrite
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert key=1 with value "first"
@@ -1927,7 +1390,7 @@ mod test {
     fn test_find_nonexistent_key() {
         // find() for key not in tree
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1, 3, 5
@@ -1955,7 +1418,7 @@ mod test {
     fn test_cursor_prev_from_middle() {
         // Insert 10 keys, navigate to middle, call prev(), verify correct key
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 0-9
@@ -2011,7 +1474,7 @@ mod test {
         use rand::SeedableRng;
 
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Create shuffled keys
@@ -2055,7 +1518,7 @@ mod test {
     fn test_cursor_last_single_page() {
         // Small tree, last() returns highest key
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1, 2, 3
@@ -2087,7 +1550,7 @@ mod test {
     fn test_cursor_last_multi_level() {
         // Tree with interior nodes, last() returns highest key
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert enough to force splits (creating interior nodes)
@@ -2119,7 +1582,7 @@ mod test {
     fn test_cursor_last_then_prev() {
         // last() then prev() navigates backward correctly
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1-5
@@ -2157,7 +1620,7 @@ mod test {
     fn test_find_returns_true_for_existing() {
         // find() returns true when key exists
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert key 42
@@ -2189,7 +1652,7 @@ mod test {
     fn test_find_returns_false_for_missing() {
         // find() returns false when key doesn't exist
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1, 3, 5
@@ -2221,7 +1684,7 @@ mod test {
     #[test]
     fn test_btree_delete_single() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert a single key-value pair
@@ -2258,7 +1721,7 @@ mod test {
     #[test]
     fn test_btree_delete_nonexistent() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert some keys
@@ -2288,7 +1751,7 @@ mod test {
     #[test]
     fn test_btree_delete_from_multi_page() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert enough keys to force splits (200 keys should be sufficient)
@@ -2321,7 +1784,7 @@ mod test {
     #[test]
     fn test_btree_delete_then_scan() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1, 2, 3, 4, 5
@@ -2369,7 +1832,7 @@ mod test {
     #[test]
     fn test_btree_delete_all() {
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1 through 10
@@ -2406,7 +1869,7 @@ mod test {
     fn test_cursor_position_states() {
         // Verify cursor position state transitions
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let mut cursor_handle = btree.open(root);
@@ -2482,7 +1945,7 @@ mod test {
     fn test_cursor_next_after_delete() {
         // Delete current key, verify next() lands on correct successor
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1, 2, 3, 4, 5
@@ -2516,7 +1979,7 @@ mod test {
     fn test_cursor_next_after_delete_last() {
         // Delete the last key, verify next() reaches AtEnd
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1, 2, 3
@@ -2544,7 +2007,7 @@ mod test {
     fn test_cursor_next_after_insert() {
         // Insert during scan, verify iteration continues correctly
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1, 3, 5
@@ -2576,7 +2039,7 @@ mod test {
     fn test_cursor_survives_split() {
         // Insert enough to trigger page split, verify all keys still visited
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1-50
@@ -2617,7 +2080,7 @@ mod test {
     fn test_cursor_delete_all_forward() {
         // Delete every key via first() + loop of delete_current() + next()
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1-10
@@ -2656,7 +2119,7 @@ mod test {
     fn test_cursor_get_entry_after_mutation() {
         // Verify get_entry() works after insert/delete
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Insert keys 1, 2, 3
@@ -2686,7 +2149,7 @@ mod test {
     fn test_cursor_refind_after_insert() {
         // Verify that after inserts, we can position and navigate correctly
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         {
@@ -2727,7 +2190,7 @@ mod test {
         // Keys of different lengths should sort lexicographically:
         // "a" < "ab" < "abc" < "b"
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let keys: Vec<&[u8]> = vec![b"abc", b"b", b"a", b"ab"];
@@ -2759,7 +2222,7 @@ mod test {
     fn test_variable_length_keys_long_key() {
         // Keys up to 1KB should work correctly
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let long_key: Vec<u8> = (0u8..=255).cycle().take(1024).collect();
@@ -2797,7 +2260,7 @@ mod test {
     fn test_variable_length_keys_mixed_lengths() {
         // Mix of 1-byte, 4-byte, 8-byte, and 16-byte keys should all sort correctly
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let keys: Vec<Vec<u8>> = vec![
@@ -2845,7 +2308,7 @@ mod test {
     fn test_variable_length_keys_splits() {
         // Insert many variable-length keys to trigger B-tree splits
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         // Generate variable-length keys of varying sizes
@@ -2920,7 +2383,7 @@ mod test {
     fn test_chunk_threshold_no_overflow() {
         // A value of exactly CHUNK_THRESHOLD bytes should store inline — no overflow pages.
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let value = vec![0xAAu8; CHUNK_THRESHOLD];
@@ -2943,7 +2406,7 @@ mod test {
     fn test_chunk_threshold_plus_one_spills_to_one_overflow_page() {
         // A value of CHUNK_THRESHOLD + 1 bytes should spill to exactly one overflow page.
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let value = vec![0x55u8; CHUNK_THRESHOLD + 1];
@@ -2968,7 +2431,7 @@ mod test {
         //   - CHUNK_THRESHOLD bytes inline
         //   - OVERFLOW_LIMIT bytes in exactly one overflow page
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let value = vec![0x77u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT];
@@ -2996,7 +2459,7 @@ mod test {
         //   - 1 byte in page 3
         // Total: 3 overflow pages
         let test = TestDb::default();
-        let mut btree = test.btree;
+        let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let value = vec![0x33u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 + 1];

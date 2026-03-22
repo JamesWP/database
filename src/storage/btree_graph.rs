@@ -4,7 +4,10 @@ use std::fmt::Write;
 use super::btree::{decode_integer_key, decode_u64_key, BTree};
 use super::cell_reader::CellReader;
 use super::node::NodePage;
+use crate::catalog::Catalog;
 use crate::engine::scalarvalue::ScalarValue;
+
+const CATALOG_ROOT: u32 = 1;
 
 enum TreeKind<'a> {
     Table,
@@ -278,20 +281,24 @@ fn write_subgraph<W: Write>(
     Ok(())
 }
 
-pub fn dump<W: Write>(output: &mut W, btree: &BTree) -> Result {
+pub fn dump<W: Write>(output: &mut W, catalog: &Catalog) -> Result {
+    let btree = catalog.btree();
     writeln!(output, "digraph Database {{")?;
     writeln!(output, "\tnode [shape=record fontname=\"monospace\"]")?;
     writeln!(output, "\trankdir=\"LR\";")?;
 
     // Catalog tree
-    if let Some(root) = btree.schema_root_page() {
-        write_subgraph(output, btree, root, "db_schema (catalog)", TreeKind::Table)?;
-    }
+    write_subgraph(
+        output,
+        btree,
+        CATALOG_ROOT,
+        "db_schema (catalog)",
+        TreeKind::Table,
+    )?;
 
     // User tables and indexes (skip root pages already rendered)
-    let schema_root = btree.schema_root_page();
-    for (kind, name, tbl_name, rootpage, _sql) in btree.scan_schema_entries() {
-        if Some(rootpage) == schema_root {
+    for (kind, name, tbl_name, rootpage, _sql) in catalog.scan_entries() {
+        if rootpage == CATALOG_ROOT {
             continue;
         }
         match kind.as_str() {
@@ -299,7 +306,7 @@ pub fn dump<W: Write>(output: &mut W, btree: &BTree) -> Result {
                 write_subgraph(output, btree, rootpage, &name, TreeKind::Table)?;
             }
             "index" => {
-                let col_names: Vec<String> = btree
+                let col_names: Vec<String> = catalog
                     .lookup_indexes_for_table(&tbl_name)
                     .into_iter()
                     .find(|i| i.index_name == name)

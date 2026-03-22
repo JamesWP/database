@@ -3,10 +3,9 @@ use std::ops::{Deref, DerefMut};
 use tempfile::NamedTempFile;
 
 use crate::catalog::Catalog;
-use crate::storage::BTree;
 
 pub struct TestDb {
-    pub btree: BTree,
+    pub catalog: Catalog,
     _file: NamedTempFile,
 }
 
@@ -15,7 +14,7 @@ impl Default for TestDb {
         let file = NamedTempFile::new().unwrap();
         let path = file.path().to_str().unwrap();
         Self {
-            btree: BTree::new(path),
+            catalog: Catalog::create(path),
             _file: file,
         }
     }

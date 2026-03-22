@@ -27,9 +27,12 @@ impl Catalog {
     /// The caller is responsible for ensuring the path does not already exist
     /// (or that the file is empty).
     pub fn create(path: &str) -> Self {
-        // BTree::new bootstraps the catalog on an empty file.
         let btree = BTree::new(path);
-        Catalog { btree }
+        let mut cat = Catalog { btree };
+        if cat.btree.file_size_pages() == 0 {
+            cat.bootstrap();
+        }
+        cat
     }
 
     /// Open an existing database at `path`. The catalog must already be present.
@@ -239,9 +242,6 @@ impl Catalog {
 
     /// Bootstrap the catalog on a fresh database.
     /// Creates the db_schema tree and inserts the self-referencing row.
-    /// Called internally by BTree::new() for now; will be called explicitly
-    /// by Catalog::create() after AJ1-2 decouples bootstrap from BTree.
-    #[allow(dead_code)]
     fn bootstrap(&mut self) {
         let root = self.btree.create_tree();
         assert_eq!(root, CATALOG_ROOT, "catalog root must always be page 1");
