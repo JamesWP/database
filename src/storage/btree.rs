@@ -745,7 +745,6 @@ impl BTree {
             pager
                 .encode_and_set(idx, node::NodePage::Leaf(empty_leaf))
                 .unwrap();
-            pager.set_schema_root_page(idx);
             idx
         };
 
@@ -758,10 +757,15 @@ impl BTree {
         );
     }
 
-    /// Returns the root page of the db_schema catalog table, if the database
-    /// has been bootstrapped.
+    /// Returns the root page of the db_schema catalog table.
+    /// The catalog is always at page 1 on every database created with
+    /// format version ≥ 2.
     pub fn schema_root_page(&self) -> Option<u32> {
-        self.pager.borrow().get_schema_root_page()
+        if self.pager.borrow().get_file_size_pages() > 0 {
+            Some(1)
+        } else {
+            None
+        }
     }
 
     pub fn open(&self, root_page: u32) -> CursorHandle {

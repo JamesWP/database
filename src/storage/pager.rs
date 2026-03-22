@@ -47,7 +47,8 @@ pub struct ZeroPage {
     /// Magic number to identify database files: 0x53514C69 ("SQLi")
     magic: u32,
 
-    /// Format version: 0 = JSON (deprecated), 1 = CBOR
+    /// Format version: 0 = JSON (deprecated), 1 = CBOR with schema_root_page
+    /// (deprecated), 2 = CBOR without schema_root_page (catalog always at page 1)
     format_version: u16,
 
     /// First page of the free list linked list (None if no free pages)
@@ -55,21 +56,15 @@ pub struct ZeroPage {
 
     /// Total count of free pages across all free list pages
     free_page_count: u32,
-
-    /// Root page number of the db_schema catalog table.
-    /// This is the only root page tracked directly by the pager.
-    /// All other table root pages are stored as rows in db_schema.
-    schema_root_page: Option<u32>,
 }
 
 impl Default for ZeroPage {
     fn default() -> Self {
         Self {
             magic: 0x53514C69, // "SQLi"
-            format_version: 1, // CBOR format
+            format_version: 2, // CBOR format, catalog root hardcoded at page 1
             free_list_head: None,
             free_page_count: 0,
-            schema_root_page: None,
         }
     }
 }
@@ -307,17 +302,6 @@ impl Pager {
         self.set_zero_page(zero);
     }
 
-    pub fn get_schema_root_page(&self) -> Option<u32> {
-        let zero = self.get_zero_page()?;
-        zero.schema_root_page
-    }
-
-    pub fn set_schema_root_page(&mut self, page: u32) {
-        let mut zero = self.get_zero_page().unwrap();
-        zero.schema_root_page = Some(page);
-        self.set_zero_page(zero);
-    }
-
     /// Validate the database format version. Panics if unsupported.
     pub fn validate_format_version(&self) {
         if let Some(zero) = self.get_zero_page() {
@@ -327,7 +311,12 @@ impl Pager {
                      Please recreate your database. Pre-1.0 databases are not \
                      backwards compatible."
                 ),
-                1 => { /* CBOR format - continue normally */ }
+                1 => panic!(
+                    "Database format version 1 is no longer supported. \
+                     Please recreate your database. The catalog root page is now \
+                     hardcoded at page 1 rather than stored in the file header."
+                ),
+                2 => { /* current CBOR format - continue normally */ }
                 v => panic!(
                     "Unknown database format version {}. \
                      This database may have been created by a newer version.",
