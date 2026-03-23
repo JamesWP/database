@@ -15,6 +15,10 @@ $(SAKILA_SCHEMA):
 sakila-schema-stripped.sql: $(SAKILA_SCHEMA) scripts/strip-sakila.py
 	python3 scripts/strip-sakila.py $(SAKILA_SCHEMA) > $@
 
+# Insert data wrapped in a single transaction (for sqlite3 bulk-load comparison)
+sakila-insert-txn.sql: $(SAKILA_DATA)
+	{ printf 'BEGIN;\n'; cat $(SAKILA_DATA); printf '\nCOMMIT;\n'; } > $@
+
 # Run the full sakila test: load schema + insert data
 test-sakila: sakila-schema-stripped.sql $(SAKILA_DATA) target/release/database
 	@echo "=== Loading sakila schema ==="
@@ -23,6 +27,15 @@ test-sakila: sakila-schema-stripped.sql $(SAKILA_DATA) target/release/database
 	@echo "=== Loading sakila data ==="
 	$(PROG) sakila.db file $(SAKILA_DATA)
 	@echo "=== sakila load complete ==="
+
+# sqlite3 comparison: stripped schema, single-transaction bulk load
+test-sakila-sqlite3: sakila-schema-stripped.sql sakila-insert-txn.sql
+	@echo "=== sqlite3: Loading sakila schema (stripped) ==="
+	rm -f sakila-sqlite3.db
+	sqlite3 sakila-sqlite3.db < sakila-schema-stripped.sql
+	@echo "=== sqlite3: Loading sakila data (single transaction) ==="
+	time sqlite3 sakila-sqlite3.db < sakila-insert-txn.sql
+	@echo "=== sqlite3 sakila load complete ==="
 
 install-hooks:
 	git config core.hooksPath .githooks
