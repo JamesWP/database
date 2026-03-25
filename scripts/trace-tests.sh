@@ -4,18 +4,31 @@
 # Usage:
 #   sudo is NOT needed to run this script — it calls sudo internally for bpftrace.
 #
-#   ./scripts/trace-tests.sh                   # trace all tests
-#   ./scripts/trace-tests.sh test_sql_insert   # trace a single test
+#   ./scripts/trace-tests.sh                        # trace all tests
+#   ./scripts/trace-tests.sh test_sql_insert        # trace a single test (filter)
+#   ./scripts/trace-tests.sh --test sql_runner      # trace only the sql_runner suite
+#
+# The --test SUITE flag is passed to both `cargo test --no-run` (so only that
+# suite's binary is built and attached to bpftrace) and to `cargo test` when
+# running.  Any remaining arguments after --test SUITE are forwarded to
+# `cargo test` as additional filters.
 #
 # Output: perf-test-stats.txt
 
 set -euo pipefail
 
-# 1. Build all test binaries without running them; capture all paths.
+# Parse optional --test SUITE argument.
+CARGO_TEST_SUITE=()   # passed to `cargo test --no-run` and `cargo test`
+if [[ "${1:-}" == "--test" && -n "${2:-}" ]]; then
+    CARGO_TEST_SUITE=(--test "$2")
+    shift 2
+fi
+
+# 1. Build the relevant test binaries without running them; capture all paths.
 echo "==> Building test binaries..."
 mapfile -t TEST_BINS < <(
-    cargo test --no-run --message-format=json 2>/dev/null \
-    | grep -o '"executable":"[^"]*"' \
+    cargo test "${CARGO_TEST_SUITE[@]}" --no-run --message-format=json 2>/dev/null \
+    | grep -o '"executable":"[^"]*deps[^"]*"' \
     | sed 's/"executable":"//;s/"//'
 )
 
@@ -52,8 +65,8 @@ BPFTRACE_PID=$!
 sleep 1
 
 # 4. Run the tests, forwarding any extra args (e.g. a test filter).
-echo "==> Running: cargo test $*"
-cargo test "$@" || true
+echo "==> Running: cargo test ${CARGO_TEST_SUITE[*]} $*"
+cargo test "${CARGO_TEST_SUITE[@]}" "$@" || true
 
 # Let bpftrace flush its final maps.
 sleep 1

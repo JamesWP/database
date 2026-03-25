@@ -53,6 +53,11 @@ test-sakila-sqlite3: sakila-schema-stripped.sql sakila-insert-txn.sql
 trace-tests:
 	bash scripts/trace-tests.sh $(ARGS)
 
+# Trace only the SQL integration test suite (sql_runner) for clean probe accounting
+# Output: perf-test-stats.txt
+trace-sql-tests:
+	bash scripts/trace-tests.sh --test sql_runner $(ARGS)
+
 install-hooks:
 	git config core.hooksPath .githooks
 
