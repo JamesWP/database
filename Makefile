@@ -28,6 +28,17 @@ test-sakila: sakila-schema-stripped.sql $(SAKILA_DATA) target/release/database
 	$(PROG) sakila.db file $(SAKILA_DATA)
 	@echo "=== sakila load complete ==="
 
+# Trace sakila load with USDT probes via bpftrace (requires sudo + bpftrace installed)
+# Runs for up to 5 seconds then prints stats to perf-stats.txt
+trace-sakila: sakila-schema-stripped.sql $(SAKILA_DATA) target/release/database
+	rm -f sakila.db perf-stats.txt
+	sudo bpftrace scripts/trace-sakila.bt > perf-stats.txt 2>&1 &
+	sleep 1
+	timeout 5 $(MAKE) test-sakila || true
+	sleep 1
+	sudo pkill -f "bpftrace.*trace-sakila" 2>/dev/null || true
+	@echo "=== Stats written to perf-stats.txt ==="
+
 # sqlite3 comparison: stripped schema, single-transaction bulk load
 test-sakila-sqlite3: sakila-schema-stripped.sql sakila-insert-txn.sql
 	@echo "=== sqlite3: Loading sakila schema (stripped) ==="
@@ -36,6 +47,11 @@ test-sakila-sqlite3: sakila-schema-stripped.sql sakila-insert-txn.sql
 	@echo "=== sqlite3: Loading sakila data (single transaction) ==="
 	time sqlite3 sakila-sqlite3.db < sakila-insert-txn.sql
 	@echo "=== sqlite3 sakila load complete ==="
+
+# Trace unit/integration tests with USDT probes via bpftrace (requires sudo + bpftrace)
+# Forwards extra args to cargo test, e.g.: make trace-tests ARGS=test_sql_insert
+trace-tests:
+	bash scripts/trace-tests.sh $(ARGS)
 
 install-hooks:
 	git config core.hooksPath .githooks
