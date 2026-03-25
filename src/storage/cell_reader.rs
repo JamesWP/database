@@ -50,6 +50,7 @@ impl<'a> std::io::Read for CellReader<'a> {
 impl<'a> CellReader<'a> {
     pub fn new(pager: &'a Pager, leaf_page_idx: u32, cell_idx: usize) -> Option<CellReader<'a>> {
         let node: Box<NodePage> = Box::new(pager.get_and_decode(leaf_page_idx));
+        probe!(database, page_read_leaf);
 
         let leaf_page = node
             .leaf()

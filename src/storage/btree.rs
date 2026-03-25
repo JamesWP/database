@@ -135,6 +135,7 @@ where
             CursorPosition::Valid { leaf, .. } => {
                 let (leaf_page_idx, cell_index) = *leaf;
                 let page: NodePage = self.pager.get_and_decode(leaf_page_idx);
+                probe!(database, page_read_leaf);
                 match &page {
                     NodePage::Leaf(leaf) if cell_index < leaf.num_items() => {
                         Some(leaf.get_key(cell_index))
@@ -345,6 +346,7 @@ where
         // Read the key before deletion
         let deleted_key = {
             let page: NodePage = self.pager.get_and_decode(leaf_page_idx);
+            probe!(database, page_read_leaf);
             match &page {
                 NodePage::Leaf(leaf) => leaf.get_key(cell_index),
                 _ => panic!("Expected leaf node at cursor position"),
@@ -353,6 +355,7 @@ where
 
         // Load the leaf page again for mutation
         let mut page: NodePage = self.pager.get_and_decode(leaf_page_idx);
+        probe!(database, page_read_leaf);
 
         // Remove the cell from the leaf
         match &mut page {
@@ -579,6 +582,7 @@ where
             if let CursorPosition::Valid { leaf, .. } = &self.cursor_state.position {
                 let (page_idx, cell_index) = *leaf;
                 let page: NodePage = self.pager.get_and_decode(page_idx);
+                probe!(database, page_read_leaf);
                 if let Some(leaf) = page.leaf() {
                     if cell_index >= leaf.num_items() {
                         // Positioned past the end
@@ -646,6 +650,7 @@ where
 
         let (page_number, entry_index) = leaf;
         let page: NodePage = self.pager.get_and_decode(page_number);
+        probe!(database, page_read_leaf);
         let page = page
             .leaf()
             .expect("Values are always supposed to be in leaf pages");
@@ -667,7 +672,7 @@ where
             let (curent_interior_idx, curent_edge) = stack.pop().unwrap();
 
             let curent_interior: NodePage = self.pager.get_and_decode(curent_interior_idx);
-
+            probe!(database, page_read_interior);
             let curent_interior = curent_interior
                 .interior()
                 .expect("The stack should only contain interior pages");
