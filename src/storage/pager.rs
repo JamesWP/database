@@ -136,7 +136,9 @@ impl Pager {
         if self.get_file_size_pages() < 1 {
             None
         } else {
-            Some(self.get_and_decode(0))
+            let page = self.get_and_decode(0);
+            probe!(database, page_read_zero);
+            Some(page)
         }
     }
 
@@ -244,6 +246,7 @@ impl Pager {
             if let Some(head_page_no) = zero.free_list_head {
                 // Read the free list head page
                 let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
+                probe!(database, page_read_freelist);
 
                 // Pop a page ID from the list
                 if let Some(page_id) = free_list_page.page_ids.pop() {
@@ -282,6 +285,7 @@ impl Pager {
         // If there's a free list head, try to add to it
         if let Some(head_page_no) = zero.free_list_head {
             let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
+            probe!(database, page_read_freelist);
 
             // Check if this page can fit more entries (~1000 is a safe limit)
             if free_list_page.page_ids.len() < 1000 {

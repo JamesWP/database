@@ -36,6 +36,8 @@ usdt:./target/release/database:database:cbor_row_decode      { @cbor_row_decode+
 usdt:./target/release/database:database:page_read_cache_hit  { @page_read_cache_hit++;  }
 usdt:./target/release/database:database:page_read_cache_miss { @page_read_cache_miss++; }
 usdt:./target/release/database:database:page_write           { @page_write++;           }
+usdt:./target/release/database:database:page_read_zero       { @page_read_zero++;       }
+usdt:./target/release/database:database:page_read_freelist   { @page_read_freelist++;   }
 
 // ─── USDT: B-tree cursor ─────────────────────────────────────────────────────
 
@@ -115,6 +117,8 @@ interval:s:1 {
     printf("  cache_hit:      %lld\n", @page_read_cache_hit);
     printf("  cache_miss:     %lld\n", @page_read_cache_miss);
     printf("  page_write:     %lld\n", @page_write);
+    printf("  zero_page:      %lld\n", @page_read_zero);
+    printf("  freelist_page:  %lld\n", @page_read_freelist);
     printf("  -- btree --\n");
     printf("  cursor_find:      %lld\n", @cursor_find);
     printf("  cursor_next:      %lld\n", @cursor_next);
@@ -166,6 +170,8 @@ END {
     printf("  cache_hit:      %lld\n", @page_read_cache_hit);
     printf("  cache_miss:     %lld\n", @page_read_cache_miss);
     printf("  page_write:     %lld\n", @page_write);
+    printf("  zero_page:      %lld\n", @page_read_zero);
+    printf("  freelist_page:  %lld\n", @page_read_freelist);
 
     printf("\n  [btree]\n");
     printf("  cursor_find:    %lld\n", @cursor_find);
