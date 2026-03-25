@@ -14,3 +14,4 @@ doc/screenshots/*.txt
 doc/screenshots/*.checked
 test-out.gif
 test-out.txt
+sakila-schema-stripped.sql
