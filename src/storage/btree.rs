@@ -271,8 +271,14 @@ where
 
         // 2. Write both halves to disk (same type as the overfull page)
         match &left_half {
-            NodePage::Leaf(_) => { probe!(database, page_write_leaf); probe!(database, page_write_leaf); }
-            NodePage::Interior(_) => { probe!(database, page_write_interior); probe!(database, page_write_interior); }
+            NodePage::Leaf(_) => {
+                probe!(database, page_write_leaf);
+                probe!(database, page_write_leaf);
+            }
+            NodePage::Interior(_) => {
+                probe!(database, page_write_interior);
+                probe!(database, page_write_interior);
+            }
             _ => {}
         }
         self.pager

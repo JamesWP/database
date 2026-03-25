@@ -1,6 +1,8 @@
 use crate::engine::scalarvalue::ScalarValue;
 use crate::storage::{decode_u64_key, BTree};
 use probe::probe;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 /// Metadata for a single index from the catalog.
 #[derive(Debug, Clone)]
@@ -24,8 +26,20 @@ pub struct IndexInfo {
 /// a raw SQL string that the caller parses to determine uniqueness.
 /// Raw DDL may be stored internally and exposed for display or persistence,
 /// but keep the semantic interpretation here, at the catalog boundary.
+/// In-memory snapshot of all catalog entries, built lazily on first read
+/// and invalidated on any write.
+struct CatalogSnapshot {
+    /// table name → (rootpage, DDL sql)
+    tables: HashMap<String, (u32, String)>,
+    /// rootpage → table name (reverse lookup)
+    by_rootpage: HashMap<u32, String>,
+    /// table name → all indexes for that table
+    indexes: HashMap<String, Vec<IndexInfo>>,
+}
+
 pub struct Catalog {
     btree: BTree,
+    cache: RefCell<Option<CatalogSnapshot>>,
 }
 
 /// Root page of the `db_schema` catalog table.
@@ -38,7 +52,10 @@ impl Catalog {
     /// (or that the file is empty).
     pub fn create(path: &str) -> Self {
         let btree = BTree::new(path);
-        let mut cat = Catalog { btree };
+        let mut cat = Catalog {
+            btree,
+            cache: RefCell::new(None),
+        };
         if cat.btree.file_size_pages() == 0 {
             cat.bootstrap();
         }
@@ -49,6 +66,7 @@ impl Catalog {
     pub fn open(path: &str) -> Self {
         Catalog {
             btree: BTree::new(path),
+            cache: RefCell::new(None),
         }
     }
 
@@ -88,95 +106,47 @@ impl Catalog {
 
         let mut cursor = self.btree.open(CATALOG_ROOT);
         cursor.open_readwrite().insert_u64(key, row);
+        *self.cache.borrow_mut() = None;
     }
 
     /// Look up a table by name. Returns `(rootpage, sql)` if found.
     pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> {
         probe!(database, catalog_lookup_table);
-        let mut cursor = self.btree.open(CATALOG_ROOT);
-        let mut c = cursor.open_readonly();
-        c.first();
-        loop {
-            match c.get_entry() {
-                None => return None,
-                Some(mut reader) => {
-                    let values = reader.decode_as_array();
-                    if values.len() >= 5 {
-                        let obj_type = values[0].as_str().unwrap_or("");
-                        let name = values[1].as_str().unwrap_or("");
-                        if obj_type == "table" && name == table_name {
-                            let rootpage = values[3].as_u64().unwrap() as u32;
-                            let sql = values[4].as_str().unwrap_or("").to_string();
-                            return Some((rootpage, sql));
-                        }
-                    }
-                }
-            }
-            c.next();
-        }
+        self.ensure_cache();
+        self.cache
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .tables
+            .get(table_name)
+            .cloned()
     }
 
     /// Reverse lookup: find the table name for a given root page.
     pub fn lookup_table_by_rootpage(&self, rootpage: u32) -> Option<String> {
         probe!(database, catalog_lookup_by_rootpage);
-        let mut cursor = self.btree.open(CATALOG_ROOT);
-        let mut c = cursor.open_readonly();
-        c.first();
-        loop {
-            match c.get_entry() {
-                None => return None,
-                Some(mut reader) => {
-                    let values = reader.decode_as_array();
-                    if values.len() >= 4 {
-                        let obj_type = values[0].as_str().unwrap_or("");
-                        let name = values[1].as_str().unwrap_or("").to_string();
-                        let rp = values[3].as_u64().unwrap_or(0) as u32;
-                        if obj_type == "table" && rp == rootpage {
-                            return Some(name);
-                        }
-                    }
-                }
-            }
-            c.next();
-        }
+        self.ensure_cache();
+        self.cache
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .by_rootpage
+            .get(&rootpage)
+            .cloned()
     }
 
     /// Return all index metadata for a given table.
     pub fn lookup_indexes_for_table(&self, table_name: &str) -> Vec<IndexInfo> {
         probe!(database, catalog_lookup_indexes);
-        let mut indexes = Vec::new();
-        let mut cursor = self.btree.open(CATALOG_ROOT);
-        let mut c = cursor.open_readonly();
-        c.first();
-
-        loop {
-            match c.get_entry() {
-                None => break,
-                Some(mut reader) => {
-                    let values = reader.decode_as_array();
-                    if values.len() >= 5 {
-                        let obj_type = values[0].as_str().unwrap_or("");
-                        let tbl_name = values[2].as_str().unwrap_or("");
-
-                        if obj_type == "index" && tbl_name == table_name {
-                            let name = values[1].as_str().unwrap_or("").to_string();
-                            let rp = values[3].as_u64().unwrap() as u32;
-                            let sql = values[4].as_str().unwrap_or("");
-                            let column_names = extract_columns_from_index_sql(sql);
-                            indexes.push(IndexInfo {
-                                index_name: name,
-                                column_names,
-                                rootpage: rp,
-                                sql: sql.to_string(),
-                            });
-                        }
-                    }
-                }
-            }
-            c.next();
-        }
-
-        indexes
+        self.ensure_cache();
+        self.cache
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .indexes
+            .get(table_name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Return all catalog entries as raw `(type, name, tbl_name, rootpage, sql)` tuples.
@@ -236,10 +206,68 @@ impl Catalog {
 
             c.next();
         }
+        *self.cache.borrow_mut() = None;
         deleted_any
     }
 
     // ---- private helpers ---------------------------------------------------
+
+    /// Ensure the in-memory cache is populated. No-op if already valid.
+    fn ensure_cache(&self) {
+        if self.cache.borrow().is_none() {
+            *self.cache.borrow_mut() = Some(self.build_snapshot());
+        }
+    }
+
+    /// Scan the catalog B-tree once and build all lookup indexes.
+    fn build_snapshot(&self) -> CatalogSnapshot {
+        let mut tables: HashMap<String, (u32, String)> = HashMap::new();
+        let mut by_rootpage: HashMap<u32, String> = HashMap::new();
+        let mut indexes: HashMap<String, Vec<IndexInfo>> = HashMap::new();
+
+        let mut cursor = self.btree.open(CATALOG_ROOT);
+        let mut c = cursor.open_readonly();
+        c.first();
+        loop {
+            match c.get_entry() {
+                None => break,
+                Some(mut reader) => {
+                    let values = reader.decode_as_array();
+                    if values.len() >= 5 {
+                        let obj_type = values[0].as_str().unwrap_or("");
+                        let name = values[1].as_str().unwrap_or("").to_string();
+                        let tbl_name = values[2].as_str().unwrap_or("").to_string();
+                        let rootpage = values[3].as_u64().unwrap_or(0) as u32;
+                        let sql = values[4].as_str().unwrap_or("").to_string();
+
+                        match obj_type {
+                            "table" => {
+                                by_rootpage.insert(rootpage, name.clone());
+                                tables.insert(name, (rootpage, sql));
+                            }
+                            "index" => {
+                                let column_names = extract_columns_from_index_sql(&sql);
+                                indexes.entry(tbl_name).or_default().push(IndexInfo {
+                                    index_name: name,
+                                    column_names,
+                                    rootpage,
+                                    sql,
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            c.next();
+        }
+
+        CatalogSnapshot {
+            tables,
+            by_rootpage,
+            indexes,
+        }
+    }
 
     /// Allocate the next auto-increment key for a catalog row.
     fn next_key(&self) -> u64 {
@@ -270,7 +298,10 @@ impl Catalog {
 
 impl From<BTree> for Catalog {
     fn from(btree: BTree) -> Self {
-        Catalog { btree }
+        Catalog {
+            btree,
+            cache: RefCell::new(None),
+        }
     }
 }
 
@@ -670,6 +701,94 @@ mod tests {
             indexes[0].sql.to_uppercase().contains("UNIQUE"),
             "UNIQUE index must be unique"
         );
+    }
+
+    // ---- cache correctness ----
+
+    #[test]
+    fn test_cache_populated_after_first_lookup() {
+        let mut cat = TempCatalog::new();
+        let rp = cat.btree_mut().create_tree();
+        cat.insert_entry("table", "t", "t", rp, "CREATE TABLE t (id INTEGER)");
+        // Cache is None after insert (invalidated)
+        assert!(cat.cache.borrow().is_none());
+        // First lookup populates the cache
+        let _ = cat.lookup_table("t");
+        assert!(cat.cache.borrow().is_some());
+    }
+
+    #[test]
+    fn test_cache_invalidated_by_insert_entry() {
+        let mut cat = TempCatalog::new();
+        let rp = cat.btree_mut().create_tree();
+        cat.insert_entry("table", "a", "a", rp, "CREATE TABLE a (x INTEGER)");
+        // Warm the cache
+        let _ = cat.lookup_table("a");
+        assert!(cat.cache.borrow().is_some());
+        // Another insert must clear the cache
+        let rp2 = cat.btree_mut().create_tree();
+        cat.insert_entry("table", "b", "b", rp2, "CREATE TABLE b (x INTEGER)");
+        assert!(cat.cache.borrow().is_none());
+        // After re-warming, both tables visible
+        assert!(cat.lookup_table("a").is_some());
+        assert!(cat.lookup_table("b").is_some());
+    }
+
+    #[test]
+    fn test_cache_invalidated_by_delete() {
+        let mut cat = TempCatalog::new();
+        let rp = cat.btree_mut().create_tree();
+        cat.insert_entry(
+            "table",
+            "drop_me",
+            "drop_me",
+            rp,
+            "CREATE TABLE drop_me (x INTEGER)",
+        );
+        // Warm the cache
+        let _ = cat.lookup_table("drop_me");
+        assert!(cat.cache.borrow().is_some());
+        // Delete must clear the cache
+        cat.delete_entries_for_table("drop_me");
+        assert!(cat.cache.borrow().is_none());
+        // After re-warming, table is gone
+        assert!(cat.lookup_table("drop_me").is_none());
+    }
+
+    #[test]
+    fn test_cache_indexes_visible_after_insert() {
+        let mut cat = TempCatalog::new();
+        let tbl_rp = cat.btree_mut().create_tree();
+        let idx_rp = cat.btree_mut().create_tree();
+        cat.insert_entry("table", "t", "t", tbl_rp, "CREATE TABLE t (id INTEGER)");
+        cat.insert_entry(
+            "index",
+            "idx_t_id",
+            "t",
+            idx_rp,
+            "CREATE INDEX idx_t_id ON t(id)",
+        );
+        let indexes = cat.lookup_indexes_for_table("t");
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes[0].index_name, "idx_t_id");
+    }
+
+    #[test]
+    fn test_cache_lookup_by_rootpage() {
+        let mut cat = TempCatalog::new();
+        let rp = cat.btree_mut().create_tree();
+        cat.insert_entry(
+            "table",
+            "things",
+            "things",
+            rp,
+            "CREATE TABLE things (x TEXT)",
+        );
+        // Warm via a different method to confirm all maps built in one scan
+        let _ = cat.lookup_table("things");
+        assert_eq!(cat.lookup_table_by_rootpage(rp), Some("things".to_string()));
+        // Cache still valid (no write happened)
+        assert!(cat.cache.borrow().is_some());
     }
 
     // ---- persistence ----
