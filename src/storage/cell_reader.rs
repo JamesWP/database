@@ -1,4 +1,5 @@
 use crate::engine::scalarvalue::ScalarValue;
+use probe::probe;
 
 use super::node::NodePage;
 use super::pager::Pager;
@@ -28,6 +29,7 @@ impl<'a> std::io::Read for CellReader<'a> {
         match self.continuation {
             None => Ok(0),
             Some(continuation) => {
+                probe!(database, page_read_overflow);
                 let node: Box<NodePage> = Box::new(self.pager.get_and_decode(continuation));
                 let overflow_page = match node.as_ref() {
                     NodePage::OverflowPage(p) => p,
@@ -76,6 +78,7 @@ impl<'a> CellReader<'a> {
     }
 
     pub fn decode_as_array(&mut self) -> Vec<ScalarValue> {
+        probe!(database, cbor_row_decode);
         ciborium::de::from_reader(self).unwrap()
     }
 }
