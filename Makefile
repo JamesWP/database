@@ -20,17 +20,18 @@ sakila-insert-txn.sql: $(SAKILA_DATA)
 	{ printf 'BEGIN;\n'; cat $(SAKILA_DATA); printf '\nCOMMIT;\n'; } > $@
 
 # Run the full sakila test: load schema + insert data
-test-sakila: sakila-schema-stripped.sql $(SAKILA_DATA) target/release/database
+test-sakila: sakila-schema-stripped.sql $(SAKILA_DATA)
+	cargo build --release
 	@echo "=== Loading sakila schema ==="
 	rm -f sakila.db
-	$(PROG) sakila.db file sakila-schema-stripped.sql
+	time $(PROG) sakila.db file sakila-schema-stripped.sql
 	@echo "=== Loading sakila data ==="
-	$(PROG) sakila.db file $(SAKILA_DATA)
+	time $(PROG) sakila.db file $(SAKILA_DATA)
 	@echo "=== sakila load complete ==="
 
 # Trace sakila load with USDT probes via bpftrace (requires sudo + bpftrace installed)
 # Output: perf-stats.txt
-trace-sakila: sakila-schema-stripped.sql $(SAKILA_DATA) target/release/database
+trace-sakila: sakila-schema-stripped.sql $(SAKILA_DATA)
 	bash scripts/trace-tests.sh --sakila
 
 # sqlite3 comparison: stripped schema, single-transaction bulk load
