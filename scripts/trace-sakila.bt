@@ -38,6 +38,8 @@ usdt:./target/release/database:database:page_read_cache_miss { @page_read_cache_
 usdt:./target/release/database:database:page_write           { @page_write++;           }
 usdt:./target/release/database:database:page_read_zero       { @page_read_zero++;       }
 usdt:./target/release/database:database:page_read_freelist   { @page_read_freelist++;   }
+usdt:./target/release/database:database:page_allocate        { @page_allocate++;        }
+usdt:./target/release/database:database:page_deallocate      { @page_deallocate++;      }
 
 // ─── USDT: B-tree cursor ─────────────────────────────────────────────────────
 
@@ -55,6 +57,7 @@ usdt:./target/release/database:database:page_read_overflow   { @page_read_overfl
 
 usdt:./target/release/database:database:page_write_leaf      { @page_write_leaf++;      }
 usdt:./target/release/database:database:page_write_interior  { @page_write_interior++;  }
+usdt:./target/release/database:database:page_write_zero      { @page_write_zero++;      }
 
 // ─── USDT: B-tree structure ──────────────────────────────────────────────────
 
@@ -116,6 +119,7 @@ interval:s:1 {
     printf("  -- pager cache --\n");
     printf("  cache_hit:      %lld\n", @page_read_cache_hit);
     printf("  cache_miss:     %lld\n", @page_read_cache_miss);
+    printf("  page_allocate   %lld\n", @page_allocate);
     printf("  -- btree --\n");
     printf("  cursor_find:      %lld\n", @cursor_find);
     printf("  cursor_next:      %lld\n", @cursor_next);
@@ -134,6 +138,7 @@ interval:s:1 {
     printf("  page_write:       %lld\n", @page_write);
     printf("  leaf:             %lld\n", @page_write_leaf);
     printf("  interior:         %lld\n", @page_write_interior);
+    printf("  zero_page:        %lld\n", @page_write_zero);
     printf("  -- catalog --\n");
     printf("  lookup_table:     %lld\n", @catalog_lookup_table);
     printf("  lookup_rootpage:  %lld\n", @catalog_lookup_by_rootpage);
@@ -171,8 +176,8 @@ END {
     printf("  cache_hit:      %lld\n", @page_read_cache_hit);
     printf("  cache_miss:     %lld\n", @page_read_cache_miss);
     printf("  page_write:     %lld\n", @page_write);
-    printf("  zero_page:      %lld\n", @page_read_zero);
-    printf("  freelist_page:  %lld\n", @page_read_freelist);
+    printf("  page_allocate   %lld\n", @page_allocate);
+    printf("  page_deallocate %lld\n", @page_deallocate);
 
     printf("\n  [btree]\n");
     printf("  cursor_find:    %lld\n", @cursor_find);
@@ -183,13 +188,18 @@ END {
     printf("  overflow_write: %lld\n", @overflow_write);
 
     printf("\n  [page reads by type]\n");
-    printf("  leaf:     %lld\n", @page_read_leaf);
-    printf("  interior: %lld\n", @page_read_interior);
-    printf("  overflow: %lld\n", @page_read_overflow);
+    printf("  page_read:      %lld\n", @page_read);
+    printf("  leaf:           %lld\n", @page_read_leaf);
+    printf("  interior:       %lld\n", @page_read_interior);
+    printf("  overflow:       %lld\n", @page_read_overflow);
+    printf("  zero_page:      %lld\n", @page_read_zero);
+    printf("  freelist_page:  %lld\n", @page_read_freelist);
 
     printf("\n  [page writes by type]\n");
-    printf("  leaf:     %lld\n", @page_write_leaf);
-    printf("  interior: %lld\n", @page_write_interior);
+    printf("  page_write:     %lld\n", @page_write);
+    printf("  leaf:           %lld\n", @page_write_leaf);
+    printf("  interior:       %lld\n", @page_write_interior);
+    printf("  zero_page:      %lld\n", @page_write_zero);
 
     printf("\n  [catalog]\n");
     printf("  lookup_table:    %lld\n", @catalog_lookup_table);

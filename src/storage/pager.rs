@@ -54,9 +54,6 @@ pub struct ZeroPage {
 
     /// First page of the free list linked list (None if no free pages)
     free_list_head: Option<u32>,
-
-    /// Total count of free pages across all free list pages
-    free_page_count: u32,
 }
 
 impl Default for ZeroPage {
@@ -65,7 +62,6 @@ impl Default for ZeroPage {
             magic: 0x53514C69, // "SQLi"
             format_version: 2, // CBOR format, catalog root hardcoded at page 1
             free_list_head: None,
-            free_page_count: 0,
         }
     }
 }
@@ -144,6 +140,7 @@ impl Pager {
 
     fn set_zero_page(&mut self, zero: ZeroPage) {
         self.encode_and_set(0, zero).unwrap();
+        probe!(database, page_write_zero);
     }
 
     pub fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
@@ -237,6 +234,9 @@ impl Pager {
             // Write out new zero page
             let zero = ZeroPage::default();
             self.set_zero_page(zero);
+
+            probe!(database, page_allocate, 1);
+
             // New page is the first page
             1
         } else {
@@ -253,10 +253,6 @@ impl Pager {
                     // Update the free list page
                     self.encode_and_set(head_page_no, &free_list_page).unwrap();
 
-                    // Update zero page
-                    zero.free_page_count -= 1;
-                    self.set_zero_page(zero);
-
                     return page_id;
                 } else {
                     // This free list page is empty, reclaim it or move to next
@@ -270,12 +266,16 @@ impl Pager {
 
             // No free pages available, expand the file
             self.set_file_size_pages(num_pages + 1);
+
+            probe!(database, page_allocate, num_pages);
+
             num_pages
         }
     }
 
     #[allow(dead_code)]
     pub fn dealocate(&mut self, idx: u32) {
+        probe!(database, page_deallocate, idx);
         if idx == 0 {
             panic!("Cant dealloc page zero");
         }
@@ -291,8 +291,6 @@ impl Pager {
             if free_list_page.page_ids.len() < 1000 {
                 free_list_page.page_ids.push(idx);
                 self.encode_and_set(head_page_no, &free_list_page).unwrap();
-                zero.free_page_count += 1;
-                self.set_zero_page(zero);
                 return;
             }
         }
@@ -308,7 +306,6 @@ impl Pager {
 
         // Update zero page to point to new head
         zero.free_list_head = Some(idx);
-        // Don't increment free_page_count since this page is now being used as a FreeListPage
         self.set_zero_page(zero);
     }
 
@@ -341,9 +338,15 @@ impl Pager {
         for i in 0..self.get_file_size_pages() {
             if i == 0 {
                 let zero_page: ZeroPage = self.get_and_decode(0);
+                probe!(database, page_read_zero);
                 println!("{message}: Page {i} (ZeroPage): {zero_page:?}");
             } else {
                 let node_page: NodePage = self.get_and_decode(i);
+                match &node_page {
+                    NodePage::Leaf(_) => probe!(database, page_read_leaf),
+                    NodePage::Interior(_) => probe!(database, page_read_interior),
+                    NodePage::OverflowPage(_) => probe!(database, page_read_overflow),
+                }
                 println!("{message}: Page {i}: {node_page:?}");
             }
         }
