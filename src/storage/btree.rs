@@ -7,6 +7,7 @@ use std::{
 };
 
 use colored::Colorize;
+use probe::probe;
 
 use crate::storage::cell::Cell;
 use crate::storage::node::{NodePage, OverflowPage, SearchResult};
@@ -128,6 +129,7 @@ where
     PagerRef: DerefMut<Target = Pager>,
 {
     pub fn insert(&mut self, key: &[u8], value: Value) {
+        probe!(database, row_insert);
         // Save current cursor key if positioned, for RequiresSeek after insert
         let saved_cursor_key = match &self.cursor_state.position {
             CursorPosition::Valid { leaf, .. } => {
@@ -147,6 +149,7 @@ where
         // this is to ensure when splitting nodes we always end up with at least 50% free space
         let (first_part, continuation) = if value.len() > CHUNK_THRESHOLD {
             let (first_part, rest) = value.split_at(CHUNK_THRESHOLD);
+            probe!(database, overflow_write);
             let second_part = split_and_store(&mut self.pager, rest);
             (first_part.to_owned(), Some(second_part))
         } else {
@@ -168,6 +171,7 @@ where
             let mut top_page: NodePage = self.pager.get_and_decode(top_page_idx);
             match top_page.search(key) {
                 SearchResult::Found(insertion_index) => {
+                    probe!(database, page_read_leaf);
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
 
@@ -178,6 +182,7 @@ where
                     break;
                 }
                 SearchResult::NotPresent(item_idx) => {
+                    probe!(database, page_read_leaf);
                     top_page.insert_item_at_index(item_idx, cell);
 
                     self.update_page(top_page, stack);
@@ -185,6 +190,7 @@ where
                     break;
                 }
                 SearchResult::GoDown(_child_index, child_page_idx) => {
+                    probe!(database, page_read_interior);
                     // The node does not contain the value, instead we found the index of a child of this node where the value should be inserted instead
                     // we need to go deeper.
 
@@ -209,6 +215,11 @@ where
     /// * `stack` the path of pages to the modified page, last entry in the stack is the one which needs updating
     /// * `modified_page` the updated content to be saved to the page identified by the stack
     fn update_page(&mut self, modified_page: NodePage, stack: Vec<u32>) {
+        match &modified_page {
+            NodePage::Leaf(_) => probe!(database, page_write_leaf),
+            NodePage::Interior(_) => probe!(database, page_write_interior),
+            _ => {}
+        }
         let modified_page_idx = stack.last().unwrap();
         let result = self.pager.encode_and_set(modified_page_idx, &modified_page);
 
@@ -250,6 +261,7 @@ where
     /// ```
     ///
     fn split_page(&mut self, overfull_page: NodePage, mut stack: Vec<u32>) {
+        probe!(database, page_split);
         let overfull_idx = stack.pop().unwrap();
 
         // 1. Split the overfull page into left and right halves
@@ -257,7 +269,12 @@ where
         let right_idx = self.pager.allocate();
         let right_first_key = right_half.smallest_key();
 
-        // 2. Write both halves to disk
+        // 2. Write both halves to disk (same type as the overfull page)
+        match &left_half {
+            NodePage::Leaf(_) => { probe!(database, page_write_leaf); probe!(database, page_write_leaf); }
+            NodePage::Interior(_) => { probe!(database, page_write_interior); probe!(database, page_write_interior); }
+            _ => {}
+        }
         self.pager
             .encode_and_set(overfull_idx, left_half)
             .expect("After split, parts are smaller");
@@ -270,10 +287,12 @@ where
             // Non-root: add a child pointer for the right page to the parent
             let parent_idx = stack.pop().unwrap();
             let parent_page: NodePage = self.pager.get_and_decode(parent_idx);
+            probe!(database, page_read_interior);
             let mut parent_interior = parent_page.interior().unwrap();
             parent_interior.insert_child_page(right_first_key, right_idx);
             let parent_node = parent_interior.node();
 
+            probe!(database, page_write_interior);
             let result = self.pager.encode_and_set(parent_idx, parent_node.clone());
 
             // If the parent is now overfull, recursively split it
@@ -292,10 +311,13 @@ where
             // Move the left half (currently at overfull_idx) to a fresh page,
             // then overwrite the root with a new interior node.
             let left_page: NodePage = self.pager.get_and_decode(overfull_idx);
+            probe!(database, page_read_leaf);
             let left_idx = self.pager.allocate();
+            probe!(database, page_write_leaf);
             self.pager.encode_and_set(left_idx, left_page).unwrap();
 
             let interior = InteriorNodePage::new(left_idx, right_first_key, right_idx);
+            probe!(database, page_write_interior);
             self.pager
                 .encode_and_set(overfull_idx, NodePage::Interior(interior))
                 .unwrap();
@@ -409,6 +431,7 @@ where
             let page: NodePage = self.pager.get_and_decode(page_idx);
             match page {
                 node::NodePage::Leaf(l) => {
+                    probe!(database, page_read_leaf);
                     // We found the first leaf in the tree.
                     if l.num_items() == 0 {
                         // Empty tree
@@ -422,6 +445,7 @@ where
                     return;
                 }
                 node::NodePage::Interior(i) => {
+                    probe!(database, page_read_interior);
                     stack.push((page_idx, 0));
                     page_idx = i.get_child_page_by_index(0);
                 }
@@ -437,6 +461,7 @@ where
             let page: NodePage = self.pager.get_and_decode(page_idx);
             match page {
                 node::NodePage::Leaf(l) => {
+                    probe!(database, page_read_leaf);
                     // We found the rightmost leaf in the tree.
                     if l.num_items() == 0 {
                         // Empty tree
@@ -450,6 +475,7 @@ where
                     return;
                 }
                 node::NodePage::Interior(i) => {
+                    probe!(database, page_read_interior);
                     stack.push((page_idx, i.num_edges() - 1));
                     page_idx = i.get_child_page_by_index(i.num_edges() - 1);
                 }
@@ -471,6 +497,7 @@ where
     /// Returns true if the key was found, false if not found.
     /// When false, the cursor is positioned where the key would be inserted.
     pub fn find(&mut self, key: &[u8]) -> bool {
+        probe!(database, cursor_find);
         let mut page_idx = self.cursor_state.root_page;
         let mut stack = Vec::new();
 
@@ -479,6 +506,7 @@ where
 
             match page.search(key) {
                 SearchResult::Found(index) => {
+                    probe!(database, page_read_leaf);
                     self.cursor_state.position = CursorPosition::Valid {
                         stack,
                         leaf: (page_idx, index),
@@ -486,6 +514,7 @@ where
                     return true;
                 }
                 SearchResult::NotPresent(index) => {
+                    probe!(database, page_read_leaf);
                     self.cursor_state.position = CursorPosition::Valid {
                         stack,
                         leaf: (page_idx, index),
@@ -493,6 +522,7 @@ where
                     return false;
                 }
                 SearchResult::GoDown(c_idx, c) => {
+                    probe!(database, page_read_interior);
                     stack.push((page_idx, c_idx));
                     // we should continue searching at the child page below
                     page_idx = c;
@@ -525,6 +555,7 @@ where
 
     /// Move the cursor to point at the next item in the btree
     pub fn next(&mut self) {
+        probe!(database, cursor_next);
         // Check if we need to reposition due to a mutation
         let needs_reseek = matches!(
             self.cursor_state.position,
@@ -570,6 +601,7 @@ where
 
     /// Move the cursor to point at the next item in the btree
     pub fn prev(&mut self) {
+        probe!(database, cursor_prev);
         self.ensure_positioned();
 
         // For prev(), we always retreat, regardless of whether we just repositioned
