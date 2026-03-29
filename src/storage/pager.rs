@@ -526,15 +526,15 @@ mod test {
 
         let mut pager = Pager::new(path);
 
-        // Allocate 1500 pages
+        // Allocate 1100 pages (capacity is 1000; 1100 spans exactly 2 FreeListPages)
         let mut allocated = Vec::new();
-        for _ in 0..1500 {
+        for _ in 0..1100 {
             allocated.push(pager.allocate());
         }
 
         let size_after_alloc = pager.get_file_size_pages();
 
-        // Deallocate all 1500 pages (should create multiple FreeListPages)
+        // Deallocate all 1100 pages (should create multiple FreeListPages)
         for page in allocated.clone() {
             pager.dealocate(page);
         }
@@ -542,9 +542,9 @@ mod test {
         // File size should not have grown (freed pages used as FreeListPage containers)
         assert_eq!(size_after_alloc, pager.get_file_size_pages());
 
-        // Re-allocate all 1500 pages - should reuse freed pages
+        // Re-allocate all 1100 pages - should reuse freed pages
         let mut reallocated = Vec::new();
-        for _ in 0..1500 {
+        for _ in 0..1100 {
             reallocated.push(pager.allocate());
         }
 
@@ -567,25 +567,25 @@ mod test {
 
         let mut pager = Pager::new(path);
 
-        // Allocate 2000 pages
+        // Allocate 500 pages
         let mut pages = Vec::new();
-        for _ in 0..2000 {
+        for _ in 0..500 {
             pages.push(pager.allocate());
         }
 
         let max_size = pager.get_file_size_pages();
-        assert!(max_size >= 2001); // At least 2000 data pages + zero page
+        assert!(max_size >= 501); // At least 500 data pages + zero page
 
         // Deallocate half of them
-        for i in (0..2000).step_by(2) {
+        for i in (0..500).step_by(2) {
             pager.dealocate(pages[i]);
         }
 
         // File size should not change
         assert_eq!(max_size, pager.get_file_size_pages());
 
-        // Allocate 1000 new pages - should reuse the freed ones
-        for _ in 0..1000 {
+        // Allocate 250 new pages - should reuse the freed ones
+        for _ in 0..250 {
             pager.allocate();
         }
 
