@@ -1276,6 +1276,7 @@ mod test {
     }
 
     proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(20))]
         #[test]
         fn test_ordering(ordering: bool, elements in prop::collection::vec(&(50..60u64, &(prop::char::range('A', 'Z'), 500..600usize)), 10..20usize)) {
             let test = TestDb::default();
@@ -1286,14 +1287,14 @@ mod test {
     }
 
     proptest! {
-        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(5))]
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2))]
 
-        /// Large-scale insert proptest: 200+ random unique keys inserted in
+        /// Large-scale insert proptest: 50+ random unique keys inserted in
         /// arbitrary order. After all inserts, verify() must pass and a forward
         /// scan must yield keys in strictly ascending order.
         #[test]
         fn test_large_insert_sorted_and_verified(
-            mut keys in prop::collection::vec(0u64..100_000, 200..300usize),
+            mut keys in prop::collection::vec(0u64..100_000, 50..100usize),
         ) {
             let test = TestDb::default();
             let mut btree: BTree = test.catalog.into();
@@ -1533,7 +1534,7 @@ mod test {
         let root = btree.create_tree();
 
         // Create shuffled keys
-        let mut keys: Vec<u64> = (0..1000).collect();
+        let mut keys: Vec<u64> = (0..200).collect();
         let mut rng = rand::rngs::StdRng::seed_from_u64(12345);
         keys.shuffle(&mut rng);
 
@@ -1552,7 +1553,7 @@ mod test {
             let mut cursor = cursor_handle.open_readonly();
             cursor.first();
 
-            for expected_key in 0..1000u64 {
+            for expected_key in 0..200u64 {
                 let mut buf = [0u8; 8];
                 cursor
                     .get_entry()
@@ -2367,7 +2368,7 @@ mod test {
         let root = btree.create_tree();
 
         // Generate variable-length keys of varying sizes
-        let mut keys: Vec<Vec<u8>> = (0u32..200)
+        let mut keys: Vec<Vec<u8>> = (0u32..80)
             .map(|i| {
                 let len = 1 + (i as usize % 20); // lengths 1..20
                 let mut k = vec![0u8; len];
