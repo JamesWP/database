@@ -6,6 +6,7 @@ use crate::explain::{ExplainSchema, IndexMeta, TableMeta};
 use crate::frontend::ast::{ColumnConstraint, DataType, Statement};
 use crate::frontend::{parse, ParseError};
 use crate::planner::{self, LogicalPlan, PlanError};
+use probe::probe;
 
 #[derive(Debug)]
 pub enum ExecuteResult {
@@ -101,6 +102,8 @@ impl std::fmt::Display for ExecuteError {
 }
 
 pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, ExecuteError> {
+    let sql_bytes = sql.as_bytes();
+    probe!(database, query_start, sql_bytes.as_ptr() as usize, sql_bytes.len());
     let stmt = parse(sql).map_err(ExecuteError::Parse)?;
 
     match &stmt {
