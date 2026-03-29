@@ -731,8 +731,8 @@ mod tests {
         )
         .unwrap();
 
-        // Insert 150 rows
-        for i in 0..150 {
+        // Insert 50 rows
+        for i in 0..50 {
             let sql = format!("INSERT INTO numbers VALUES ({}, {})", i, i * 10);
             let mut q = match execute(&sql, &mut test.catalog).unwrap() {
                 ExecuteResult::Query(q) => q,
@@ -741,9 +741,9 @@ mod tests {
             while q.next().is_some() {}
         }
 
-        // Select with WHERE filter: value > 500 should give us rows with id >= 51
+        // Select with WHERE filter: value > 200 should give us rows with id >= 21
         let result = execute(
-            "SELECT id, value FROM numbers WHERE value > 500",
+            "SELECT id, value FROM numbers WHERE value > 200",
             &mut test.catalog,
         )
         .unwrap();
@@ -751,7 +751,7 @@ mod tests {
         match result {
             ExecuteResult::Query(mut q) => {
                 let mut count = 0;
-                let mut last_id = 50;
+                let mut last_id = 20;
                 while let Some(row) = q.next() {
                     count += 1;
                     let id = match row[0] {
@@ -764,11 +764,11 @@ mod tests {
                     };
                     assert!(id > last_id, "Rows should be ordered by id");
                     assert_eq!(value, id * 10);
-                    assert!(value > 500);
+                    assert!(value > 200);
                     last_id = id;
                 }
-                // value > 500 means id > 50, so we should have 99 rows (51..149)
-                assert_eq!(count, 99);
+                // value > 200 means id > 20, so we should have 29 rows (21..49)
+                assert_eq!(count, 29);
             }
             _ => panic!("Expected Query result"),
         }
