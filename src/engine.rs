@@ -1,4 +1,5 @@
 use crate::{engine::registers::RegisterValue, storage};
+use probe::probe;
 
 use self::{
     program::{Operation, ProgramCode, Reg},
@@ -102,6 +103,7 @@ impl Engine {
 
     /// Run the program to completion, returning all yielded rows.
     pub(crate) fn run(&mut self) -> Vec<Vec<ScalarValue>> {
+        probe!(database, engine_program_run);
         let mut yields = Vec::new();
         loop {
             match self.step() {
@@ -116,6 +118,7 @@ impl Engine {
 
     /// Run the program to completion, returning an error instead of panicking on ConstraintViolation.
     pub(crate) fn run_result(&mut self) -> Result<Vec<Vec<ScalarValue>>, EngineError> {
+        probe!(database, engine_program_run);
         let mut yields = Vec::new();
         loop {
             match self.step() {
@@ -157,12 +160,14 @@ impl Engine {
 
     pub fn step(&mut self) -> StepResult {
         use program::Operation::*;
+        probe!(database, engine_step);
 
         match self.program.advance() {
             StoreValue(reg, scalar) => {
                 *self.registers.get_mut(reg) = RegisterValue::ScalarValue(scalar);
             }
             Yield(regs) => {
+                probe!(database, row_yield);
                 let values = self.registers.get_range(&regs);
                 let values = values
                     .map(RegisterValue::scalar)
@@ -585,6 +590,7 @@ impl Engine {
                 return StepResult::Ok(StepSuccess::Halt);
             }
             Open(reg, rootpage) => {
+                probe!(database, engine_cursor_open);
                 let btree = match self.btree.as_ref() {
                     Some(b) => b,
                     None => {
@@ -595,6 +601,7 @@ impl Engine {
                 *self.registers.get_mut(reg) = RegisterValue::CursorHandle(cursor);
             }
             MoveCursor(reg, operation) => {
+                probe!(database, engine_move_cursor);
                 // Extract key value first to avoid borrow conflict
                 let key_bytes = if let program::MoveOperation::Find(key_reg) = operation {
                     let key_value = self.registers.get(key_reg).scalar().unwrap();
@@ -771,6 +778,7 @@ impl Engine {
                 }
             }
             ReadCursor(regs, cursor_reg) => {
+                probe!(database, engine_read_cursor);
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readwrite();
                 let mut value = cursor.get_entry().unwrap();
@@ -792,6 +800,7 @@ impl Engine {
                     RegisterValue::ScalarValue(ScalarValue::Integer(key as i64));
             }
             WriteCursor(cursor_reg, key_reg, value_regs) => {
+                probe!(database, engine_write_cursor);
                 // Read key value
                 let key = match self.registers.get(key_reg).scalar().unwrap() {
                     ScalarValue::Integer(k) => *k as u64,
@@ -805,6 +814,7 @@ impl Engine {
                     .collect();
 
                 let mut bytes = Vec::new();
+                probe!(database, cbor_row_encode);
                 ciborium::ser::into_writer(&scalar_values, &mut bytes).unwrap();
 
                 // Write to btree
@@ -876,6 +886,7 @@ impl Engine {
                 }
             }
             DeleteCursor(cursor_reg) => {
+                probe!(database, engine_delete_cursor);
                 // Delete at current cursor position
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut cursor = cursor.open_readwrite();

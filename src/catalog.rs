@@ -1,5 +1,6 @@
 use crate::engine::scalarvalue::ScalarValue;
 use crate::storage::{decode_u64_key, BTree};
+use probe::probe;
 
 /// Metadata for a single index from the catalog.
 #[derive(Debug, Clone)]
@@ -91,6 +92,7 @@ impl Catalog {
 
     /// Look up a table by name. Returns `(rootpage, sql)` if found.
     pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> {
+        probe!(database, catalog_lookup_table);
         let mut cursor = self.btree.open(CATALOG_ROOT);
         let mut c = cursor.open_readonly();
         c.first();
@@ -116,6 +118,7 @@ impl Catalog {
 
     /// Reverse lookup: find the table name for a given root page.
     pub fn lookup_table_by_rootpage(&self, rootpage: u32) -> Option<String> {
+        probe!(database, catalog_lookup_by_rootpage);
         let mut cursor = self.btree.open(CATALOG_ROOT);
         let mut c = cursor.open_readonly();
         c.first();
@@ -140,6 +143,7 @@ impl Catalog {
 
     /// Return all index metadata for a given table.
     pub fn lookup_indexes_for_table(&self, table_name: &str) -> Vec<IndexInfo> {
+        probe!(database, catalog_lookup_indexes);
         let mut indexes = Vec::new();
         let mut cursor = self.btree.open(CATALOG_ROOT);
         let mut c = cursor.open_readonly();
@@ -177,6 +181,7 @@ impl Catalog {
 
     /// Return all catalog entries as raw `(type, name, tbl_name, rootpage, sql)` tuples.
     pub fn scan_entries(&self) -> Vec<(String, String, String, u32, String)> {
+        probe!(database, catalog_scan);
         let mut entries = Vec::new();
         let mut cursor = self.btree.open(CATALOG_ROOT);
         let mut c = cursor.open_readonly();

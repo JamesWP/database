@@ -7,6 +7,7 @@ use std::{
     os::unix::prelude::MetadataExt,
 };
 
+use probe::probe;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use super::node::NodePage;
@@ -148,6 +149,7 @@ impl Pager {
 
         // Cache hit: return a copy of the cached page
         if let Some((page, _dirty)) = self.cache.borrow().get(&page_no) {
+            probe!(database, page_read_cache_hit, page_no);
             return page.clone();
         }
 
@@ -160,6 +162,7 @@ impl Pager {
         file.seek(std::io::SeekFrom::Start(offset)).unwrap();
         file.read_exact(content).unwrap();
 
+        probe!(database, page_read_cache_miss, page_no);
         self.cache.borrow_mut().insert(page_no, (p.clone(), false));
 
         p
@@ -170,6 +173,7 @@ impl Pager {
         idx: PageNo,
     ) -> P {
         let p = self.get(idx);
+        probe!(database, cbor_page_decode);
         ciborium::de::from_reader(&p.content[..]).unwrap()
     }
 
@@ -177,6 +181,7 @@ impl Pager {
         let page_no = *idx.borrow();
         let page = page.borrow();
 
+        probe!(database, page_write, page_no);
         // Write through: update cache (clean) and write to disk immediately
         self.cache
             .borrow_mut()
@@ -194,6 +199,7 @@ impl Pager {
         v: P,
     ) -> Result<(), EncodingError> {
         let mut page = Page::default();
+        probe!(database, cbor_page_encode);
         let result = ciborium::ser::into_writer(v.borrow(), &mut &mut page.content[..]);
 
         match result {
