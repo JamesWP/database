@@ -1,0 +1,214 @@
+#!/usr/bin/env bpftrace
+//
+// Trace the database engine during a sakila load.
+// Covers USDT probes (database-level) and syscall tracepoints (OS-level).
+//
+// Usage:
+//   sudo bpftrace scripts/trace-sakila.bt > perf-stats.txt 2>&1 &
+//   make test-sakila       # or: timeout 5 make test-sakila
+//   # bpftrace exits when the process exits; stats land in perf-stats.txt
+//
+// Or via: make trace-sakila
+//
+// Verify available probes:
+//   sudo bpftrace -l 'usdt:./target/release/database:*'
+
+// ─── USDT: engine opcodes ─────────────────────────────────────────────────────
+
+usdt:./target/release/database:database:engine_program_run   { @engine_programs++;      }
+usdt:./target/release/database:database:engine_step          { @engine_step++;          }
+usdt:./target/release/database:database:engine_cursor_open   { @engine_cursor_open++;   }
+usdt:./target/release/database:database:engine_move_cursor   { @engine_move_cursor++;   }
+usdt:./target/release/database:database:engine_read_cursor   { @engine_read_cursor++;   }
+usdt:./target/release/database:database:engine_write_cursor  { @engine_write_cursor++;  }
+usdt:./target/release/database:database:engine_delete_cursor { @engine_delete_cursor++; }
+usdt:./target/release/database:database:row_yield            { @row_yield++;            }
+
+// ─── USDT: CBOR encode / decode ──────────────────────────────────────────────
+
+usdt:./target/release/database:database:cbor_page_encode     { @cbor_page_encode++;     }
+usdt:./target/release/database:database:cbor_page_decode     { @cbor_page_decode++;     }
+usdt:./target/release/database:database:cbor_row_encode      { @cbor_row_encode++;      }
+usdt:./target/release/database:database:cbor_row_decode      { @cbor_row_decode++;      }
+
+// ─── USDT: storage / pager ───────────────────────────────────────────────────
+
+usdt:./target/release/database:database:page_read_cache_hit  { @page_read_cache_hit++; @page_read++; }
+usdt:./target/release/database:database:page_read_cache_miss { @page_read_cache_miss++; @page_read++; }
+usdt:./target/release/database:database:page_write           { @page_write++;           }
+usdt:./target/release/database:database:page_read_zero       { @page_read_zero++;       }
+usdt:./target/release/database:database:page_read_freelist   { @page_read_freelist++;   }
+
+// ─── USDT: B-tree cursor ─────────────────────────────────────────────────────
+
+usdt:./target/release/database:database:cursor_find          { @cursor_find++;          }
+usdt:./target/release/database:database:cursor_next          { @cursor_next++;          }
+usdt:./target/release/database:database:cursor_prev          { @cursor_prev++;          }
+
+// ─── USDT: B-tree page reads by type ─────────────────────────────────────────
+
+usdt:./target/release/database:database:page_read_leaf       { @page_read_leaf++;       }
+usdt:./target/release/database:database:page_read_interior   { @page_read_interior++;   }
+usdt:./target/release/database:database:page_read_overflow   { @page_read_overflow++;   }
+
+// ─── USDT: B-tree page writes by type ────────────────────────────────────────
+
+usdt:./target/release/database:database:page_write_leaf      { @page_write_leaf++;      }
+usdt:./target/release/database:database:page_write_interior  { @page_write_interior++;  }
+
+// ─── USDT: B-tree structure ──────────────────────────────────────────────────
+
+usdt:./target/release/database:database:row_insert           { @row_insert++;           }
+usdt:./target/release/database:database:page_split           { @page_split++;           }
+usdt:./target/release/database:database:overflow_write       { @overflow_write++;       }
+
+// ─── USDT: catalog access ────────────────────────────────────────────────────
+
+usdt:./target/release/database:database:catalog_lookup_table       { @catalog_lookup_table++;       }
+usdt:./target/release/database:database:catalog_lookup_by_rootpage { @catalog_lookup_by_rootpage++; }
+usdt:./target/release/database:database:catalog_lookup_indexes     { @catalog_lookup_indexes++;     }
+usdt:./target/release/database:database:catalog_scan               { @catalog_scan++;               }
+
+// ─── Syscalls: file I/O ──────────────────────────────────────────────────────
+// The pager uses seek()+read_exact() / seek()+write_all() → lseek+read/write.
+
+tracepoint:syscalls:sys_enter_read  /comm == "database"/ {
+    @read_start[tid] = nsecs;
+    @syscall_reads++;
+}
+tracepoint:syscalls:sys_exit_read   /comm == "database" && @read_start[tid] && args->ret > 0/ {
+    @read_lat_us  = hist((nsecs - @read_start[tid]) / 1000);
+    @read_bytes  += (uint64)args->ret;
+    delete(@read_start[tid]);
+}
+
+tracepoint:syscalls:sys_enter_write /comm == "database"/ {
+    @write_start[tid] = nsecs;
+    @syscall_writes++;
+}
+tracepoint:syscalls:sys_exit_write  /comm == "database" && @write_start[tid] && args->ret > 0/ {
+    @write_lat_us  = hist((nsecs - @write_start[tid]) / 1000);
+    @write_bytes  += (uint64)args->ret;
+    delete(@write_start[tid]);
+}
+
+tracepoint:syscalls:sys_enter_lseek /comm == "database"/ { @syscall_seeks++;  }
+tracepoint:syscalls:sys_enter_fsync /comm == "database"/ { @syscall_fsyncs++; }
+
+// ─── Per-second snapshot ─────────────────────────────────────────────────────
+
+interval:s:1 {
+    time("[%H:%M:%S]\n");
+    printf("  -- engine opcodes --\n");
+    printf("  programs_run:   %lld\n", @engine_programs);
+    printf("  total_steps:    %lld\n", @engine_step);
+    printf("  cursor_open:    %lld\n", @engine_cursor_open);
+    printf("  move_cursor:    %lld\n", @engine_move_cursor);
+    printf("  read_cursor:    %lld\n", @engine_read_cursor);
+    printf("  write_cursor:   %lld\n", @engine_write_cursor);
+    printf("  delete_cursor:  %lld\n", @engine_delete_cursor);
+    printf("  row_yield:      %lld\n", @row_yield);
+    printf("  -- CBOR --\n");
+    printf("  page_encode:    %lld\n", @cbor_page_encode);
+    printf("  page_decode:    %lld\n", @cbor_page_decode);
+    printf("  row_encode:     %lld\n", @cbor_row_encode);
+    printf("  row_decode:     %lld\n", @cbor_row_decode);
+    printf("  -- pager cache --\n");
+    printf("  cache_hit:      %lld\n", @page_read_cache_hit);
+    printf("  cache_miss:     %lld\n", @page_read_cache_miss);
+    printf("  -- btree --\n");
+    printf("  cursor_find:      %lld\n", @cursor_find);
+    printf("  cursor_next:      %lld\n", @cursor_next);
+    printf("  cursor_prev:      %lld\n", @cursor_prev);
+    printf("  row_insert:       %lld\n", @row_insert);
+    printf("  page_split:       %lld\n", @page_split);
+    printf("  overflow_write:   %lld\n", @overflow_write);
+    printf("  -- page reads by type --\n");
+    printf("  page_read:        %lld\n", @page_read);
+    printf("  leaf:             %lld\n", @page_read_leaf);
+    printf("  interior:         %lld\n", @page_read_interior);
+    printf("  overflow:         %lld\n", @page_read_overflow);
+    printf("  zero_page:        %lld\n", @page_read_zero);
+    printf("  freelist_page:    %lld\n", @page_read_freelist);
+    printf("  -- page writes by type --\n");
+    printf("  page_write:       %lld\n", @page_write);
+    printf("  leaf:             %lld\n", @page_write_leaf);
+    printf("  interior:         %lld\n", @page_write_interior);
+    printf("  -- catalog --\n");
+    printf("  lookup_table:     %lld\n", @catalog_lookup_table);
+    printf("  lookup_rootpage:  %lld\n", @catalog_lookup_by_rootpage);
+    printf("  lookup_indexes:   %lld\n", @catalog_lookup_indexes);
+    printf("  scan:             %lld\n", @catalog_scan);
+    printf("  -- syscalls --\n");
+    printf("  read:   %lld calls  %lld bytes\n", @syscall_reads,  @read_bytes);
+    printf("  write:  %lld calls  %lld bytes\n", @syscall_writes, @write_bytes);
+    printf("  lseek:  %lld calls\n",              @syscall_seeks);
+    printf("  fsync:  %lld calls\n",              @syscall_fsyncs);
+}
+
+// ─── Final summary ───────────────────────────────────────────────────────────
+
+END {
+    printf("\n=== Final Counts ===\n");
+
+    printf("\n  [engine opcodes]\n");
+    printf("  programs_run:   %lld\n", @engine_programs);
+    printf("  total_steps:    %lld\n", @engine_step);
+    printf("  cursor_open:    %lld\n", @engine_cursor_open);
+    printf("  move_cursor:    %lld\n", @engine_move_cursor);
+    printf("  read_cursor:    %lld\n", @engine_read_cursor);
+    printf("  write_cursor:   %lld\n", @engine_write_cursor);
+    printf("  delete_cursor:  %lld\n", @engine_delete_cursor);
+    printf("  row_yield:      %lld\n", @row_yield);
+
+    printf("\n  [CBOR]\n");
+    printf("  page_encode:    %lld\n", @cbor_page_encode);
+    printf("  page_decode:    %lld\n", @cbor_page_decode);
+    printf("  row_encode:     %lld\n", @cbor_row_encode);
+    printf("  row_decode:     %lld\n", @cbor_row_decode);
+
+    printf("\n  [pager]\n");
+    printf("  cache_hit:      %lld\n", @page_read_cache_hit);
+    printf("  cache_miss:     %lld\n", @page_read_cache_miss);
+    printf("  page_write:     %lld\n", @page_write);
+    printf("  zero_page:      %lld\n", @page_read_zero);
+    printf("  freelist_page:  %lld\n", @page_read_freelist);
+
+    printf("\n  [btree]\n");
+    printf("  cursor_find:    %lld\n", @cursor_find);
+    printf("  cursor_next:    %lld\n", @cursor_next);
+    printf("  cursor_prev:    %lld\n", @cursor_prev);
+    printf("  row_insert:     %lld\n", @row_insert);
+    printf("  page_split:     %lld\n", @page_split);
+    printf("  overflow_write: %lld\n", @overflow_write);
+
+    printf("\n  [page reads by type]\n");
+    printf("  leaf:     %lld\n", @page_read_leaf);
+    printf("  interior: %lld\n", @page_read_interior);
+    printf("  overflow: %lld\n", @page_read_overflow);
+
+    printf("\n  [page writes by type]\n");
+    printf("  leaf:     %lld\n", @page_write_leaf);
+    printf("  interior: %lld\n", @page_write_interior);
+
+    printf("\n  [catalog]\n");
+    printf("  lookup_table:    %lld\n", @catalog_lookup_table);
+    printf("  lookup_rootpage: %lld\n", @catalog_lookup_by_rootpage);
+    printf("  lookup_indexes:  %lld\n", @catalog_lookup_indexes);
+    printf("  scan:            %lld\n", @catalog_scan);
+
+    printf("\n  [syscalls]\n");
+    printf("  read:   %lld calls  %lld bytes\n", @syscall_reads,  @read_bytes);
+    printf("  write:  %lld calls  %lld bytes\n", @syscall_writes, @write_bytes);
+    printf("  lseek:  %lld calls\n",              @syscall_seeks);
+    printf("  fsync:  %lld calls\n",              @syscall_fsyncs);
+
+    printf("\n=== Read latency (µs) ===\n");
+    print(@read_lat_us);
+    printf("\n=== Write latency (µs) ===\n");
+    print(@write_lat_us);
+
+    // suppress bpftrace's default map dump for internal state maps
+    clear(@read_start);
+    clear(@write_start);
+}
