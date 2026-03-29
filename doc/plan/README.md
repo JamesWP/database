@@ -85,6 +85,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AU** | CTEs (Common Table Expressions) | — | — | Backlog |
 | **AV** | Foreign Key Enforcement | — | — | Backlog |
 | **AW** | Decoded Page Cache | 2 | [phase-aw-page-cache.md](phase-aw-page-cache.md) | Planned |
+| **AX** | Fast Tests by Default | 3 | [phase-ax-fast-tests.md](phase-ax-fast-tests.md) | Planned |
 
 ## Sakila Compatibility
 
