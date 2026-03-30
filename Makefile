@@ -53,6 +53,16 @@ trace-tests:
 trace-sql-tests:
 	bash scripts/trace-tests.sh --test sql_runner $(ARGS)
 
+# Trace a single query with per-operation and per-page-IO call stacks.
+# Attaches to the debug binary (symbols required for readable stacks).
+# Launch this target, then run your query in a second terminal.
+trace-query: target/debug/database
+	@echo "==> bpftrace attached to ./target/debug/database"
+	@echo "==> Run your query in another terminal, e.g.:"
+	@echo "      cargo run -- demo.db sql \"SELECT * FROM users\""
+	@echo "==> Press Ctrl-C to stop."
+	sudo bpftrace scripts/trace-query.bt
+
 install-hooks:
 	git config core.hooksPath .githooks
 
