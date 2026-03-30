@@ -59,8 +59,8 @@ trace-sql-tests:
 trace-query:
 	RUSTFLAGS="-C force-frame-pointers=yes" cargo build
 	@echo "==> bpftrace attached to ./target/debug/database"
-	@echo "==> Run your query in another terminal, e.g.:"
-	@echo "      RUSTFLAGS=\"-C force-frame-pointers=yes\" cargo run -- demo.db sql \"SELECT * FROM users\""
+	@echo "==> Run your query in another terminal with:"
+	@echo "      RUSTFLAGS=\"-C force-frame-pointers=yes\" cargo run -- <db_file> sql \"<query>\""
 	@echo "==> Press Ctrl-C to stop."
 	sudo bpftrace scripts/trace-query.bt
 
