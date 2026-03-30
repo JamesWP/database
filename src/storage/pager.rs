@@ -133,14 +133,14 @@ impl Pager {
             None
         } else {
             let page = self.get_and_decode(0);
-            probe!(database, page_read_zero);
+            probe!(database, page_read_zero, 0u32);
             Some(page)
         }
     }
 
     fn set_zero_page(&mut self, zero: ZeroPage) {
         self.encode_and_set(0, zero).unwrap();
-        probe!(database, page_write_zero);
+        probe!(database, page_write_zero, 0u32);
     }
 
     pub fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
@@ -246,7 +246,7 @@ impl Pager {
             if let Some(head_page_no) = zero.free_list_head {
                 // Read the free list head page
                 let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
-                probe!(database, page_read_freelist);
+                probe!(database, page_read_freelist, head_page_no);
 
                 // Pop a page ID from the list
                 if let Some(page_id) = free_list_page.page_ids.pop() {
@@ -285,7 +285,7 @@ impl Pager {
         // If there's a free list head, try to add to it
         if let Some(head_page_no) = zero.free_list_head {
             let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
-            probe!(database, page_read_freelist);
+            probe!(database, page_read_freelist, head_page_no);
 
             // Check if this page can fit more entries (~1000 is a safe limit)
             if free_list_page.page_ids.len() < 1000 {
@@ -338,14 +338,14 @@ impl Pager {
         for i in 0..self.get_file_size_pages() {
             if i == 0 {
                 let zero_page: ZeroPage = self.get_and_decode(0);
-                probe!(database, page_read_zero);
+                probe!(database, page_read_zero, 0u32);
                 println!("{message}: Page {i} (ZeroPage): {zero_page:?}");
             } else {
                 let node_page: NodePage = self.get_and_decode(i);
                 match &node_page {
-                    NodePage::Leaf(_) => probe!(database, page_read_leaf),
-                    NodePage::Interior(_) => probe!(database, page_read_interior),
-                    NodePage::OverflowPage(_) => probe!(database, page_read_overflow),
+                    NodePage::Leaf(_) => probe!(database, page_read_leaf, i),
+                    NodePage::Interior(_) => probe!(database, page_read_interior, i),
+                    NodePage::OverflowPage(_) => probe!(database, page_read_overflow, i),
                 }
                 println!("{message}: Page {i}: {node_page:?}");
             }
