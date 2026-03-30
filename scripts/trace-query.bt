@@ -1,0 +1,83 @@
+#!/usr/bin/env bpftrace
+//
+// Per-query trace log: SQL text, VM operations, and page I/O call stacks.
+//
+// Requires debug symbols — targets the debug binary by default.
+// Build with: cargo build
+//
+// Usage:
+//   sudo bpftrace scripts/trace-query.bt
+//   # In another terminal:
+//   cargo run -- <db_file> sql "<your query>"
+//
+// Or via: make trace-query
+//   # Launches the script; run your query manually in a second terminal.
+//
+// For release binary (stripped): rebuild with debug = 1 in [profile.release]
+// and change the binary path below to ./target/release/database.
+
+// ─── Query start ─────────────────────────────────────────────────────────────
+
+usdt:./target/debug/database:database:query_start {
+    printf("\n[query] %s\n", str(arg0, arg1));
+}
+
+// ─── VM operations ───────────────────────────────────────────────────────────
+
+usdt:./target/debug/database:database:engine_opcode {
+    printf("  [op] %s\n", str(arg0, arg1));
+}
+
+// ─── Page reads by type ───────────────────────────────────────────────────────
+
+usdt:./target/debug/database:database:page_read_leaf {
+    printf("    [page_read: leaf]\n");
+    printf("%s\n", ustack());
+}
+
+usdt:./target/debug/database:database:page_read_interior {
+    printf("    [page_read: interior]\n");
+    printf("%s\n", ustack());
+}
+
+usdt:./target/debug/database:database:page_read_overflow {
+    printf("    [page_read: overflow]\n");
+    printf("%s\n", ustack());
+}
+
+usdt:./target/debug/database:database:page_read_zero {
+    printf("    [page_read: zero-page]\n");
+    printf("%s\n", ustack());
+}
+
+usdt:./target/debug/database:database:page_read_freelist {
+    printf("    [page_read: freelist]\n");
+    printf("%s\n", ustack());
+}
+
+// ─── Page writes by type ──────────────────────────────────────────────────────
+
+usdt:./target/debug/database:database:page_write_leaf {
+    printf("    [page_write: leaf]\n");
+    printf("%s\n", ustack());
+}
+
+usdt:./target/debug/database:database:page_write_interior {
+    printf("    [page_write: interior]\n");
+    printf("%s\n", ustack());
+}
+
+usdt:./target/debug/database:database:page_write_zero {
+    printf("    [page_write: zero-page]\n");
+    printf("%s\n", ustack());
+}
+
+// ─── Cache hits / misses (no stack — high frequency, informational only) ─────
+
+usdt:./target/debug/database:database:page_read_cache_hit {
+    printf("    [cache: HIT]\n");
+}
+
+usdt:./target/debug/database:database:page_read_cache_miss {
+    printf("    [cache: MISS]\n");
+}
