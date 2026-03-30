@@ -119,9 +119,9 @@ fn write_leaf_node<W: Write>(
         let pager = btree.pager.borrow();
         let page = pager.get_and_decode(page_idx);
         match &page {
-            NodePage::Leaf(_) => probe!(database, page_read_leaf),
-            NodePage::Interior(_) => probe!(database, page_read_interior),
-            NodePage::OverflowPage(_) => probe!(database, page_read_overflow),
+            NodePage::Leaf(_) => probe!(database, page_read_leaf, page_idx),
+            NodePage::Interior(_) => probe!(database, page_read_interior, page_idx),
+            NodePage::OverflowPage(_) => probe!(database, page_read_overflow, page_idx),
         }
         let NodePage::Leaf(leaf) = page else {
             return Ok(());
@@ -185,9 +185,9 @@ fn write_leaf_node<W: Write>(
             let pager = btree.pager.borrow();
             let page: NodePage = pager.get_and_decode(cur_page);
             match &page {
-                NodePage::Leaf(_) => probe!(database, page_read_leaf),
-                NodePage::Interior(_) => probe!(database, page_read_interior),
-                NodePage::OverflowPage(_) => probe!(database, page_read_overflow),
+                NodePage::Leaf(_) => probe!(database, page_read_leaf, cur_page),
+                NodePage::Interior(_) => probe!(database, page_read_interior, cur_page),
+                NodePage::OverflowPage(_) => probe!(database, page_read_overflow, cur_page),
             }
             let NodePage::OverflowPage(overflow) = page else {
                 break;
@@ -218,9 +218,9 @@ fn write_interior_node<W: Write>(output: &mut W, btree: &BTree, page_idx: u32) -
     let pager = btree.pager.borrow();
     let page = pager.get_and_decode(page_idx);
     match &page {
-        NodePage::Leaf(_) => probe!(database, page_read_leaf),
-        NodePage::Interior(_) => probe!(database, page_read_interior),
-        NodePage::OverflowPage(_) => probe!(database, page_read_overflow),
+        NodePage::Leaf(_) => probe!(database, page_read_leaf, page_idx),
+        NodePage::Interior(_) => probe!(database, page_read_interior, page_idx),
+        NodePage::OverflowPage(_) => probe!(database, page_read_overflow, page_idx),
     }
     let NodePage::Interior(interior) = page else {
         return Ok(());
@@ -273,12 +273,12 @@ fn write_subgraph<W: Write>(
 
         match page {
             NodePage::Leaf(_) => {
-                probe!(database, page_read_leaf);
+                probe!(database, page_read_leaf, page_idx);
                 drop(pager);
                 write_leaf_node(output, btree, page_idx, &kind)?;
             }
             NodePage::Interior(interior) => {
-                probe!(database, page_read_interior);
+                probe!(database, page_read_interior, page_idx);
                 let num_edges = interior.num_edges();
                 let mut children = Vec::new();
                 for i in 0..num_edges {
@@ -291,7 +291,7 @@ fn write_subgraph<W: Write>(
                 }
             }
             NodePage::OverflowPage(_) => {
-                probe!(database, page_read_overflow);
+                probe!(database, page_read_overflow, page_idx);
                 // overflow pages linked from leaf stubs; skip in DFS
             }
         }

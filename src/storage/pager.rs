@@ -274,6 +274,7 @@ impl Pager {
     }
 
     #[allow(dead_code)]
+    #[inline(never)]
     pub fn dealocate(&mut self, idx: u32) {
         probe!(database, page_deallocate, idx);
         if idx == 0 {
@@ -334,6 +335,7 @@ impl Pager {
     }
 
     #[allow(dead_code)]
+    #[inline(never)]
     pub fn debug(&self, message: &str) {
         for i in 0..self.get_file_size_pages() {
             if i == 0 {
