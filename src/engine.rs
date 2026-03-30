@@ -162,7 +162,11 @@ impl Engine {
         use program::Operation::*;
         probe!(database, engine_step);
 
-        match self.program.advance() {
+        let op = self.program.advance();
+        let opname = op.name().as_bytes();
+        probe!(database, engine_opcode, opname.as_ptr() as usize, opname.len());
+
+        match op {
             StoreValue(reg, scalar) => {
                 *self.registers.get_mut(reg) = RegisterValue::ScalarValue(scalar);
             }
