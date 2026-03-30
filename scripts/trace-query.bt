@@ -31,44 +31,44 @@ usdt:./target/debug/database:database:engine_opcode {
 // ─── Page reads by type ───────────────────────────────────────────────────────
 
 usdt:./target/debug/database:database:page_read_leaf {
-    printf("    [page_read: leaf]\n");
+    printf("    [page_read: leaf  page=%d]\n", arg0);
     printf("%s\n", ustack());
 }
 
 usdt:./target/debug/database:database:page_read_interior {
-    printf("    [page_read: interior]\n");
+    printf("    [page_read: interior  page=%d]\n", arg0);
     printf("%s\n", ustack());
 }
 
 usdt:./target/debug/database:database:page_read_overflow {
-    printf("    [page_read: overflow]\n");
+    printf("    [page_read: overflow  page=%d]\n", arg0);
     printf("%s\n", ustack());
 }
 
 usdt:./target/debug/database:database:page_read_zero {
-    printf("    [page_read: zero-page]\n");
+    printf("    [page_read: zero-page  page=%d]\n", arg0);
     printf("%s\n", ustack());
 }
 
 usdt:./target/debug/database:database:page_read_freelist {
-    printf("    [page_read: freelist]\n");
+    printf("    [page_read: freelist  page=%d]\n", arg0);
     printf("%s\n", ustack());
 }
 
 // ─── Page writes by type ──────────────────────────────────────────────────────
 
 usdt:./target/debug/database:database:page_write_leaf {
-    printf("    [page_write: leaf]\n");
+    printf("    [page_write: leaf  page=%d]\n", arg0);
     printf("%s\n", ustack());
 }
 
 usdt:./target/debug/database:database:page_write_interior {
-    printf("    [page_write: interior]\n");
+    printf("    [page_write: interior  page=%d]\n", arg0);
     printf("%s\n", ustack());
 }
 
 usdt:./target/debug/database:database:page_write_zero {
-    printf("    [page_write: zero-page]\n");
+    printf("    [page_write: zero-page  page=%d]\n", arg0);
     printf("%s\n", ustack());
 }
 
