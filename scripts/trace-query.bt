@@ -2,18 +2,22 @@
 //
 // Per-query trace log: SQL text, VM operations, and page I/O call stacks.
 //
-// Requires debug symbols — targets the debug binary by default.
-// Build with: cargo build
+// Requires debug symbols AND frame pointers for full stack unwinding.
+// Build with: RUSTFLAGS="-C force-frame-pointers=yes" cargo build
+// Run queries with: RUSTFLAGS="-C force-frame-pointers=yes" cargo run -- <db_file> sql "..."
+//
+// Without force-frame-pointers, ustack() will only show 1-2 frames.
 //
 // Usage:
 //   sudo bpftrace scripts/trace-query.bt
-//   # In another terminal:
-//   cargo run -- <db_file> sql "<your query>"
+//   # In another terminal (with frame pointers):
+//   RUSTFLAGS="-C force-frame-pointers=yes" cargo run -- <db_file> sql "<your query>"
 //
 // Or via: make trace-query
-//   # Launches the script; run your query manually in a second terminal.
+//   # Builds with frame pointers and launches the script.
+//   # Run your query in a second terminal with the same RUSTFLAGS.
 //
-// For release binary (stripped): rebuild with debug = 1 in [profile.release]
+// For release binary: rebuild with debug = 1 in [profile.release]
 // and change the binary path below to ./target/release/database.
 
 // ─── Query start ─────────────────────────────────────────────────────────────
