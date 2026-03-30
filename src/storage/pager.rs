@@ -274,9 +274,7 @@ impl Pager {
     }
 
     #[allow(dead_code)]
-    #[inline(never)]
     pub fn dealocate(&mut self, idx: u32) {
-        probe!(database, page_deallocate, idx);
         if idx == 0 {
             panic!("Cant dealloc page zero");
         }
@@ -286,7 +284,6 @@ impl Pager {
         // If there's a free list head, try to add to it
         if let Some(head_page_no) = zero.free_list_head {
             let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
-            probe!(database, page_read_freelist, head_page_no);
 
             // Check if this page can fit more entries (~1000 is a safe limit)
             if free_list_page.page_ids.len() < 1000 {
@@ -335,20 +332,13 @@ impl Pager {
     }
 
     #[allow(dead_code)]
-    #[inline(never)]
     pub fn debug(&self, message: &str) {
         for i in 0..self.get_file_size_pages() {
             if i == 0 {
                 let zero_page: ZeroPage = self.get_and_decode(0);
-                probe!(database, page_read_zero, 0u32);
                 println!("{message}: Page {i} (ZeroPage): {zero_page:?}");
             } else {
                 let node_page: NodePage = self.get_and_decode(i);
-                match &node_page {
-                    NodePage::Leaf(_) => probe!(database, page_read_leaf, i),
-                    NodePage::Interior(_) => probe!(database, page_read_interior, i),
-                    NodePage::OverflowPage(_) => probe!(database, page_read_overflow, i),
-                }
                 println!("{message}: Page {i}: {node_page:?}");
             }
         }
