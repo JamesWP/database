@@ -176,6 +176,21 @@ impl Pager {
         ciborium::de::from_reader(&p.content[..]).unwrap()
     }
 
+    /// Decode a page as a `NodePage`, firing the appropriate typed USDT probe
+    /// (`page_read_leaf`, `page_read_interior`, or `page_read_overflow`) in one
+    /// place rather than at every call site. This keeps probe site counts low
+    /// enough that bpftrace can attach without crashing.
+    pub fn get_and_decode_node<PageNo: Borrow<u32>>(&self, idx: PageNo) -> NodePage {
+        let page_no = *idx.borrow();
+        let node: NodePage = self.get_and_decode(page_no);
+        match &node {
+            NodePage::Leaf(_) => probe!(database, page_read_leaf, page_no),
+            NodePage::Interior(_) => probe!(database, page_read_interior, page_no),
+            NodePage::OverflowPage(_) => probe!(database, page_read_overflow, page_no),
+        }
+        node
+    }
+
     pub fn set<P: Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
         let page_no = *idx.borrow();
         let page = page.borrow();

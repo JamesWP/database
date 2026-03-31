@@ -134,8 +134,7 @@ where
         let saved_cursor_key = match &self.cursor_state.position {
             CursorPosition::Valid { leaf, .. } => {
                 let (leaf_page_idx, cell_index) = *leaf;
-                let page: NodePage = self.pager.get_and_decode(leaf_page_idx);
-                probe!(database, page_read_leaf, leaf_page_idx);
+                let page = self.pager.get_and_decode_node(leaf_page_idx);
                 match &page {
                     NodePage::Leaf(leaf) if cell_index < leaf.num_items() => {
                         Some(leaf.get_key(cell_index))
@@ -169,10 +168,9 @@ where
 
         loop {
             let top_page_idx = *stack.last().unwrap();
-            let mut top_page: NodePage = self.pager.get_and_decode(top_page_idx);
+            let mut top_page = self.pager.get_and_decode_node(top_page_idx);
             match top_page.search(key) {
                 SearchResult::Found(insertion_index) => {
-                    probe!(database, page_read_leaf, top_page_idx);
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
 
@@ -183,7 +181,6 @@ where
                     break;
                 }
                 SearchResult::NotPresent(item_idx) => {
-                    probe!(database, page_read_leaf, top_page_idx);
                     top_page.insert_item_at_index(item_idx, cell);
 
                     self.update_page(top_page, stack);
@@ -191,7 +188,6 @@ where
                     break;
                 }
                 SearchResult::GoDown(_child_index, child_page_idx) => {
-                    probe!(database, page_read_interior, top_page_idx);
                     // The node does not contain the value, instead we found the index of a child of this node where the value should be inserted instead
                     // we need to go deeper.
 
@@ -293,8 +289,7 @@ where
         if stack.len() != 0 {
             // Non-root: add a child pointer for the right page to the parent
             let parent_idx = stack.pop().unwrap();
-            let parent_page: NodePage = self.pager.get_and_decode(parent_idx);
-            probe!(database, page_read_interior, parent_idx);
+            let parent_page = self.pager.get_and_decode_node(parent_idx);
             let mut parent_interior = parent_page.interior().unwrap();
             parent_interior.insert_child_page(right_first_key, right_idx);
             let parent_node = parent_interior.node();
@@ -317,12 +312,7 @@ where
             // Root: keep the root at the same page index.
             // Move the left half (currently at overfull_idx) to a fresh page,
             // then overwrite the root with a new interior node.
-            let left_page: NodePage = self.pager.get_and_decode(overfull_idx);
-            match &left_page {
-                NodePage::Leaf(_) => probe!(database, page_read_leaf, overfull_idx),
-                NodePage::Interior(_) => probe!(database, page_read_interior, overfull_idx),
-                _ => {}
-            }
+            let left_page = self.pager.get_and_decode_node(overfull_idx);
             let left_idx = self.pager.allocate();
             match &left_page {
                 NodePage::Leaf(_) => probe!(database, page_write_leaf, left_idx),
@@ -353,8 +343,7 @@ where
 
         // Read the key before deletion
         let deleted_key = {
-            let page: NodePage = self.pager.get_and_decode(leaf_page_idx);
-            probe!(database, page_read_leaf, leaf_page_idx);
+            let page = self.pager.get_and_decode_node(leaf_page_idx);
             match &page {
                 NodePage::Leaf(leaf) => leaf.get_key(cell_index),
                 _ => panic!("Expected leaf node at cursor position"),
@@ -362,8 +351,7 @@ where
         };
 
         // Load the leaf page again for mutation
-        let mut page: NodePage = self.pager.get_and_decode(leaf_page_idx);
-        probe!(database, page_read_leaf, leaf_page_idx);
+        let mut page = self.pager.get_and_decode_node(leaf_page_idx);
 
         // Remove the cell from the leaf
         match &mut page {
@@ -445,10 +433,9 @@ where
         let mut page_idx = page_idx;
 
         loop {
-            let page: NodePage = self.pager.get_and_decode(page_idx);
+            let page = self.pager.get_and_decode_node(page_idx);
             match page {
                 node::NodePage::Leaf(l) => {
-                    probe!(database, page_read_leaf, page_idx);
                     // We found the first leaf in the tree.
                     if l.num_items() == 0 {
                         // Empty tree
@@ -462,7 +449,6 @@ where
                     return;
                 }
                 node::NodePage::Interior(i) => {
-                    probe!(database, page_read_interior, page_idx);
                     stack.push((page_idx, 0));
                     page_idx = i.get_child_page_by_index(0);
                 }
@@ -475,10 +461,9 @@ where
         let mut page_idx = page_idx;
 
         loop {
-            let page: NodePage = self.pager.get_and_decode(page_idx);
+            let page = self.pager.get_and_decode_node(page_idx);
             match page {
                 node::NodePage::Leaf(l) => {
-                    probe!(database, page_read_leaf, page_idx);
                     // We found the rightmost leaf in the tree.
                     if l.num_items() == 0 {
                         // Empty tree
@@ -492,7 +477,6 @@ where
                     return;
                 }
                 node::NodePage::Interior(i) => {
-                    probe!(database, page_read_interior, page_idx);
                     stack.push((page_idx, i.num_edges() - 1));
                     page_idx = i.get_child_page_by_index(i.num_edges() - 1);
                 }
@@ -519,11 +503,10 @@ where
         let mut stack = Vec::new();
 
         loop {
-            let page: NodePage = self.pager.get_and_decode(page_idx);
+            let page = self.pager.get_and_decode_node(page_idx);
 
             match page.search(key) {
                 SearchResult::Found(index) => {
-                    probe!(database, page_read_leaf, page_idx);
                     self.cursor_state.position = CursorPosition::Valid {
                         stack,
                         leaf: (page_idx, index),
@@ -531,7 +514,6 @@ where
                     return true;
                 }
                 SearchResult::NotPresent(index) => {
-                    probe!(database, page_read_leaf, page_idx);
                     self.cursor_state.position = CursorPosition::Valid {
                         stack,
                         leaf: (page_idx, index),
@@ -539,7 +521,6 @@ where
                     return false;
                 }
                 SearchResult::GoDown(c_idx, c) => {
-                    probe!(database, page_read_interior, page_idx);
                     stack.push((page_idx, c_idx));
                     // we should continue searching at the child page below
                     page_idx = c;
@@ -589,8 +570,7 @@ where
             // Check if the position is actually valid (could be past the end)
             if let CursorPosition::Valid { leaf, .. } = &self.cursor_state.position {
                 let (page_idx, cell_index) = *leaf;
-                let page: NodePage = self.pager.get_and_decode(page_idx);
-                probe!(database, page_read_leaf, page_idx);
+                let page = self.pager.get_and_decode_node(page_idx);
                 if let Some(leaf) = page.leaf() {
                     if cell_index >= leaf.num_items() {
                         // Positioned past the end
@@ -657,8 +637,7 @@ where
         };
 
         let (page_number, entry_index) = leaf;
-        let page: NodePage = self.pager.get_and_decode(page_number);
-        probe!(database, page_read_leaf, page_number);
+        let page = self.pager.get_and_decode_node(page_number);
         let page = page
             .leaf()
             .expect("Values are always supposed to be in leaf pages");
@@ -679,8 +658,7 @@ where
 
             let (curent_interior_idx, curent_edge) = stack.pop().unwrap();
 
-            let curent_interior: NodePage = self.pager.get_and_decode(curent_interior_idx);
-            probe!(database, page_read_interior, curent_interior_idx);
+            let curent_interior = self.pager.get_and_decode_node(curent_interior_idx);
             let curent_interior = curent_interior
                 .interior()
                 .expect("The stack should only contain interior pages");
@@ -831,10 +809,9 @@ impl BTree {
             println!("{:#?}", zero);
         } else {
             // NodePage (Leaf, Interior, or OverflowPage)
-            let node: NodePage = pager.get_and_decode(page_num);
+            let node = pager.get_and_decode_node(page_num);
             match &node {
                 node::NodePage::Leaf(leaf) => {
-                    probe!(database, page_read_leaf, page_num);
                     println!("{}: {}", "Type".yellow(), "LeafNodePage".green());
                     println!("{}: {}", "Number of items".yellow(), leaf.num_items());
                     println!("\n{}:", "Cells".bright_yellow());
@@ -886,7 +863,6 @@ impl BTree {
                     }
                 }
                 node::NodePage::Interior(interior) => {
-                    probe!(database, page_read_interior, page_num);
                     println!("{}: {}", "Type".yellow(), "InteriorNodePage".green());
                     println!("{}: {}", "Number of edges".yellow(), interior.num_edges());
                     println!("\n{}:", "Keys and child pages".bright_yellow());
@@ -919,7 +895,6 @@ impl BTree {
                     }
                 }
                 node::NodePage::OverflowPage(overflow) => {
-                    probe!(database, page_read_overflow, page_num);
                     println!("{}: {}", "Type".yellow(), "OverflowPage".green());
                     let data = overflow.value();
                     let continuation = overflow.continuation();
