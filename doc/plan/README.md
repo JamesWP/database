@@ -113,6 +113,8 @@ Features that are currently parsed or partially handled but not fully implemente
 
 | Feature | Stub behaviour | Tracking |
 |---------|---------------|----------|
+| Partial unique-index rollback on INSERT | If a second unique index fails after a first has already been written, the first index write is not rolled back (no transaction support) | TODO phase-az |
+| UPDATE unique constraint enforcement | UPDATE does not check uniqueness on the new values — a duplicate introduced by UPDATE is silently written | TODO phase-az |
 | FOREIGN KEY constraints | Parsed and silently ignored (`skip_table_constraint`) | TODO phase-av |
 | CHECK constraints | Parsed and silently ignored (`skip_table_constraint`) | TODO phase-av |
 | NOT NULL enforcement for INSERT omitted columns | Omitted columns without a DEFAULT are filled with NULL rather than rejected | TODO phase-aj |
