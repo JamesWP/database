@@ -103,7 +103,12 @@ impl std::fmt::Display for ExecuteError {
 
 pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, ExecuteError> {
     let sql_bytes = sql.as_bytes();
-    probe!(database, query_start, sql_bytes.as_ptr() as usize, sql_bytes.len());
+    probe!(
+        database,
+        query_start,
+        sql_bytes.as_ptr() as usize,
+        sql_bytes.len()
+    );
     let stmt = parse(sql).map_err(ExecuteError::Parse)?;
 
     match &stmt {
@@ -153,6 +158,12 @@ pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, Execut
             // Check if table exists
             if catalog.lookup_table(name).is_none() {
                 return Err(ExecuteError::TableNotFound(name.clone()));
+            }
+
+            // Invalidate the rowid cache before deleting so a subsequent CREATE
+            // TABLE + INSERT on the same rootpage starts rowids from 1.
+            if let Some((rootpage, _)) = catalog.lookup_table(name) {
+                catalog.btree().invalidate_rowid_cache(rootpage);
             }
 
             // Delete the catalog entry (and associated indexes)

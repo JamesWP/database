@@ -1252,27 +1252,19 @@ pub fn codegen_insert(
 ) -> NodeOutput {
     // Allocate registers
     let cursor_reg = ctx.registers.alloc();
-    let flag_reg = ctx.registers.alloc();
     let key_reg = ctx.registers.alloc();
     let counter_reg = ctx.registers.alloc();
 
     // Allocate registers for index cursors
     let index_cursor_regs = open_index_cursors(indexes, ctx);
 
-    // INIT: Open cursor and discover next key
-    let empty_label = ctx.init_emitter.create_label();
-    let init_done_label = ctx.init_emitter.create_label();
+    // INIT: Open cursor and discover next key via shared rowid cache.
+    // InitRowid replaces the 8-instruction seek-to-last sequence: on a cache hit
+    // it returns the next rowid with no page I/O; on a miss it falls back to
+    // seeking to the last entry and populates the cache.
     init!(ctx;
         Open(cursor_reg, rootpage);
-        MoveCursor(cursor_reg, MoveOperation::Last);
-        CanReadCursor(flag_reg, cursor_reg);
-        GoToIfFalse(empty_label, flag_reg);
-        ReadKey(key_reg, cursor_reg);
-        IncrementValue(key_reg);
-        GoTo(init_done_label);
-        Bind(empty_label);
-        StoreValue(key_reg, ScalarValue::Integer(1));
-        Bind(init_done_label);
+        InitRowid(cursor_reg, key_reg);
         StoreValue(counter_reg, ScalarValue::Integer(0))
     );
 
