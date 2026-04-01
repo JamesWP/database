@@ -761,6 +761,16 @@ impl BTree {
         self.rowid_cache.borrow_mut().remove(&rootpage);
     }
 
+    /// Look up the cached next rowid for a rootpage. Returns None on cache miss.
+    pub fn get_cached_next_rowid(&self, rootpage: u32) -> Option<u64> {
+        self.rowid_cache.borrow().get(&rootpage).copied()
+    }
+
+    /// Store the next rowid for a rootpage in the cache.
+    pub fn set_cached_next_rowid(&self, rootpage: u32, next_rowid: u64) {
+        self.rowid_cache.borrow_mut().insert(rootpage, next_rowid);
+    }
+
     pub fn open(&self, root_page: u32) -> CursorHandle {
         let state = CursorState {
             root_page,

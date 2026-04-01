@@ -164,7 +164,12 @@ impl Engine {
 
         let op = self.program.advance();
         let opname = op.name().as_bytes();
-        probe!(database, engine_opcode, opname.as_ptr() as usize, opname.len());
+        probe!(
+            database,
+            engine_opcode,
+            opname.as_ptr() as usize,
+            opname.len()
+        );
 
         match op {
             StoreValue(reg, scalar) => {
@@ -823,8 +828,49 @@ impl Engine {
 
                 // Write to btree
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut cursor = cursor.open_readwrite();
-                cursor.insert_u64(key, bytes);
+                let rootpage = cursor.root_page();
+                let mut c = cursor.open_readwrite();
+                c.insert_u64(key, bytes);
+                drop(c);
+
+                // Advance the rowid cache so subsequent INSERTs skip the seek.
+                // Only advance (never decrease): UPDATE reuses existing rowids and
+                // must not lower the high-water mark for future INSERTs.
+                if let Some(btree) = self.btree.as_ref() {
+                    let next = key + 1;
+                    let current = btree.get_cached_next_rowid(rootpage).unwrap_or(0);
+                    if next > current {
+                        btree.set_cached_next_rowid(rootpage, next);
+                    }
+                }
+            }
+            InitRowid(cursor_reg, key_reg) => {
+                let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
+                let rootpage = cursor.root_page();
+
+                let next = if let Some(btree) = self.btree.as_ref() {
+                    btree.get_cached_next_rowid(rootpage)
+                } else {
+                    None
+                };
+
+                let next = match next {
+                    Some(v) => v,
+                    None => {
+                        // Cold path: seek to last entry to find max rowid.
+                        let mut c = cursor.open_readonly();
+                        c.last();
+                        let result = match c.get_entry() {
+                            None => 1,
+                            Some(entry) => storage::decode_u64_key(entry.key()) + 1,
+                        };
+                        drop(c);
+                        result
+                    }
+                };
+
+                *self.registers.get_mut(key_reg) =
+                    RegisterValue::ScalarValue(ScalarValue::Integer(next as i64));
             }
             CheckUnique(cursor_reg, value_regs) => {
                 // Build the column-value prefix (no rowid suffix)
