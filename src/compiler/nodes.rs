@@ -1893,7 +1893,7 @@ pub fn codegen_populate_index(
     // child_on_tuple: write one index entry, then advance to next row
     body!(ctx;
         Bind(child_on_tuple);
-        WriteIndex(index_cursor, col_regs, pk_reg);
+        WriteIndex(index_cursor, col_regs, pk_reg, false);
         GoTo(scan_out.next);
         Bind(child_on_done);
         GoTo(cont.on_done)
@@ -2981,6 +2981,123 @@ mod tests {
 
         assert_eq!(yields.len(), 1);
         assert_eq!(yields[0][0], ScalarValue::Integer(1));
+    }
+
+    /// INSERT into a table with a unique index — duplicate value must raise ConstraintViolation.
+    #[test]
+    fn test_insert_unique_index_duplicate_raises_error() {
+        use crate::engine::EngineError;
+        use crate::planner::IndexMaintenanceInfo;
+        use crate::storage::encode_index_value;
+
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let table_root = btree.create_tree();
+        let index_root = btree.create_tree();
+
+        let index = IndexMaintenanceInfo {
+            rootpage: index_root,
+            column_idxs: vec![0],
+            unique: true,
+        };
+
+        // First insert (value=42) must succeed.
+        let plan = LogicalPlan::Insert {
+            rootpage: table_root,
+            table_columns: vec![0],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![Literal::Integer(42)]],
+            }),
+            indexes: vec![index.clone()],
+        };
+        let (ops, num_regs) = compile_plan(&plan);
+        let mut engine = Engine::with_program(&ops, num_regs, btree);
+        let yields = engine.run();
+        assert_eq!(yields[0][0], ScalarValue::Integer(1), "first insert count");
+
+        let btree = engine.take_btree().unwrap();
+
+        // Second insert with the same indexed value must fail.
+        let plan2 = LogicalPlan::Insert {
+            rootpage: table_root,
+            table_columns: vec![0],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![Literal::Integer(42)]],
+            }),
+            indexes: vec![index],
+        };
+        let (ops2, num_regs2) = compile_plan(&plan2);
+        let mut engine2 = Engine::with_program(&ops2, num_regs2, btree);
+        let result = engine2.run_result();
+        assert!(
+            matches!(result, Err(EngineError::ConstraintViolation(_))),
+            "expected ConstraintViolation, got {:?}",
+            result
+        );
+    }
+
+    /// INSERT into a table with a unique index — distinct values must all succeed.
+    #[test]
+    fn test_insert_unique_index_distinct_values_succeed() {
+        use crate::planner::IndexMaintenanceInfo;
+
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let table_root = btree.create_tree();
+        let index_root = btree.create_tree();
+
+        let index = IndexMaintenanceInfo {
+            rootpage: index_root,
+            column_idxs: vec![0],
+            unique: true,
+        };
+
+        let plan = LogicalPlan::Insert {
+            rootpage: table_root,
+            table_columns: vec![0],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![
+                    vec![Literal::Integer(1)],
+                    vec![Literal::Integer(2)],
+                    vec![Literal::Integer(3)],
+                ],
+            }),
+            indexes: vec![index],
+        };
+        let (ops, num_regs) = compile_plan(&plan);
+        let mut engine = Engine::with_program(&ops, num_regs, btree);
+        let yields = engine.run();
+        assert_eq!(yields[0][0], ScalarValue::Integer(3), "all 3 rows inserted");
+    }
+
+    /// INSERT into a table with a non-unique index — duplicate values must succeed.
+    #[test]
+    fn test_insert_nonunique_index_allows_duplicates() {
+        use crate::planner::IndexMaintenanceInfo;
+
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let table_root = btree.create_tree();
+        let index_root = btree.create_tree();
+
+        let index = IndexMaintenanceInfo {
+            rootpage: index_root,
+            column_idxs: vec![0],
+            unique: false,
+        };
+
+        let plan = LogicalPlan::Insert {
+            rootpage: table_root,
+            table_columns: vec![0],
+            input: Box::new(LogicalPlan::Values {
+                rows: vec![vec![Literal::Integer(7)], vec![Literal::Integer(7)]],
+            }),
+            indexes: vec![index],
+        };
+        let (ops, num_regs) = compile_plan(&plan);
+        let mut engine = Engine::with_program(&ops, num_regs, btree);
+        let yields = engine.run();
+        assert_eq!(yields[0][0], ScalarValue::Integer(2), "both rows inserted");
     }
 
     /// Test complex combination: Limit(Project(Filter(Sequence)))

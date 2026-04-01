@@ -892,15 +892,16 @@ impl Engine {
                     }
                 }
             }
-            WriteIndex(cursor_reg, value_regs, pk_reg) => {
-                // Encode each indexed column value, concatenated in order
+            WriteIndex(cursor_reg, value_regs, pk_reg, unique) => {
+                // Build the column-value prefix and the full composite key simultaneously.
+                let mut prefix = Vec::new();
                 let mut index_key = Vec::new();
                 for value_reg in value_regs {
                     let indexed_value = self.registers.get(value_reg).scalar().unwrap();
-                    index_key.extend_from_slice(&storage::encode_index_value(indexed_value));
+                    let encoded = storage::encode_index_value(indexed_value);
+                    prefix.extend_from_slice(&encoded);
+                    index_key.extend_from_slice(&encoded);
                 }
-
-                // Append primary key to make the entry unique in the index B-tree
                 let pk_value = self.registers.get(pk_reg).scalar().unwrap();
                 let pk = match pk_value {
                     ScalarValue::Integer(i) => *i as u64,
@@ -908,10 +909,29 @@ impl Engine {
                 };
                 index_key.extend_from_slice(&storage::encode_u64_key(pk));
 
-                // Write to index B-tree — rowid is already encoded in key suffix,
-                // so the value is empty.
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let mut c = cursor.open_readwrite();
+
+                if unique {
+                    // Position at the prefix to check for a conflicting entry before inserting.
+                    c.find(&prefix);
+                    if let Some(entry) = c.get_entry() {
+                        if entry.key().starts_with(&prefix) {
+                            return StepResult::Err(EngineError::ConstraintViolation(
+                                "unique constraint violated".to_string(),
+                            ));
+                        }
+                    }
+                    // TODO(phase-az): on the success path, c.find() has already descended to the
+                    // correct leaf and the cursor is positioned at or just past the insertion
+                    // point. c.insert() below re-descends from the root, wasting that work.
+                    // A `Cursor::insert_at_current(&key, value)` that reuses the stack built by
+                    // find() would reduce unique-index inserts from two traversals to one.
+                    // The main complexity is that a leaf split during insert invalidates the
+                    // parent pointers held in the cursor stack, so the implementation would need
+                    // to handle (or detect and fall back from) the split case.
+                }
+                // Rowid is encoded in the key suffix; the value is empty.
                 c.insert(&index_key, vec![]);
             }
             DeleteIndex(cursor_reg, value_regs, pk_reg) => {

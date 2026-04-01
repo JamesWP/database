@@ -145,12 +145,13 @@ pub enum Operation {
     ReadCursor(Vec<Reg>, Reg), // ReadCursor(dest_regs, cursor): read row values
     ReadKey(Reg, Reg),         // ReadKey(dest, cursor): read btree key as integer
     WriteCursor(Reg, Reg, Vec<Reg>), // WriteCursor(cursor, key, values): insert row
-    WriteIndex(Reg, Vec<Reg>, Reg), // WriteIndex(cursor, col_values, pk): insert into index
+    /// Insert a row into a secondary index B-tree.
+    /// When `unique` is true, a conflict on the column-value prefix raises a
+    /// `ConstraintViolation` error before any write occurs.
+    WriteIndex(Reg, Vec<Reg>, Reg, bool), // WriteIndex(cursor, col_values, pk, unique)
     CheckUnique(Reg, Vec<Reg>), // CheckUnique(cursor, col_values): error if key already exists
-    /// Initialise the next-rowid register for an INSERT.
-    /// Checks a shared rowid cache keyed by the cursor's rootpage.
-    /// On cache hit: stores cached value in key_reg with no I/O.
-    /// On cache miss: seeks to the last entry, increments, stores, and populates the cache.
+    /// Store the next available rowid for the cursor's table into `key_reg`.
+    /// Uses a session-scoped cache; falls back to a B-tree seek on the first call per table.
     InitRowid(Reg, Reg), // InitRowid(cursor_reg, key_reg)
     DeleteIndex(Reg, Vec<Reg>, Reg), // DeleteIndex(cursor, col_values, pk): remove from index
     DeleteCursor(Reg),         // DeleteCursor(cursor): delete row at current cursor position
@@ -227,7 +228,8 @@ impl Operation {
             ReadCursor(..) => "ReadCursor",
             ReadKey(..) => "ReadKey",
             WriteCursor(..) => "WriteCursor",
-            WriteIndex(..) => "WriteIndex",
+            WriteIndex(_, _, _, true) => "WriteIdxUniq",
+            WriteIndex(_, _, _, false) => "WriteIndex",
             CheckUnique(..) => "CheckUnique",
             InitRowid(..) => "InitRowid",
             DeleteIndex(..) => "DeleteIndex",
@@ -472,12 +474,13 @@ impl std::fmt::Display for Operation {
                     regs_str.join(", ")
                 )
             }
-            WriteIndex(cursor, vals, pk) => {
+            WriteIndex(cursor, vals, pk, unique) => {
                 let vals_str: Vec<String> = vals.iter().map(|r| format!("{}", r)).collect();
+                let label = if *unique { "WriteIdxUniq" } else { "WriteIdx" };
                 write!(
                     f,
                     "{:10} {}, [{}], {}",
-                    "WriteIdx".cyan().bold(),
+                    label.cyan().bold(),
                     cursor,
                     vals_str.join(", "),
                     pk
