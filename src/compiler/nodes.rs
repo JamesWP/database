@@ -1202,20 +1202,28 @@ fn open_index_cursors(
         .collect()
 }
 
-fn emit_check_uniques(
+/// Emit WriteIndex for all indexes. Passes the index's `unique` flag so the engine
+/// enforces uniqueness constraints inline. Used by INSERT (called before WriteCursor).
+fn emit_index_writes(
     index_cursors: &[IndexWithCursor],
     row_regs: &[Reg],
+    key_reg: Reg,
     ctx: &mut CodegenContext,
 ) {
     for ic in index_cursors {
-        if ic.info.unique {
-            let col_regs: Vec<Reg> = ic.info.column_idxs.iter().map(|&c| row_regs[c]).collect();
-            ctx.body_emitter
-                .emit(Operation::CheckUnique(ic.cursor_reg, col_regs));
-        }
+        let col_regs: Vec<Reg> = ic.info.column_idxs.iter().map(|&c| row_regs[c]).collect();
+        ctx.body_emitter.emit(Operation::WriteIndex(
+            ic.cursor_reg,
+            col_regs,
+            key_reg,
+            ic.info.unique,
+        ));
     }
 }
 
+/// Emit WriteIndex(unique=false) for all indexes. Used by UPDATE.
+/// TODO(phase-az): UPDATE should enforce unique constraints on the new values but
+/// currently does not. Pass `ic.info.unique` once UPDATE uniqueness checking is implemented.
 fn emit_write_indexes(
     index_cursors: &[IndexWithCursor],
     row_regs: &[Reg],
@@ -1224,8 +1232,12 @@ fn emit_write_indexes(
 ) {
     for ic in index_cursors {
         let col_regs: Vec<Reg> = ic.info.column_idxs.iter().map(|&c| row_regs[c]).collect();
-        ctx.body_emitter
-            .emit(Operation::WriteIndex(ic.cursor_reg, col_regs, key_reg));
+        ctx.body_emitter.emit(Operation::WriteIndex(
+            ic.cursor_reg,
+            col_regs,
+            key_reg,
+            false,
+        ));
     }
 }
 
@@ -1301,13 +1313,14 @@ pub fn codegen_insert(
 
         reordered
     };
-    // Check unique constraints before writing
-    emit_check_uniques(&index_cursor_regs, &reordered_regs, ctx);
+    // Index writes come before WriteCursor so uniqueness violations abort before the
+    // table row is written. WriteIndex with unique=true checks for a conflicting prefix
+    // before inserting. Note: if multiple unique indexes exist and a later one fails,
+    // earlier index writes are not rolled back (no transaction support yet).
+    // TODO(phase-az): roll back partial index writes on uniqueness failure.
+    emit_index_writes(&index_cursor_regs, &reordered_regs, key_reg, ctx);
 
     body!(ctx; WriteCursor(cursor_reg, key_reg, reordered_regs.clone()));
-
-    // Write to each index
-    emit_write_indexes(&index_cursor_regs, &reordered_regs, key_reg, ctx);
 
     body!(ctx;
         IncrementValue(key_reg);
