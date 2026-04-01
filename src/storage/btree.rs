@@ -1,4 +1,5 @@
 use std::cell::{Ref, RefCell, RefMut};
+use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
 use std::{
@@ -735,17 +736,29 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
 #[derive(Clone)]
 pub struct BTree {
     pub(super) pager: Arc<RefCell<pager::Pager>>,
+    /// Maps a table's rootpage to the next rowid to assign for an INSERT.
+    /// Shared across `BTree` clones via `Arc` so the catalog instance and the
+    /// engine instance (which clones the catalog's `BTree`) see the same values.
+    /// Entries are never decreased — only advanced after each write or cleared on
+    /// `DROP TABLE` — so the cache stays valid across DELETEs and UPDATEs.
+    rowid_cache: Arc<RefCell<HashMap<u32, u64>>>,
 }
 
 impl BTree {
     pub fn new(path: &str) -> BTree {
         let btree = BTree {
             pager: Arc::new(RefCell::new(Pager::new(path))),
+            rowid_cache: Arc::new(RefCell::new(HashMap::new())),
         };
         if btree.pager.borrow().get_file_size_pages() > 0 {
             btree.pager.borrow().validate_format_version();
         }
         btree
+    }
+
+    /// Invalidate the rowid cache entry for a given rootpage (call on DROP TABLE).
+    pub fn invalidate_rowid_cache(&self, rootpage: u32) {
+        self.rowid_cache.borrow_mut().remove(&rootpage);
     }
 
     pub fn open(&self, root_page: u32) -> CursorHandle {
