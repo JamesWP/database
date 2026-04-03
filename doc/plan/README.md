@@ -84,7 +84,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AT** | Window Functions | — | — | Backlog |
 | **AU** | CTEs (Common Table Expressions) | — | — | Backlog |
 | **AV** | Foreign Key Enforcement | — | — | Backlog |
-| **AW** | Decoded Page Cache | 2 | [phase-aw-page-cache.md](phase-aw-page-cache.md) | Planned |
+| **AW** | Decoded Page Cache | 2 | [phase-aw-page-cache.md](completed/phase-aw-page-cache.md) | Completed |
 | **AX** | Fast Tests by Default | 3 | [phase-ax-fast-tests.md](completed/phase-ax-fast-tests.md) | Completed |
 | **AY** | Per-Query bpftrace Trace Log | 3 | [phase-ay-query-trace.md](completed/phase-ay-query-trace.md) | Completed |
 | **AZ** | INSERT Performance: Rowid Cache & Fused Unique Write | 2 | [phase-az-insert-perf.md](completed/phase-az-insert-perf.md) | Completed |
