@@ -170,7 +170,7 @@ impl Pager {
         p
     }
 
-    pub fn get_and_decode<P: Borrow<P> + DeserializeOwned, PageNo: Borrow<u32>>(
+    fn get_and_decode<P: Borrow<P> + DeserializeOwned, PageNo: Borrow<u32>>(
         &self,
         idx: PageNo,
     ) -> P {
