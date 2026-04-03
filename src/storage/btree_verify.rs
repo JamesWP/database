@@ -43,7 +43,7 @@ fn verify_interior(pager: &Pager, interior: InteriorNodePage) -> Result<usize, V
     // Check all interior node's child page's keys are within bounds
     for edge in 0..interior.num_edges() - 1 {
         let child_page_idx = interior.get_child_page_by_index(edge);
-        let child_page = pager.get_and_decode_node(child_page_idx);
+        let child_page: NodePage = pager.get_and_decode_node(child_page_idx);
 
         let edge_key = interior.get_key_by_index(edge);
         let smallest_key = child_page.smallest_key();
@@ -57,7 +57,7 @@ fn verify_interior(pager: &Pager, interior: InteriorNodePage) -> Result<usize, V
 
     for edge in 0..interior.num_edges() {
         let edge_idx = interior.get_child_page_by_index(edge);
-        let edge = pager.get_and_decode_node(edge_idx);
+        let edge: NodePage = pager.get_and_decode_node(edge_idx);
         let level = verify_node(pager, edge)?;
         edge_levels.push(level);
     }
@@ -87,7 +87,7 @@ fn verify_node(pager: &Pager, node: NodePage) -> Result<usize, VerifyError> {
 }
 
 pub fn verify(pager: &Pager, root_page_idx: u32) -> Result<(), VerifyError> {
-    let root_page = pager.get_and_decode_node(root_page_idx);
+    let root_page: NodePage = pager.get_and_decode_node(root_page_idx);
 
     match root_page {
         NodePage::Leaf(l) => {

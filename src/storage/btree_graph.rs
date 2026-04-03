@@ -176,7 +176,7 @@ fn write_leaf_node<W: Write>(
         loop {
             let overflow_name = format!("node_{page_idx}_c{i}_overflow{hop}");
             let pager = btree.pager.borrow();
-            let page = pager.get_and_decode_node(cur_page);
+            let page: NodePage = pager.get_and_decode_node(cur_page);
             let NodePage::OverflowPage(overflow) = page else {
                 break;
             };

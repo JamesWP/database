@@ -71,6 +71,8 @@ pub struct Pager {
     file: RefCell<File>,
     /// In-memory page cache: page_number → (page_content, is_dirty)
     cache: RefCell<HashMap<u32, (Page, bool)>>,
+    /// Decoded NodePage cache: avoids repeated CBOR deserialization
+    decoded: RefCell<HashMap<u32, NodePage>>,
 }
 
 impl std::fmt::Debug for Pager {
@@ -112,6 +114,7 @@ impl Pager {
             path: path.to_owned(),
             file: RefCell::new(file),
             cache: RefCell::new(HashMap::new()),
+            decoded: RefCell::new(HashMap::new()),
         }
     }
 
@@ -179,15 +182,21 @@ impl Pager {
     /// Decode a page as a `NodePage`, firing the appropriate typed USDT probe
     /// (`page_read_leaf`, `page_read_interior`, or `page_read_overflow`) in one
     /// place rather than at every call site. This keeps probe site counts low
-    /// enough that bpftrace can attach without crashing.
+    /// enough that bpftrace can attach without crashing. Results are cached in
+    /// `self.decoded` to avoid repeated CBOR deserialization; the cache is
+    /// invalidated automatically on any write through `set`.
     pub fn get_and_decode_node<PageNo: Borrow<u32>>(&self, idx: PageNo) -> NodePage {
         let page_no = *idx.borrow();
+        if let Some(page) = self.decoded.borrow().get(&page_no) {
+            return page.clone();
+        }
         let node: NodePage = self.get_and_decode(page_no);
         match &node {
             NodePage::Leaf(_) => probe!(database, page_read_leaf, page_no),
             NodePage::Interior(_) => probe!(database, page_read_interior, page_no),
             NodePage::OverflowPage(_) => probe!(database, page_read_overflow, page_no),
         }
+        self.decoded.borrow_mut().insert(page_no, node.clone());
         node
     }
 
@@ -196,6 +205,8 @@ impl Pager {
         let page = page.borrow();
 
         probe!(database, page_write, page_no);
+        // Invalidate the decoded NodePage cache for this page on any write.
+        self.decoded.borrow_mut().remove(&page_no);
         // Write through: update cache (clean) and write to disk immediately
         self.cache
             .borrow_mut()
@@ -294,6 +305,7 @@ impl Pager {
         if idx == 0 {
             panic!("Cant dealloc page zero");
         }
+        self.decoded.borrow_mut().remove(&idx);
 
         let mut zero = self.get_zero_page().unwrap();
 
@@ -360,7 +372,7 @@ impl Pager {
                 let zero_page: ZeroPage = self.get_and_decode(0);
                 println!("{message}: Page {i} (ZeroPage): {zero_page:?}");
             } else {
-                let node_page: NodePage = self.get_and_decode(i);
+                let node_page: NodePage = self.get_and_decode_node(i);
                 println!("{message}: Page {i}: {node_page:?}");
             }
         }
@@ -372,6 +384,7 @@ mod test {
     use tempfile::NamedTempFile;
 
     use super::Pager;
+    use crate::storage::node::NodePage;
 
     #[test]
     fn simple() {
@@ -766,6 +779,67 @@ mod test {
             let p = pager.get(page_idx);
             assert_eq!(123, p.content[42]);
         }
+    }
+
+    #[test]
+    fn test_decoded_cache_hit() {
+        // get_and_decode_node called twice on the same page should populate the decoded cache
+        // so the second call returns the cached struct without re-decoding.
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        use crate::storage::node::LeafNodePage;
+
+        let mut pager = Pager::new(path);
+        let idx = pager.allocate();
+
+        // Write a NodePage
+        let node = NodePage::Leaf(LeafNodePage::default());
+        pager.encode_and_set(idx, &node).unwrap();
+
+        // Clear the decoded cache to simulate a fresh read
+        pager.decoded.borrow_mut().clear();
+        assert_eq!(0, pager.decoded.borrow().len());
+
+        // First read — should miss the cache and populate it
+        let _p1 = pager.get_and_decode_node(idx);
+        assert_eq!(
+            1,
+            pager.decoded.borrow().len(),
+            "cache should have one entry after first read"
+        );
+
+        // Second read — should hit the cache (length stays 1)
+        let _p2 = pager.get_and_decode_node(idx);
+        assert_eq!(
+            1,
+            pager.decoded.borrow().len(),
+            "cache length unchanged on second read"
+        );
+    }
+
+    #[test]
+    fn test_decoded_cache_evicted_on_deallocate() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+
+        use crate::storage::node::LeafNodePage;
+
+        let mut pager = Pager::new(path);
+        let idx = pager.allocate();
+
+        let node = NodePage::Leaf(LeafNodePage::default());
+        pager.encode_and_set(idx, &node).unwrap();
+        let _ = pager.get_and_decode_node(idx); // populate cache
+
+        assert!(pager.decoded.borrow().contains_key(&idx));
+
+        pager.dealocate(idx);
+
+        assert!(
+            !pager.decoded.borrow().contains_key(&idx),
+            "decoded cache must evict on deallocate"
+        );
     }
 
     #[test]
