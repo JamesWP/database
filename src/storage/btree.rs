@@ -216,7 +216,7 @@ where
         let modified_page_idx = stack.last().unwrap();
         let result = self
             .pager
-            .encode_and_set(*modified_page_idx, &modified_page);
+            .write_node_page(*modified_page_idx, &modified_page);
 
         if result.is_ok() {
             match &modified_page {
@@ -282,10 +282,10 @@ where
             _ => {}
         }
         self.pager
-            .encode_and_set(overfull_idx, &left_half)
+            .write_node_page(overfull_idx, &left_half)
             .expect("After split, parts are smaller");
         self.pager
-            .encode_and_set(right_idx, &right_half)
+            .write_node_page(right_idx, &right_half)
             .expect("After split, parts are smaller");
 
         // 3. Link the new right page into the tree
@@ -298,7 +298,7 @@ where
             let parent_node = parent_interior.node();
 
             probe!(database, page_write_interior, parent_idx);
-            let result = self.pager.encode_and_set(parent_idx, &parent_node);
+            let result = self.pager.write_node_page(parent_idx, &parent_node);
 
             // If the parent is now overfull, recursively split it
             match result {
@@ -322,12 +322,12 @@ where
                 NodePage::Interior(_) => probe!(database, page_write_interior, left_idx),
                 _ => {}
             }
-            self.pager.encode_and_set(left_idx, &left_page).unwrap();
+            self.pager.write_node_page(left_idx, &left_page).unwrap();
 
             let interior = InteriorNodePage::new(left_idx, right_first_key, right_idx);
             probe!(database, page_write_interior, overfull_idx);
             self.pager
-                .encode_and_set(overfull_idx, &NodePage::Interior(interior))
+                .write_node_page(overfull_idx, &NodePage::Interior(interior))
                 .unwrap();
         }
     }
@@ -369,7 +369,7 @@ where
         // Write the modified page back
         // Note: We skip rebalancing for v1 - sparse pages are acceptable
         self.pager
-            .encode_and_set(leaf_page_idx, &page)
+            .write_node_page(leaf_page_idx, &page)
             .expect("Deletion should not cause page overflow");
 
         // Save position for lazy reseek
@@ -721,7 +721,7 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
         let overflow_page =
             NodePage::OverflowPage(OverflowPage::new(first.to_owned(), Some(next_page_idx)));
         pager
-            .encode_and_set(page_idx, &overflow_page)
+            .write_node_page(page_idx, &overflow_page)
             .expect("to be able to store overflow pages");
         rest = the_rest;
         page_idx = next_page_idx;
@@ -729,7 +729,7 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
 
     let overflow_page = NodePage::OverflowPage(OverflowPage::new(rest.to_owned(), None));
     pager
-        .encode_and_set(page_idx, &overflow_page)
+        .write_node_page(page_idx, &overflow_page)
         .expect("to be able to store overflow pages");
 
     first_page_idx
@@ -796,7 +796,7 @@ impl BTree {
         let idx = pager.allocate();
         let empty_leaf_node = node::LeafNodePage::default();
         let empty_root_node = node::NodePage::Leaf(empty_leaf_node);
-        pager.encode_and_set(idx, &empty_root_node).unwrap();
+        pager.write_node_page(idx, &empty_root_node).unwrap();
         idx
     }
 
