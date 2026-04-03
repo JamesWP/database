@@ -205,8 +205,6 @@ impl Pager {
         let page = page.borrow();
 
         probe!(database, page_write, page_no);
-        // Invalidate the decoded NodePage cache for this page on any write.
-        self.decoded.borrow_mut().remove(&page_no);
         // Write through: update cache (clean) and write to disk immediately
         self.cache
             .borrow_mut()
@@ -247,6 +245,17 @@ impl Pager {
         self.set(idx, page);
 
         Ok(())
+    }
+
+    /// Encode a `NodePage` to disk and populate the decoded cache (write-through).
+    /// Prefer this over `encode_and_set` for all NodePage writes so that a
+    /// subsequent read of the same page is always a cache hit.
+    pub fn write_node_page(&mut self, idx: u32, page: &NodePage) -> Result<(), EncodingError> {
+        let result = self.encode_and_set(idx, page);
+        if result.is_ok() {
+            self.decoded.borrow_mut().insert(idx, page.clone());
+        }
+        result
     }
 
     pub fn allocate(&mut self) -> u32 {
