@@ -88,6 +88,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AX** | Fast Tests by Default | 3 | [phase-ax-fast-tests.md](completed/phase-ax-fast-tests.md) | Completed |
 | **AY** | Per-Query bpftrace Trace Log | 3 | [phase-ay-query-trace.md](completed/phase-ay-query-trace.md) | Completed |
 | **AZ** | INSERT Performance: Rowid Cache & Fused Unique Write | 2 | [phase-az-insert-perf.md](completed/phase-az-insert-perf.md) | Completed |
+| **BA** | Eliminate Page Clones | 3 | [phase-ba-arc-page-cache.md](phase-ba-arc-page-cache.md) | Planned |
 ## Sakila Compatibility
 
 Phases AJ–AV are ordered to progressively support the [sqlite-sakila-db](https://github.com/jOOQ/sakila/tree/main/sqlite-sakila-db) benchmark schema. Each phase unlocks more of the schema/data/views:
@@ -124,7 +125,10 @@ Features that are currently parsed or partially handled but not fully implemente
 
 * support aggregation for joins
 * multi-column joins — extend planner and JoinResolver to support multiple JOIN clauses and multi-column ON conditions (a.x = b.x AND a.y = b.y)
-
+* perf oppertunities:
+    - make the lexer/parser faster (8% of execute for sakila inserts)
+    - database::planner::schema::resolve_table is slow in the planner (17%)
+    
 ## Verification (all phases)
 
 Each feature should follow TDD per CLAUDE.md:
