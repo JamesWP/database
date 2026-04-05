@@ -272,28 +272,31 @@ where
         let right_idx = self.pager.allocate();
         let right_first_key = right_half.smallest_key();
 
-        // 2. Write both halves to disk (same type as the overfull page)
-        match &left_half {
-            NodePage::Leaf(_) => {
-                probe!(database, page_write_leaf, overfull_idx);
-                probe!(database, page_write_leaf, right_idx);
-            }
-            NodePage::Interior(_) => {
-                probe!(database, page_write_interior, overfull_idx);
-                probe!(database, page_write_interior, right_idx);
-            }
+        // 2. Write right_half to right_idx (needed in both root and non-root cases).
+        //    left_half is written below, conditional on the root/non-root branch,
+        //    so it can go directly to its final destination without an intermediate
+        //    write-to-overfull_idx followed by a read-back clone.
+        match &right_half {
+            NodePage::Leaf(_) => probe!(database, page_write_leaf, right_idx),
+            NodePage::Interior(_) => probe!(database, page_write_interior, right_idx),
             _ => {}
         }
-        self.pager
-            .write_node_page(overfull_idx, Rc::new(left_half))
-            .expect("After split, parts are smaller");
         self.pager
             .write_node_page(right_idx, Rc::new(right_half))
             .expect("After split, parts are smaller");
 
         // 3. Link the new right page into the tree
         if stack.len() != 0 {
-            // Non-root: add a child pointer for the right page to the parent.
+            // Non-root: left_half stays at overfull_idx; add a child pointer to the parent.
+            match &left_half {
+                NodePage::Leaf(_) => probe!(database, page_write_leaf, overfull_idx),
+                NodePage::Interior(_) => probe!(database, page_write_interior, overfull_idx),
+                _ => {}
+            }
+            self.pager
+                .write_node_page(overfull_idx, Rc::new(left_half))
+                .expect("After split, parts are smaller");
+
             // mutate_node takes the parent from the decoded cache (strong_count == 1)
             // so Rc::try_unwrap succeeds — zero-copy mutation.
             let parent_idx = stack.pop().unwrap();
@@ -316,21 +319,17 @@ where
                 Ok(()) => {}
             }
         } else {
-            // Root: keep the root at the same page index.
-            // Move the left half (currently at overfull_idx) to a fresh page,
-            // then overwrite the root with a new interior node.
-            let left_page = self.pager.get_and_decode_node(overfull_idx);
+            // Root: left_half goes directly to a new page; root gets a new interior node.
+            // Writing left_half to a fresh left_idx avoids the write→cache→clone roundtrip
+            // that occurred when left_half was first written to overfull_idx and read back.
             let left_idx = self.pager.allocate();
-            match left_page.as_ref() {
+            match &left_half {
                 NodePage::Leaf(_) => probe!(database, page_write_leaf, left_idx),
                 NodePage::Interior(_) => probe!(database, page_write_interior, left_idx),
                 _ => {}
             }
-            // unwrap_or_clone gives an independent copy so cache[overfull_idx] drops to strong_count=1
-            // before we overwrite it with the new interior node below.
-            let left_owned = Rc::unwrap_or_clone(left_page);
             self.pager
-                .write_node_page(left_idx, Rc::new(left_owned))
+                .write_node_page(left_idx, Rc::new(left_half))
                 .unwrap();
 
             let interior = InteriorNodePage::new(left_idx, right_first_key, right_idx);
@@ -669,10 +668,11 @@ where
 
             let (curent_interior_idx, curent_edge) = stack.pop().unwrap();
 
-            let curent_interior = self.pager.get_and_decode_node(curent_interior_idx);
-            let curent_interior = Rc::unwrap_or_clone(curent_interior)
-                .interior()
-                .expect("The stack should only contain interior pages");
+            let curent_interior_page = self.pager.get_and_decode_node(curent_interior_idx);
+            let curent_interior = match curent_interior_page.as_ref() {
+                NodePage::Interior(i) => i,
+                _ => panic!("The stack should only contain interior pages"),
+            };
             let edge_count = curent_interior.num_edges();
 
             // if we there are more edges to the right:
