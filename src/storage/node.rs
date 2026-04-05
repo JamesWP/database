@@ -560,6 +560,24 @@ mod test {
     ///
     /// Run with `cargo test measure_cbor_framing -- --nocapture` to see byte counts.
     /// These values inform the derived overflow constants in btree.rs.
+    ///
+    /// # How to re-tune the constants
+    ///
+    /// Run this test and check the printed values. For each constant in btree.rs:
+    ///
+    /// - `OVERFLOW_PAGE_FRAMING_BYTES`: must be >= `overflow_with_cont_large` + 2
+    ///   (the +2 accounts for the content byte-string header growing from 1 to 3 bytes
+    ///   when content exceeds 255 bytes; the test only measures empty content).
+    ///
+    /// - `LEAF_PAGE_BASE_FRAMING_BYTES`: must be >= `leaf_empty`.
+    ///
+    /// - `CELL_FRAMING_BYTES`: must be >= `max_data_cell_overhead` printed below.
+    ///   This is measured by sweeping value sizes across each CBOR length-prefix tier
+    ///   boundary (0, 23, 24, 255, 256 bytes). The value-header length prefix jumps at
+    ///   these boundaries (1→2→3 bytes). The key header also varies with key length,
+    ///   but data-tree keys are always 8-byte rowids (header stays 1 byte).
+    ///   Index-tree keys can be longer, but index values are always empty so they
+    ///   never trigger overflow and are not subject to CHUNK_THRESHOLD.
     #[test]
     fn measure_cbor_framing_overhead() {
         fn cbor_size<T: serde::Serialize>(v: &T) -> usize {
@@ -568,13 +586,20 @@ mod test {
             buf.len()
         }
 
+        // cell_overhead: everything in the CBOR cell except the raw value bytes.
+        // = 1 (outer array) + key_header + key_data + value_header
+        // For data-tree cells key is always 8 bytes (u64 rowid); key_header is 1 byte.
+        // value_header grows across tier boundaries: 1 byte (≤23), 2 bytes (24–255), 3 bytes (256+).
+        let cell_overhead = |key_len: usize, value_len: usize| -> usize {
+            cbor_size(&Cell::new(vec![0u8; key_len], vec![0u8; value_len], None)) - value_len
+        };
+
         let overflow_no_cont = NodePage::OverflowPage(OverflowPage::new(vec![], None));
         let overflow_with_cont_small = NodePage::OverflowPage(OverflowPage::new(vec![], Some(0)));
         // Worst-case continuation: u32::MAX encodes as 5 CBOR bytes
         let overflow_with_cont_large =
             NodePage::OverflowPage(OverflowPage::new(vec![], Some(u32::MAX)));
         let leaf_empty = NodePage::Leaf(LeafNodePage::default());
-        let cell_empty = Cell::new(vec![0u8; 8], vec![], None);
         // Measure a leaf with one empty cell to get per-cell framing overhead
         let mut leaf_one_cell = LeafNodePage::default();
         leaf_one_cell.insert_item_at_index(0, Cell::new(vec![0u8; 8], vec![], None));
@@ -585,7 +610,15 @@ mod test {
         let overflow_with_cont_large_size = cbor_size(&overflow_with_cont_large);
         let leaf_empty_size = cbor_size(&leaf_empty);
         let leaf_one_cell_size = cbor_size(&leaf_one_cell_page);
-        let cell_size = cbor_size(&cell_empty);
+
+        // Sweep value sizes across CBOR length-prefix tier boundaries for an 8-byte key.
+        // The overhead (cell_size - value_len) changes only at tier boundaries.
+        let tier_boundaries = [0usize, 23, 24, 255, 256, 65535];
+        let max_data_cell_overhead = tier_boundaries
+            .iter()
+            .map(|&v| cell_overhead(8, v))
+            .max()
+            .unwrap();
 
         println!(
             "overflow_no_cont (base framing): {} bytes",
@@ -600,35 +633,40 @@ mod test {
             overflow_with_cont_large_size
         );
         println!("leaf_empty (base leaf framing): {} bytes", leaf_empty_size);
-        println!("leaf_one_cell: {} bytes", leaf_one_cell_size);
         println!(
             "per-cell framing (leaf_one_cell - leaf_empty): {} bytes",
             leaf_one_cell_size - leaf_empty_size
         );
-        println!("cell_empty (standalone): {} bytes", cell_size);
+        println!("--- cell_overhead(key=8, value=N) at tier boundaries ---");
+        for v in tier_boundaries {
+            println!("  value={v:5}: overhead={}", cell_overhead(8, v));
+        }
+        println!(
+            "max_data_cell_overhead (key=8): {} bytes",
+            max_data_cell_overhead
+        );
 
-        // Validate the conservative upper bounds used in btree.rs constants.
-        // Each constant must be >= the measured value so the derived OVERFLOW_LIMIT and
-        // CHUNK_THRESHOLD are safe lower bounds (not over-aggressive thresholds).
+        // ── Assertions ──────────────────────────────────────────────────────────────
+        // Each constant in btree.rs must be >= the measured worst case.
 
-        // OVERFLOW_PAGE_FRAMING_BYTES = 44 must be >= worst-case framing:
-        // base (38) + content-header growth (+2 for len > 255) + u32 growth (+4 for u32::MAX)
-        // The measured value here only covers the empty-content framing; the content-header
-        // growth is accounted for separately via the +2 in the constant derivation comment.
+        // OVERFLOW_PAGE_FRAMING_BYTES = 44 must cover:
+        //   base framing with empty content + Some(u32::MAX)  →  measured here
+        //   + 2 bytes for content byte-string header growing 1→3 when content > 255 bytes
+        //     (not measured here since content is empty; accounted for in the constant)
         assert!(
-            overflow_with_cont_large_size <= 44,
-            "overflow_with_cont max-u32 framing ({overflow_with_cont_large_size}) exceeds constant OVERFLOW_PAGE_FRAMING_BYTES=44"
+            overflow_with_cont_large_size + 2 <= 44,
+            "overflow worst-case framing ({} + 2 content-header growth) exceeds OVERFLOW_PAGE_FRAMING_BYTES=44",
+            overflow_with_cont_large_size
         );
         // LEAF_PAGE_BASE_FRAMING_BYTES = 15 must be >= leaf_empty_size
         assert!(
             leaf_empty_size <= 15,
             "leaf_empty framing ({leaf_empty_size}) exceeds constant LEAF_PAGE_BASE_FRAMING_BYTES=15"
         );
-        // CELL_FRAMING_BYTES = 15 must be >= per-cell overhead (leaf_one_cell - leaf_empty)
-        let per_cell_framing = leaf_one_cell_size - leaf_empty_size;
+        // CELL_FRAMING_BYTES = 13 must be >= max overhead across all value-size tiers
         assert!(
-            per_cell_framing <= 15,
-            "per-cell framing ({per_cell_framing}) exceeds constant CELL_FRAMING_BYTES=15"
+            max_data_cell_overhead <= 13,
+            "max data-cell overhead ({max_data_cell_overhead}) exceeds constant CELL_FRAMING_BYTES=13"
         );
     }
 
