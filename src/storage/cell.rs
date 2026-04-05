@@ -38,10 +38,15 @@ impl Serialize for Cell {
     where
         S: serde::Serializer,
     {
-        match self.continuation {
-            Some(continuation) => (&self.key, &self.value, continuation).serialize(serializer),
-            None => (&self.key, &self.value).serialize(serializer),
+        use serde::ser::SerializeTuple;
+        let len = if self.continuation.is_some() { 3 } else { 2 };
+        let mut tup = serializer.serialize_tuple(len)?;
+        tup.serialize_element(serde_bytes::Bytes::new(&self.key))?;
+        tup.serialize_element(serde_bytes::Bytes::new(&self.value))?;
+        if let Some(cont) = self.continuation {
+            tup.serialize_element(&cont)?;
         }
+        tup.end()
     }
 }
 
@@ -57,11 +62,11 @@ impl<'de> Visitor<'de> for CellDeserializeVisitor {
     where
         A: serde::de::SeqAccess<'de>,
     {
-        let key: Vec<u8> = seq.next_element()?.unwrap();
-        let value: Vec<u8> = seq.next_element()?.unwrap();
+        let key: serde_bytes::ByteBuf = seq.next_element()?.unwrap();
+        let value: serde_bytes::ByteBuf = seq.next_element()?.unwrap();
         let continuation = seq.next_element()?;
 
-        Ok((key, value, continuation))
+        Ok((key.into_vec(), value.into_vec(), continuation))
     }
 }
 
