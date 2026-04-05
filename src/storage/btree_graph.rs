@@ -116,7 +116,7 @@ fn write_leaf_node<W: Write>(
     let cell_infos: Vec<CellInfo> = {
         let pager = btree.pager.borrow();
         let page = pager.get_and_decode_node(page_idx);
-        let NodePage::Leaf(leaf) = page else {
+        let NodePage::Leaf(leaf) = page.as_ref() else {
             return Ok(());
         };
         (0..leaf.num_items())
@@ -176,8 +176,8 @@ fn write_leaf_node<W: Write>(
         loop {
             let overflow_name = format!("node_{page_idx}_c{i}_overflow{hop}");
             let pager = btree.pager.borrow();
-            let page: NodePage = pager.get_and_decode_node(cur_page);
-            let NodePage::OverflowPage(overflow) = page else {
+            let page = pager.get_and_decode_node(cur_page);
+            let NodePage::OverflowPage(overflow) = page.as_ref() else {
                 break;
             };
             let continuation = overflow.continuation();
@@ -205,7 +205,7 @@ fn write_leaf_node<W: Write>(
 fn write_interior_node<W: Write>(output: &mut W, btree: &BTree, page_idx: u32) -> Result {
     let pager = btree.pager.borrow();
     let page = pager.get_and_decode_node(page_idx);
-    let NodePage::Interior(interior) = page else {
+    let NodePage::Interior(interior) = page.as_ref() else {
         return Ok(());
     };
 
@@ -254,7 +254,7 @@ fn write_subgraph<W: Write>(
         let pager = btree.pager.borrow();
         let page = pager.get_and_decode_node(page_idx);
 
-        match page {
+        match page.as_ref() {
             NodePage::Leaf(_) => {
                 drop(pager);
                 write_leaf_node(output, btree, page_idx, &kind)?;

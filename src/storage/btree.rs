@@ -1,6 +1,7 @@
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::io::Write;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::{
     fmt::Display,
@@ -155,7 +156,7 @@ where
             CursorPosition::Valid { leaf, .. } => {
                 let (leaf_page_idx, cell_index) = *leaf;
                 let page = self.pager.get_and_decode_node(leaf_page_idx);
-                match &page {
+                match page.as_ref() {
                     NodePage::Leaf(leaf) if cell_index < leaf.num_items() => {
                         Some(leaf.get_key(cell_index))
                     }
@@ -188,22 +189,23 @@ where
 
         loop {
             let top_page_idx = *stack.last().unwrap();
-            let mut top_page = self.pager.get_and_decode_node(top_page_idx);
+            let top_page = self.pager.get_and_decode_node(top_page_idx);
             match top_page.search(key) {
                 SearchResult::Found(insertion_index) => {
                     // We found the index in the node where an existing value for this key exists
                     // we need to replace it with our value
+                    let mut owned = Rc::unwrap_or_clone(top_page);
+                    owned.set_item_at_index(insertion_index, cell);
 
-                    top_page.set_item_at_index(insertion_index, cell);
-
-                    self.update_page(top_page, stack);
+                    self.update_page(owned, stack);
 
                     break;
                 }
                 SearchResult::NotPresent(item_idx) => {
-                    top_page.insert_item_at_index(item_idx, cell);
+                    let mut owned = Rc::unwrap_or_clone(top_page);
+                    owned.insert_item_at_index(item_idx, cell);
 
-                    self.update_page(top_page, stack);
+                    self.update_page(owned, stack);
 
                     break;
                 }
@@ -232,15 +234,17 @@ where
     /// * `stack` the path of pages to the modified page, last entry in the stack is the one which needs updating
     /// * `modified_page` the updated content to be saved to the page identified by the stack
     fn update_page(&mut self, modified_page: NodePage, stack: Vec<u32>) {
-        let modified_page_idx = stack.last().unwrap();
+        let modified_page_idx = *stack.last().unwrap();
+        // Keep the owned page available for the split path on NotEnoughSpaceInPage.
+        let rc = Rc::new(modified_page);
         let result = self
             .pager
-            .write_node_page(*modified_page_idx, &modified_page);
+            .write_node_page(modified_page_idx, Rc::clone(&rc));
 
         if result.is_ok() {
-            match &modified_page {
-                NodePage::Leaf(_) => probe!(database, page_write_leaf, *modified_page_idx),
-                NodePage::Interior(_) => probe!(database, page_write_interior, *modified_page_idx),
+            match rc.as_ref() {
+                NodePage::Leaf(_) => probe!(database, page_write_leaf, modified_page_idx),
+                NodePage::Interior(_) => probe!(database, page_write_interior, modified_page_idx),
                 _ => {}
             }
             return;
@@ -250,7 +254,9 @@ where
 
         match result {
             pager::EncodingError::NotEnoughSpaceInPage => {
-                self.split_page(modified_page, stack);
+                // write_node_page failed without caching the Rc, so rc is the sole owner.
+                let owned = Rc::try_unwrap(rc).expect("sole owner after write failure");
+                self.split_page(owned, stack);
             }
             pager::EncodingError::SerializationError(e) => {
                 panic!("Serialization error: {}", e);
@@ -301,10 +307,10 @@ where
             _ => {}
         }
         self.pager
-            .write_node_page(overfull_idx, &left_half)
+            .write_node_page(overfull_idx, Rc::new(left_half))
             .expect("After split, parts are smaller");
         self.pager
-            .write_node_page(right_idx, &right_half)
+            .write_node_page(right_idx, Rc::new(right_half))
             .expect("After split, parts are smaller");
 
         // 3. Link the new right page into the tree
@@ -312,18 +318,22 @@ where
             // Non-root: add a child pointer for the right page to the parent
             let parent_idx = stack.pop().unwrap();
             let parent_page = self.pager.get_and_decode_node(parent_idx);
-            let mut parent_interior = parent_page.interior().unwrap();
+            let mut parent_interior = Rc::unwrap_or_clone(parent_page).interior().unwrap();
             parent_interior.insert_child_page(right_first_key, right_idx);
             let parent_node = parent_interior.node();
 
             probe!(database, page_write_interior, parent_idx);
-            let result = self.pager.write_node_page(parent_idx, &parent_node);
+            let parent_rc = Rc::new(parent_node);
+            let result = self
+                .pager
+                .write_node_page(parent_idx, Rc::clone(&parent_rc));
 
             // If the parent is now overfull, recursively split it
             match result {
                 Err(pager::EncodingError::NotEnoughSpaceInPage) => {
+                    let owned = Rc::try_unwrap(parent_rc).expect("sole owner after write failure");
                     stack.push(parent_idx);
-                    self.split_page(parent_node, stack);
+                    self.split_page(owned, stack);
                 }
                 Err(pager::EncodingError::SerializationError(e)) => {
                     panic!("Serialization error: {}", e);
@@ -336,17 +346,22 @@ where
             // then overwrite the root with a new interior node.
             let left_page = self.pager.get_and_decode_node(overfull_idx);
             let left_idx = self.pager.allocate();
-            match &left_page {
+            match left_page.as_ref() {
                 NodePage::Leaf(_) => probe!(database, page_write_leaf, left_idx),
                 NodePage::Interior(_) => probe!(database, page_write_interior, left_idx),
                 _ => {}
             }
-            self.pager.write_node_page(left_idx, &left_page).unwrap();
+            // unwrap_or_clone gives an independent copy so cache[overfull_idx] drops to strong_count=1
+            // before we overwrite it with the new interior node below.
+            let left_owned = Rc::unwrap_or_clone(left_page);
+            self.pager
+                .write_node_page(left_idx, Rc::new(left_owned))
+                .unwrap();
 
             let interior = InteriorNodePage::new(left_idx, right_first_key, right_idx);
             probe!(database, page_write_interior, overfull_idx);
             self.pager
-                .write_node_page(overfull_idx, &NodePage::Interior(interior))
+                .write_node_page(overfull_idx, Rc::new(NodePage::Interior(interior)))
                 .unwrap();
         }
     }
@@ -366,17 +381,18 @@ where
         // Read the key before deletion
         let deleted_key = {
             let page = self.pager.get_and_decode_node(leaf_page_idx);
-            match &page {
+            match page.as_ref() {
                 NodePage::Leaf(leaf) => leaf.get_key(cell_index),
                 _ => panic!("Expected leaf node at cursor position"),
             }
         };
 
-        // Load the leaf page again for mutation
-        let mut page = self.pager.get_and_decode_node(leaf_page_idx);
+        // Load the leaf page for mutation
+        let page = self.pager.get_and_decode_node(leaf_page_idx);
+        let mut owned = Rc::unwrap_or_clone(page);
 
         // Remove the cell from the leaf
-        match &mut page {
+        match &mut owned {
             NodePage::Leaf(leaf) => {
                 // TODO: Free overflow pages if the deleted cell had them
                 // For v1, we accept leaked overflow pages
@@ -388,7 +404,7 @@ where
         // Write the modified page back
         // Note: We skip rebalancing for v1 - sparse pages are acceptable
         self.pager
-            .write_node_page(leaf_page_idx, &page)
+            .write_node_page(leaf_page_idx, Rc::new(owned))
             .expect("Deletion should not cause page overflow");
 
         // Save position for lazy reseek
@@ -456,7 +472,7 @@ where
 
         loop {
             let page = self.pager.get_and_decode_node(page_idx);
-            match page {
+            match page.as_ref() {
                 node::NodePage::Leaf(l) => {
                     // We found the first leaf in the tree.
                     if l.num_items() == 0 {
@@ -484,7 +500,7 @@ where
 
         loop {
             let page = self.pager.get_and_decode_node(page_idx);
-            match page {
+            match page.as_ref() {
                 node::NodePage::Leaf(l) => {
                     // We found the rightmost leaf in the tree.
                     if l.num_items() == 0 {
@@ -681,7 +697,7 @@ where
             let (curent_interior_idx, curent_edge) = stack.pop().unwrap();
 
             let curent_interior = self.pager.get_and_decode_node(curent_interior_idx);
-            let curent_interior = curent_interior
+            let curent_interior = Rc::unwrap_or_clone(curent_interior)
                 .interior()
                 .expect("The stack should only contain interior pages");
             let edge_count = curent_interior.num_edges();
@@ -740,7 +756,7 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
         let overflow_page =
             NodePage::OverflowPage(OverflowPage::new(first.to_owned(), Some(next_page_idx)));
         pager
-            .write_node_page(page_idx, &overflow_page)
+            .write_node_page(page_idx, Rc::new(overflow_page))
             .expect("to be able to store overflow pages");
         rest = the_rest;
         page_idx = next_page_idx;
@@ -748,7 +764,7 @@ fn split_and_store(pager: &mut Pager, mut rest: &[u8]) -> u32 {
 
     let overflow_page = NodePage::OverflowPage(OverflowPage::new(rest.to_owned(), None));
     pager
-        .write_node_page(page_idx, &overflow_page)
+        .write_node_page(page_idx, Rc::new(overflow_page))
         .expect("to be able to store overflow pages");
 
     first_page_idx
@@ -815,7 +831,9 @@ impl BTree {
         let idx = pager.allocate();
         let empty_leaf_node = node::LeafNodePage::default();
         let empty_root_node = node::NodePage::Leaf(empty_leaf_node);
-        pager.write_node_page(idx, &empty_root_node).unwrap();
+        pager
+            .write_node_page(idx, Rc::new(empty_root_node))
+            .unwrap();
         idx
     }
 
@@ -854,7 +872,7 @@ impl BTree {
         } else {
             // NodePage (Leaf, Interior, or OverflowPage)
             let node = pager.get_and_decode_node(page_num);
-            match &node {
+            match node.as_ref() {
                 node::NodePage::Leaf(leaf) => {
                     println!("{}: {}", "Type".yellow(), "LeafNodePage".green());
                     println!("{}: {}", "Number of items".yellow(), leaf.num_items());

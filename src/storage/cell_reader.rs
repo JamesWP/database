@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::engine::scalarvalue::ScalarValue;
 use probe::probe;
 
@@ -29,7 +31,7 @@ impl<'a> std::io::Read for CellReader<'a> {
         match self.continuation {
             None => Ok(0),
             Some(continuation) => {
-                let node: Box<NodePage> = Box::new(self.pager.get_and_decode_node(continuation));
+                let node: Rc<NodePage> = self.pager.get_and_decode_node(continuation);
                 let overflow_page = match node.as_ref() {
                     NodePage::OverflowPage(p) => p,
                     _ => panic!("Expected overflow page"),
@@ -48,7 +50,7 @@ impl<'a> std::io::Read for CellReader<'a> {
 
 impl<'a> CellReader<'a> {
     pub fn new(pager: &'a Pager, leaf_page_idx: u32, cell_idx: usize) -> Option<CellReader<'a>> {
-        let node: Box<NodePage> = Box::new(pager.get_and_decode_node(leaf_page_idx));
+        let node: Rc<NodePage> = pager.get_and_decode_node(leaf_page_idx);
 
         let leaf_page = node
             .leaf()

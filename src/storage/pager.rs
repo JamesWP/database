@@ -5,6 +5,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, Write},
     os::unix::prelude::MetadataExt,
+    rc::Rc,
 };
 
 use probe::probe;
@@ -72,7 +73,7 @@ pub struct Pager {
     /// In-memory page cache: page_number → (page_content, is_dirty)
     cache: RefCell<HashMap<u32, (Page, bool)>>,
     /// Decoded NodePage cache: avoids repeated CBOR deserialization
-    decoded: RefCell<HashMap<u32, NodePage>>,
+    decoded: RefCell<HashMap<u32, Rc<NodePage>>>,
 }
 
 impl std::fmt::Debug for Pager {
@@ -185,10 +186,10 @@ impl Pager {
     /// enough that bpftrace can attach without crashing. Results are cached in
     /// `self.decoded` to avoid repeated CBOR deserialization; the cache is
     /// invalidated automatically on any write through `set`.
-    pub fn get_and_decode_node<PageNo: Borrow<u32>>(&self, idx: PageNo) -> NodePage {
+    pub fn get_and_decode_node<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Rc<NodePage> {
         let page_no = *idx.borrow();
         if let Some(page) = self.decoded.borrow().get(&page_no) {
-            return page.clone();
+            return Rc::clone(page);
         }
         let node: NodePage = self.get_and_decode(page_no);
         match &node {
@@ -196,7 +197,8 @@ impl Pager {
             NodePage::Interior(_) => probe!(database, page_read_interior, page_no),
             NodePage::OverflowPage(_) => probe!(database, page_read_overflow, page_no),
         }
-        self.decoded.borrow_mut().insert(page_no, node.clone());
+        let node = Rc::new(node);
+        self.decoded.borrow_mut().insert(page_no, Rc::clone(&node));
         node
     }
 
@@ -250,10 +252,19 @@ impl Pager {
     /// Encode a `NodePage` to disk and populate the decoded cache (write-through).
     /// Prefer this over `encode_and_set` for all NodePage writes so that a
     /// subsequent read of the same page is always a cache hit.
-    pub fn write_node_page(&mut self, idx: u32, page: &NodePage) -> Result<(), EncodingError> {
-        let result = self.encode_and_set(idx, page);
+    pub fn write_node_page(&mut self, idx: u32, page: Rc<NodePage>) -> Result<(), EncodingError> {
+        #[cfg(debug_assertions)]
+        if let Some(existing) = self.decoded.borrow().get(&idx) {
+            debug_assert!(
+                Rc::strong_count(existing) == 1,
+                "writing page {} while {} callers still hold a reference",
+                idx,
+                Rc::strong_count(existing) - 1
+            );
+        }
+        let result = self.encode_and_set(idx, &*page);
         if result.is_ok() {
-            self.decoded.borrow_mut().insert(idx, page.clone());
+            self.decoded.borrow_mut().insert(idx, page);
         }
         result
     }
@@ -381,7 +392,7 @@ impl Pager {
                 let zero_page: ZeroPage = self.get_and_decode(0);
                 println!("{message}: Page {i} (ZeroPage): {zero_page:?}");
             } else {
-                let node_page: NodePage = self.get_and_decode_node(i);
+                let node_page = self.get_and_decode_node(i);
                 println!("{message}: Page {i}: {node_page:?}");
             }
         }
