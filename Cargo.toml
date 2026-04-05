@@ -20,3 +20,6 @@ ratatui = "0.30"
 crossterm = "0.28"
 ansi-to-tui = "8"
 probe = "0.5"
+
+[profile.release]
+debug = 1

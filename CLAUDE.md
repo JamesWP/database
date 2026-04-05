@@ -11,6 +11,7 @@ A single-file relational database library in Rust, similar to SQLite. Implements
 ```bash
 cargo build              # Debug build
 cargo build --release    # Release build
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release  # For perf profiling (needed for correct Rust stack frames)
 cargo test               # Run all tests (lib + integration + doctests) - THE BASELINE
 cargo test test_sql_     # Run SQL integration tests
 cargo test <test_name>   # Run single test
