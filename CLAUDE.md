@@ -11,7 +11,7 @@ A single-file relational database library in Rust, similar to SQLite. Implements
 ```bash
 cargo build              # Debug build
 cargo build --release    # Release build
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release  # For perf profiling (needed for correct Rust stack frames)
+cargo build --release    # Release build (includes frame pointers + debug symbols for perf)
 cargo test               # Run all tests (lib + integration + doctests) - THE BASELINE
 cargo test test_sql_     # Run SQL integration tests
 cargo test <test_name>   # Run single test
@@ -264,6 +264,27 @@ Each secondary index is a separate B-tree with its own root page.
 - **Maintenance**: INSERT updates all indexes for the table.
 - **Query Optimization**: Planner detects applicable indexes for `WHERE col = literal` and generates `IndexScan` bytecode.
 - **Prefix Matching**: Uses `MoveCursor(Find)` to position at the first candidate and `KeyMatchesPrefix` to verify.
+
+## Perf Profiling
+
+`[profile.release]` has `force-frame-pointers = true` and `debug = 1` baked in — no special build flags needed.
+
+**Working method (LBR call graphs):**
+
+```bash
+# Load sakila schema first
+rm -f sakila.db && ./target/release/database sakila.db file sakila-schema-stripped.sql
+
+# Record with LBR — produces clean full stacks, small output, no lost chunks
+perf record --call-graph lbr -F 2000 -o perf.data -- ./target/release/database sakila.db file ../sakila/sqlite-sakila-db/sqlite-sakila-insert-data.sql
+
+perf report
+
+# Or export for Firefox Profiler (profiler.firefox.com — drag and drop perf.script)
+perf script -i perf.data > perf.script
+```
+
+**Why LBR:** `-g` (frame-pointer) truncates stacks at libc boundaries. `--call-graph dwarf` produces corrupted samples (`failed to process type: 68`) due to stack snapshot truncation. LBR is hardware-assisted (Intel), avoids both problems, and produces ~13 MB output vs ~220 MB for DWARF.
 
 ## Makefile Targets
 
