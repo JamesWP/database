@@ -183,11 +183,60 @@ pub enum VerifyError {
     KeyOutOfOrder,
 }
 
+/// Serde module for `Vec<Vec<u8>>`: serializes each inner `Vec<u8>` as a CBOR byte string
+/// (major type 2) rather than a CBOR array of integers, matching the `serde_bytes` approach
+/// used for individual byte slices.
+mod serde_vec_bytes {
+    use serde::{
+        de::{SeqAccess, Visitor},
+        ser::SerializeSeq,
+        Deserializer, Serializer,
+    };
+
+    pub fn serialize<S>(keys: &Vec<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(keys.len()))?;
+        for key in keys {
+            seq.serialize_element(serde_bytes::Bytes::new(key))?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ByteVecVisitor;
+        impl<'de> Visitor<'de> for ByteVecVisitor {
+            type Value = Vec<Vec<u8>>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("sequence of byte strings")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(buf) = seq.next_element::<serde_bytes::ByteBuf>()? {
+                    out.push(buf.into_vec());
+                }
+                Ok(out)
+            }
+        }
+        deserializer.deserialize_seq(ByteVecVisitor)
+    }
+}
+
 // [edge 0] [key 0] [edge 1] [key 1] ... [key N-1] [edge N]
 // items in [edge i] are LESS than or EQUAL to [key i]
 // (if there is no [key i], i.e. at the end, items in [edge i] must be GREATER than [key i-1])
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InteriorNodePage {
+    #[serde(with = "serde_vec_bytes")]
     keys: Vec<Key>,
     edges: Vec<u32>,
 }
