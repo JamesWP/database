@@ -265,6 +265,52 @@ impl Pager {
         result
     }
 
+    /// Remove the decoded cache entry and return sole Rc ownership to the caller.
+    /// The strong_count assertion ensures no other caller is still holding a reference.
+    fn take_decoded_node(&self, page_no: u32) -> Option<Rc<NodePage>> {
+        let rc = self.decoded.borrow_mut().remove(&page_no)?;
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            Rc::strong_count(&rc) == 1,
+            "taking page {} for mutation while {} callers hold references",
+            page_no,
+            Rc::strong_count(&rc) - 1
+        );
+        Some(rc)
+    }
+
+    /// Fetch page `page_no`, apply `f` to a mutable reference, then write the result back.
+    ///
+    /// Hot path (page in decoded cache): `take_decoded_node` gives sole ownership →
+    /// `Rc::try_unwrap` succeeds → zero-copy mutation.
+    ///
+    /// Cold path (page not in decoded cache): falls back to a decode + clone (rare).
+    ///
+    /// Returns `(closure_result, Ok(()))` on success.
+    /// Returns `(closure_result, Err((error, page)))` on encoding failure — the owned
+    /// `NodePage` is returned so the caller can split it without an extra clone.
+    pub fn mutate_node<R>(
+        &mut self,
+        page_no: u32,
+        f: impl FnOnce(&mut NodePage) -> R,
+    ) -> (R, Result<(), (EncodingError, NodePage)>) {
+        let rc = self
+            .take_decoded_node(page_no)
+            .unwrap_or_else(|| self.get_and_decode_node(page_no));
+        // Hot path: strong_count == 1 (removed from cache) → unwrap succeeds, no clone.
+        // Cold path: strong_count == 2 (still in cache from get_and_decode_node) → clone.
+        let mut page = Rc::try_unwrap(rc).unwrap_or_else(|r| (*r).clone());
+        let r = f(&mut page);
+        let result = self.encode_and_set(page_no, &page);
+        match result {
+            Ok(()) => {
+                self.decoded.borrow_mut().insert(page_no, Rc::new(page));
+                (r, Ok(()))
+            }
+            Err(e) => (r, Err((e, page))),
+        }
+    }
+
     pub fn allocate(&mut self) -> u32 {
         let num_pages = self.get_file_size_pages();
 

@@ -79,7 +79,21 @@ impl NodePage {
         }
     }
 
+    pub fn interior_mut(&mut self) -> Option<&mut InteriorNodePage> {
+        match self {
+            NodePage::Interior(i) => Some(i),
+            _ => None,
+        }
+    }
+
     pub fn leaf(&self) -> Option<&LeafNodePage> {
+        match self {
+            NodePage::Leaf(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    pub fn leaf_mut(&mut self) -> Option<&mut LeafNodePage> {
         match self {
             NodePage::Leaf(l) => Some(l),
             _ => None,

@@ -189,30 +189,44 @@ where
 
         loop {
             let top_page_idx = *stack.last().unwrap();
-            let top_page = self.pager.get_and_decode_node(top_page_idx);
-            match top_page.search(key) {
+            // Search via a temporary Rc — dropped at end of statement so cache has sole
+            // ownership (strong_count == 1) by the time mutate_node is called below.
+            let search_result = self.pager.get_and_decode_node(top_page_idx).search(key);
+            match search_result {
                 SearchResult::Found(insertion_index) => {
-                    // We found the index in the node where an existing value for this key exists
-                    // we need to replace it with our value
-                    let mut owned = Rc::unwrap_or_clone(top_page);
-                    owned.set_item_at_index(insertion_index, cell);
-
-                    self.update_page(owned, stack);
-
+                    // Replace the existing value for this key.
+                    let (_, result) = self.pager.mutate_node(top_page_idx, |p| {
+                        p.set_item_at_index(insertion_index, cell);
+                    });
+                    match result {
+                        Ok(()) => probe!(database, page_write_leaf, top_page_idx),
+                        Err((pager::EncodingError::NotEnoughSpaceInPage, page)) => {
+                            self.split_page(page, stack);
+                        }
+                        Err((pager::EncodingError::SerializationError(e), _)) => {
+                            panic!("Serialization error: {}", e);
+                        }
+                    }
                     break;
                 }
                 SearchResult::NotPresent(item_idx) => {
-                    let mut owned = Rc::unwrap_or_clone(top_page);
-                    owned.insert_item_at_index(item_idx, cell);
-
-                    self.update_page(owned, stack);
-
+                    // Insert the new cell at the correct position.
+                    let (_, result) = self.pager.mutate_node(top_page_idx, |p| {
+                        p.insert_item_at_index(item_idx, cell);
+                    });
+                    match result {
+                        Ok(()) => probe!(database, page_write_leaf, top_page_idx),
+                        Err((pager::EncodingError::NotEnoughSpaceInPage, page)) => {
+                            self.split_page(page, stack);
+                        }
+                        Err((pager::EncodingError::SerializationError(e), _)) => {
+                            panic!("Serialization error: {}", e);
+                        }
+                    }
                     break;
                 }
                 SearchResult::GoDown(_child_index, child_page_idx) => {
-                    // The node does not contain the value, instead we found the index of a child of this node where the value should be inserted instead
-                    // we need to go deeper.
-
+                    // Descend to the child page.
                     stack.push(child_page_idx);
                 }
             }
@@ -226,42 +240,6 @@ where
 
     pub fn insert_u64(&mut self, key: u64, value: Value) {
         self.insert(&encode_u64_key(key), value)
-    }
-
-    /// Updates a page with new content
-    ///
-    /// # Args
-    /// * `stack` the path of pages to the modified page, last entry in the stack is the one which needs updating
-    /// * `modified_page` the updated content to be saved to the page identified by the stack
-    fn update_page(&mut self, modified_page: NodePage, stack: Vec<u32>) {
-        let modified_page_idx = *stack.last().unwrap();
-        // Keep the owned page available for the split path on NotEnoughSpaceInPage.
-        let rc = Rc::new(modified_page);
-        let result = self
-            .pager
-            .write_node_page(modified_page_idx, Rc::clone(&rc));
-
-        if result.is_ok() {
-            match rc.as_ref() {
-                NodePage::Leaf(_) => probe!(database, page_write_leaf, modified_page_idx),
-                NodePage::Interior(_) => probe!(database, page_write_interior, modified_page_idx),
-                _ => {}
-            }
-            return;
-        }
-
-        let result = result.unwrap_err();
-
-        match result {
-            pager::EncodingError::NotEnoughSpaceInPage => {
-                // write_node_page failed without caching the Rc, so rc is the sole owner.
-                let owned = Rc::try_unwrap(rc).expect("sole owner after write failure");
-                self.split_page(owned, stack);
-            }
-            pager::EncodingError::SerializationError(e) => {
-                panic!("Serialization error: {}", e);
-            }
-        }
     }
 
     /// Split an overfull page into two halves and link them into the tree.
@@ -315,30 +293,27 @@ where
 
         // 3. Link the new right page into the tree
         if stack.len() != 0 {
-            // Non-root: add a child pointer for the right page to the parent
+            // Non-root: add a child pointer for the right page to the parent.
+            // mutate_node takes the parent from the decoded cache (strong_count == 1)
+            // so Rc::try_unwrap succeeds — zero-copy mutation.
             let parent_idx = stack.pop().unwrap();
-            let parent_page = self.pager.get_and_decode_node(parent_idx);
-            let mut parent_interior = Rc::unwrap_or_clone(parent_page).interior().unwrap();
-            parent_interior.insert_child_page(right_first_key, right_idx);
-            let parent_node = parent_interior.node();
-
             probe!(database, page_write_interior, parent_idx);
-            let parent_rc = Rc::new(parent_node);
-            let result = self
-                .pager
-                .write_node_page(parent_idx, Rc::clone(&parent_rc));
+            let (_, result) = self.pager.mutate_node(parent_idx, |p| {
+                p.interior_mut()
+                    .unwrap()
+                    .insert_child_page(right_first_key, right_idx);
+            });
 
             // If the parent is now overfull, recursively split it
             match result {
-                Err(pager::EncodingError::NotEnoughSpaceInPage) => {
-                    let owned = Rc::try_unwrap(parent_rc).expect("sole owner after write failure");
+                Err((pager::EncodingError::NotEnoughSpaceInPage, page)) => {
                     stack.push(parent_idx);
-                    self.split_page(owned, stack);
+                    self.split_page(page, stack);
                 }
-                Err(pager::EncodingError::SerializationError(e)) => {
+                Err((pager::EncodingError::SerializationError(e), _)) => {
                     panic!("Serialization error: {}", e);
                 }
-                Ok(_) => {}
+                Ok(()) => {}
             }
         } else {
             // Root: keep the root at the same page index.
@@ -378,7 +353,8 @@ where
             _ => panic!("Cursor must be positioned before delete_current"),
         };
 
-        // Read the key before deletion
+        // Read the key before deletion; Rc is dropped at end of block so cache retains
+        // sole ownership (strong_count == 1) for the mutate_node call below.
         let deleted_key = {
             let page = self.pager.get_and_decode_node(leaf_page_idx);
             match page.as_ref() {
@@ -387,25 +363,22 @@ where
             }
         };
 
-        // Load the leaf page for mutation
-        let page = self.pager.get_and_decode_node(leaf_page_idx);
-        let mut owned = Rc::unwrap_or_clone(page);
-
-        // Remove the cell from the leaf
-        match &mut owned {
-            NodePage::Leaf(leaf) => {
-                // TODO: Free overflow pages if the deleted cell had them
-                // For v1, we accept leaked overflow pages
-                leaf.remove_cell(cell_index);
-            }
-            _ => panic!("Expected leaf node at cursor position"),
-        }
-
-        // Write the modified page back
+        // Zero-copy mutation via mutate_node: takes the page from decoded cache,
+        // applies the closure, writes back — no NodePage clone.
+        // TODO: Free overflow pages if the deleted cell had them (v1 leaks them).
+        let (_, result) = self.pager.mutate_node(leaf_page_idx, |p| {
+            p.leaf_mut().unwrap().remove_cell(cell_index);
+        });
         // Note: We skip rebalancing for v1 - sparse pages are acceptable
-        self.pager
-            .write_node_page(leaf_page_idx, Rc::new(owned))
-            .expect("Deletion should not cause page overflow");
+        match result {
+            Ok(()) => {}
+            Err((pager::EncodingError::NotEnoughSpaceInPage, _)) => {
+                panic!("Deletion should not cause page overflow");
+            }
+            Err((pager::EncodingError::SerializationError(e), _)) => {
+                panic!("Serialization error: {}", e);
+            }
+        }
 
         // Save position for lazy reseek
         self.cursor_state.position = CursorPosition::RequiresSeek {
