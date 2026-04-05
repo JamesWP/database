@@ -6,9 +6,9 @@ Remove unnecessary `NodePage` and raw `Page` copies from the hot paths in the pa
 
 | # | Track | Item | Depends on |
 |---|-------|------|------------|
-| 125 | 3 | `Arc<NodePage>` in decoded cache; `get_and_decode_node` returns `Ref<'_, NodePage>` (zero-copy, RefCell-enforced); `write_node_page` takes `Arc<NodePage>` | — |
+| 125 | 3 | `Rc<NodePage>` in decoded cache; `get_and_decode_node` returns `Rc<NodePage>` (O(1) clone); `write_node_page` takes `Rc<NodePage>`; stale-read enforcement via `strong_count` debug assertions | — |
 | 126 | 3 | `Pager::set` takes `Page` by value — eliminate 4 KB raw-page clone on every write | — |
-| 127 | 3 | Zero-copy mutation: `Pager::take_decoded_node`; refactor btree mutation paths | 125 |
+| 127 | 3 | Zero-copy mutation: `Pager::mutate_node` closure API; add `interior_mut`/`leaf_mut` to `NodePage`; refactor btree mutation paths | 125 |
 
 ---
 Important: Each item should be committed separately, follow 'Git Workflow' in CLAUDE.md
@@ -39,44 +39,63 @@ reads); they are not worth a dedicated item.
 
 ## Caching Invariants & Enforcement
 
-Three correctness assumptions underpin the Arc approach. Each has an enforcement option.
+Three correctness assumptions underpin the Rc approach. Each has an enforcement option.
 
-### Invariant 1 — No stale Arc references across a write
+### Invariant 1 — No stale Rc references across a write
 
-With `Arc<NodePage>`, a caller can hold an Arc to page X while another operation replaces page X's
+With `Rc<NodePage>`, a caller can hold an Rc to page X while another operation replaces page X's
 entry in the decoded cache (e.g. via `write_node_page`). The caller now has stale data. In the
-current sequential single-threaded design this doesn't happen because Arcs are short-lived (read,
-use, drop within one operation; never stored in cursor state). But it is a silent assumption with no
-enforcement.
+current sequential single-threaded design this doesn't happen because Rc clones are short-lived
+(read, use, drop within one operation; never stored in cursor state). But it is a silent assumption
+with no enforcement.
 
-**Runtime enforcement — return `Ref<'_, NodePage>` instead of `Arc<NodePage>`:**
+**Debug-time enforcement — `Rc::strong_count` assertion at write and take sites:**
 
-`get_and_decode_node` can return `Ref<'_, NodePage>` by mapping into the `RefCell`-guarded
-HashMap:
+When `write_node_page` is about to replace a cache entry, if any caller still holds a clone of the
+existing `Rc`, `Rc::strong_count` will be > 1. Assert this in debug builds:
 
 ```rust
-pub fn get_decoded_ref<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Ref<'_, NodePage> {
-    let page_no = *idx.borrow();
-    // Populate decoded cache if absent (via borrow_mut, then release before borrow)
-    if !self.decoded.borrow().contains_key(&page_no) {
-        let node = Arc::new(self.get_and_decode::<NodePage, _>(page_no));
-        self.decoded.borrow_mut().insert(page_no, node);
+pub fn write_node_page(&mut self, idx: u32, page: Rc<NodePage>) -> Result<(), EncodingError> {
+    #[cfg(debug_assertions)]
+    if let Some(existing) = self.decoded.borrow().get(&idx) {
+        debug_assert!(
+            Rc::strong_count(existing) == 1,
+            "writing page {} while {} readers still hold a reference",
+            idx,
+            Rc::strong_count(existing) - 1
+        );
     }
-    Ref::map(self.decoded.borrow(), |m| m.get(&page_no).unwrap().as_ref())
+    let result = self.encode_and_set(idx, &*page);
+    if result.is_ok() {
+        self.decoded.borrow_mut().insert(idx, page);
+    }
+    result
 }
 ```
 
-`Ref<'_, NodePage>` is zero-copy (a reference into the HashMap entry) and its lifetime is tied to
-the `RefCell` borrow. Because `take_decoded_node` calls `borrow_mut()`, attempting to call it
-while any `Ref<'_, NodePage>` is live **panics** — the RefCell borrow checker enforces "no write
-while holding a read reference" automatically at runtime with no extra code.
+Similarly in `take_decoded_node` (used by `mutate_node`):
 
-This is strictly better than returning `Arc<NodePage>` for reads: zero-copy, zero heap allocation,
-and self-enforcing. The cache can keep `Arc<NodePage>` internally so `take_decoded_node` can still
-extract sole ownership without cloning. Callers never see the `Arc`.
+```rust
+fn take_decoded_node(&self, page_no: u32) -> Option<Rc<NodePage>> {
+    let rc = self.decoded.borrow_mut().remove(&page_no)?;
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        Rc::strong_count(&rc) == 1,
+        "taking page {} for mutation while {} readers hold references",
+        page_no,
+        Rc::strong_count(&rc) - 1
+    );
+    Some(rc)
+}
+```
 
-**Recommendation:** change `get_and_decode_node` to return `Ref<'_, NodePage>` rather than
-`Arc<NodePage>`. The `Arc` becomes a private implementation detail of the cache.
+This catches exactly the stale-read scenario at test time with zero release overhead. Unlike
+`Ref<'_, NodePage>`, callers receive an owned `Rc` — no borrow lifetime to manage, no risk of a
+runtime panic from holding a guard too long, and no dual read-path API.
+
+**Recommendation:** use `Rc<NodePage>` throughout (not `Arc`). `Rc` is appropriate for
+single-threaded code; `Arc` would add unnecessary atomic reference-count overhead. Add the
+`strong_count` assertions at `write_node_page` and `take_decoded_node`.
 
 ### Invariant 2 — `take_decoded_node` must always be paired with `write_node_page`
 
@@ -92,26 +111,56 @@ This is safe in single-threaded sequential code (no interleaving), but the pairi
 ```rust
 /// Fetch page `page_no`, pass a mutable reference to the closure, then write the
 /// result back. Returns the closure's return value and the write result.
+/// On `Err(NotEnoughSpaceInPage)`, the mutated (overfull) page is returned in the
+/// error so the caller can split it — the decoded cache is not populated in that case.
 pub fn mutate_node<R>(
     &mut self,
     page_no: u32,
     f: impl FnOnce(&mut NodePage) -> R,
-) -> (R, Result<(), EncodingError>) {
-    let arc = self.take_decoded_node(page_no)
-        .unwrap_or_else(|| self.get_and_decode_node_arc(page_no));
-    let mut page = Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone());
+) -> (R, Result<(), (EncodingError, NodePage)>) {
+    let rc = self.take_decoded_node(page_no)
+        .unwrap_or_else(|| self.get_decoded_rc(page_no));
+    let mut page = Rc::try_unwrap(rc).unwrap_or_else(|r| (*r).clone());
     let r = f(&mut page);
-    let result = self.write_node_page(page_no, Arc::new(page));
-    (r, result)
+    let result = self.write_node_page(page_no, Rc::new(page));
+    // write_node_page consumes the Rc; on error the page is gone. We need to return
+    // the page on failure so the caller can split it. Restructure so the page is kept:
+    (r, result.map_err(|e| (e, /* see implementation note below */)))
 }
 ```
 
-The write-back is impossible to forget: it always happens at the end of `mutate_node`. The closure
-forces the take→mutate→write cycle to be atomic from the caller's perspective.
+**Implementation note:** because `write_node_page` consumes the `Rc<NodePage>` and only stores
+it in the decoded cache on success, the error path would lose the mutated page. Instead,
+`mutate_node` should hold the page as an owned `NodePage` and pass `Rc::new` only on success:
 
-The `NotEnoughSpaceInPage` error (overfull page → split) is returned as the second tuple element;
-the caller (`update_page`) handles it by calling `split_page`. The split path itself would call
-`mutate_node` for the parent page.
+```rust
+pub fn mutate_node<R>(
+    &mut self,
+    page_no: u32,
+    f: impl FnOnce(&mut NodePage) -> R,
+) -> (R, Result<(), (EncodingError, NodePage)>) {
+    let rc = self.take_decoded_node(page_no)
+        .unwrap_or_else(|| self.get_decoded_rc(page_no));
+    let mut page = Rc::try_unwrap(rc).unwrap_or_else(|r| (*r).clone());
+    let r = f(&mut page);
+    // Try encoding without consuming `page`:
+    let result = self.encode_and_set(page_no, &page);
+    match result {
+        Ok(()) => {
+            self.decoded.borrow_mut().insert(page_no, Rc::new(page));
+            (r, Ok(()))
+        }
+        Err(e) => {
+            // Page is NOT put back in the decoded cache — caller must handle or split.
+            (r, Err((e, page)))
+        }
+    }
+}
+```
+
+The `NotEnoughSpaceInPage` error (overfull page → split) is returned together with the owned
+`NodePage` so `split_page` can consume it directly — no extra clone. The caller (`update_page`)
+pattern-matches the error and passes the returned page to `split_page`.
 
 **Recommendation:** introduce `Pager::mutate_node` for item 127 instead of exposing
 `take_decoded_node` directly.
@@ -119,7 +168,7 @@ the caller (`update_page`) handles it by calling `split_page`. The split path it
 ### Invariant 3 — Page repurposing must invalidate the decoded cache
 
 If a NodePage's page number is ever freed and reallocated for a different use (another NodePage,
-or a FreeListPage), the decoded cache would serve the old `Arc<NodePage>` for that page number.
+or a FreeListPage), the decoded cache would serve the old `Rc<NodePage>` for that page number.
 Today this doesn't arise because v1 leaks freed pages (DELETE doesn't reclaim space, DROP TABLE is
 incomplete). But any future page-reclamation path must call:
 
@@ -140,42 +189,40 @@ None.
 
 ---
 
-## 125. `Arc<NodePage>` in decoded cache; updated `write_node_page` (Track 3)
+## 125. `Rc<NodePage>` in decoded cache; updated `write_node_page` (Track 3)
 
 ### What Changes
 
 - `Pager::decoded` changes from `RefCell<HashMap<u32, NodePage>>` to
-  `RefCell<HashMap<u32, Arc<NodePage>>>`.
-- `get_and_decode_node` (renamed `get_decoded_ref`) returns `Ref<'_, NodePage>` via
-  `Ref::map` into the decoded cache HashMap.
-  - Cache hit: returns a `Ref` — zero-copy, no allocation. **Was: full NodePage clone.**
-  - Cache miss: decodes, wraps in `Arc::new`, inserts into cache (no clone of NodePage), then
-    returns a `Ref` into the new cache entry. **Was: `node.clone()` into cache (one clone).**
-  - While any `Ref` is live, `borrow_mut()` on the decoded cache panics — which means
-    `write_node_page` (and `take_decoded_node` used by `mutate_node`) cannot be called,
-    enforcing "no write while holding a read reference" at runtime automatically.
-- `write_node_page` signature changes from `&NodePage` to `Arc<NodePage>`. The `Arc` is stored
+  `RefCell<HashMap<u32, Rc<NodePage>>>`.
+- `get_and_decode_node` returns `Rc<NodePage>` via `Rc::clone` of the cache entry.
+  - Cache hit: returns `Rc::clone` — O(1), no allocation. **Was: full NodePage clone.**
+  - Cache miss: decodes, wraps in `Rc::new`, inserts into cache (no clone of NodePage), then
+    returns `Rc::clone` of the new cache entry. **Was: `node.clone()` into cache (one clone).**
+  - Stale-read enforcement via `Rc::strong_count` assertions in `write_node_page` and
+    `take_decoded_node` (debug builds only — see Invariant 1).
+- `write_node_page` signature changes from `&NodePage` to `Rc<NodePage>`. The `Rc` is stored
   directly in the decoded cache. **Was: `page.clone()` into cache (one full NodePage clone per
   write).** The encoding path (`encode_and_set`) receives `&*page` (`&NodePage`) — no change to
   the serialisation logic.
 - All callers of `get_and_decode_node` updated (see Implementation Approach below).
-- All callers of `write_node_page` updated: pass `Arc::new(owned_page)` instead of `&page`.
+- All callers of `write_node_page` updated: pass `Rc::new(owned_page)` instead of `&page`.
 
 ### Background
 
-`Arc<T>: Deref<Target=T>`, so method calls like `page.search(key)` and `page.leaf()` work on
-`Arc<NodePage>` via auto-deref without any change. The only patterns that need updating are:
+`Rc<T>: Deref<Target=T>`, so method calls like `page.search(key)` and `page.leaf()` work on
+`Rc<NodePage>` via auto-deref without any change. The only patterns that need updating are:
 
-1. **Match-destructure** — `match page { NodePage::Leaf(l) => ... }` cannot move out of `Arc`.
+1. **Match-destructure** — `match page { NodePage::Leaf(l) => ... }` cannot move out of `Rc`.
    Change to `match page.as_ref() { ... }`. `l` and `i` become `&LeafNodePage` /
    `&InteriorNodePage`; all methods called on them take `&self`, so no further changes are needed.
 
 2. **Consuming methods** — `interior(self)`, `split(self)` take ownership. Callers use
-   `Arc::unwrap_or_clone(page)` to get an owned `NodePage` first. Because the decoded cache also
-   holds an `Arc` at these sites, the strong count is 2 and `unwrap_or_clone` always clones. Item
-   127 eliminates that clone by removing the cache entry first.
+   `Rc::unwrap_or_clone(page)` to get an owned `NodePage` first. Because the decoded cache also
+   holds an `Rc` at these sites, the strong count is 2 and `unwrap_or_clone` always clones. Item
+   127 eliminates that clone by removing the cache entry first via `mutate_node`.
 
-`Arc::unwrap_or_clone` is stable since Rust 1.76.
+`Rc::unwrap_or_clone` is stable since Rust 1.76.
 
 ### Implementation Approach
 
@@ -183,27 +230,36 @@ None.
 
 ```rust
 // Field:
-decoded: RefCell<HashMap<u32, Arc<NodePage>>>,
+decoded: RefCell<HashMap<u32, Rc<NodePage>>>,
 
 // get_and_decode_node — cache hit (was page.clone()):
 if let Some(page) = self.decoded.borrow().get(&page_no) {
-    return page.clone();  // Arc::clone() — O(1)
+    return Rc::clone(page);  // O(1) — single integer increment
 }
 
 // get_and_decode_node — cache miss (was node.clone() into cache):
-let node = Arc::new(self.get_and_decode::<NodePage, _>(page_no));
+let node = Rc::new(self.get_and_decode::<NodePage, _>(page_no));
 // fire typed probe on &node ...
-self.decoded.borrow_mut().insert(page_no, node.clone());
+self.decoded.borrow_mut().insert(page_no, Rc::clone(&node));
 node
 ```
 
 **`src/storage/pager.rs` — `write_node_page` (was `&NodePage`, cloning into cache):**
 
 ```rust
-pub fn write_node_page(&mut self, idx: u32, page: Arc<NodePage>) -> Result<(), EncodingError> {
+pub fn write_node_page(&mut self, idx: u32, page: Rc<NodePage>) -> Result<(), EncodingError> {
+    #[cfg(debug_assertions)]
+    if let Some(existing) = self.decoded.borrow().get(&idx) {
+        debug_assert!(
+            Rc::strong_count(existing) == 1,
+            "writing page {} while {} readers still hold a reference",
+            idx,
+            Rc::strong_count(existing) - 1
+        );
+    }
     let result = self.encode_and_set(idx, &*page);  // serialize from &NodePage
     if result.is_ok() {
-        self.decoded.borrow_mut().insert(idx, page);  // store Arc directly — no clone
+        self.decoded.borrow_mut().insert(idx, page);  // store Rc directly — no clone
     }
     result
 }
@@ -215,46 +271,43 @@ which implements `Serialize`.
 **`src/storage/btree.rs` — callers of `write_node_page`:**
 
 Most call sites pass a locally-owned `NodePage` that isn't needed after the write. Change to
-`Arc::new(owned_page)` (moves the local into the Arc — no clone):
+`Rc::new(owned_page)` (moves the local into the Rc — no clone):
 
 ```rust
 // Before:
 self.pager.write_node_page(overfull_idx, &left_half)?;
 
 // After:
-self.pager.write_node_page(overfull_idx, Arc::new(left_half))?;
+self.pager.write_node_page(overfull_idx, Rc::new(left_half))?;
 ```
 
-**`update_page` — split fallback requires the Arc to survive the write attempt:**
+**`update_page` — split fallback:**
 
-`update_page` passes `modified_page` by value to `write_node_page` and, on `NotEnoughSpaceInPage`,
-to `split_page`. With `Arc<NodePage>`, the write attempt must not consume the sole Arc — otherwise
-there's nothing to pass to `split_page`. The fix is to clone the Arc for the write attempt and keep
-the original for the split fallback:
+`update_page` passes `modified_page` by value. With `Rc<NodePage>`, `write_node_page` consumes the
+`Rc`. On `NotEnoughSpaceInPage` the page is gone. The fix: hold the page as `NodePage` (owned, not
+`Rc`), try encoding, then move into `Rc` only on success:
 
 ```rust
-fn update_page(&mut self, modified_page: Arc<NodePage>, stack: Vec<u32>) {
+fn update_page(&mut self, modified_page: NodePage, stack: Vec<u32>) {
     let modified_page_idx = *stack.last().unwrap();
-    // Clone the Arc for the write; keep `modified_page` for the split fallback.
-    let result = self.pager.write_node_page(modified_page_idx, modified_page.clone());
+    let result = self.pager.encode_and_set(modified_page_idx, &modified_page);
     match result {
-        Ok(_) => { /* fire probe */ }
+        Ok(()) => {
+            self.pager.decoded.borrow_mut()
+                .insert(modified_page_idx, Rc::new(modified_page));
+            /* fire probe */
+        }
         Err(EncodingError::NotEnoughSpaceInPage) => {
-            // Arc::try_unwrap succeeds here: write_node_page stored the clone in the
-            // decoded cache, making the refcount 2; but we just replaced the cache entry
-            // with the clone — wait, the clone is now in cache and we hold the original.
-            // unwrap_or_clone to get an owned NodePage for split_page.
-            self.split_page(Arc::unwrap_or_clone(modified_page), stack);
+            // modified_page still owned here — pass directly to split, no clone.
+            self.split_page(modified_page, stack);
         }
         Err(EncodingError::SerializationError(e)) => panic!("{}", e),
     }
 }
 ```
 
-Note: `write_node_page` stores its argument (the cloned Arc) in the decoded cache. The `modified_page`
-Arc held by `update_page` is a separate reference (refcount ≥ 2). `Arc::unwrap_or_clone` on it will
-clone. Item 127's `mutate_node` closure API avoids this by never putting the overfull page into the
-decoded cache before splitting — the write failure returns the page to the caller immediately.
+Note: this is item 125's `update_page`. Item 127 replaces it with `mutate_node` which handles
+the same logic internally.
 
 **`src/storage/btree.rs` — read-only match callers** (`select_leftmost_of_idx`,
 `select_rightmost_of_idx`, etc.):
@@ -279,23 +332,23 @@ match page.as_ref() {
 
 **`src/storage/btree.rs` — `find()` and cursor methods that call `page.search(key)`:**
 
-No change needed. `Arc<NodePage>` auto-derefs to `NodePage`; `search()` takes `&self`.
+No change needed. `Rc<NodePage>` auto-derefs to `NodePage`; `search()` takes `&self`.
 
 **`src/storage/btree.rs` — insert loop (`btree.rs:191`):**
 
-Interior pages visited during GoDown are read-only; the `Arc` is dropped at the end of each
+Interior pages visited during GoDown are read-only; the `Rc` is dropped at the end of each
 iteration — no clone paid. Only the leaf page is mutated:
 
 ```rust
 let top_page = self.pager.get_and_decode_node(top_page_idx);
 match top_page.search(key) {  // via Deref — no clone
     Found(i) => {
-        let mut owned = Arc::unwrap_or_clone(top_page);  // clones — item 127 eliminates this
+        let mut owned = Rc::unwrap_or_clone(top_page);  // clones — item 127 eliminates this
         owned.set_item_at_index(i, cell);
         self.update_page(owned, stack);
     }
     NotPresent(i) => {
-        let mut owned = Arc::unwrap_or_clone(top_page);  // ditto
+        let mut owned = Rc::unwrap_or_clone(top_page);  // ditto
         owned.insert_item_at_index(i, cell);
         self.update_page(owned, stack);
     }
@@ -312,17 +365,17 @@ let mut parent_interior = parent_page.interior().unwrap();
 
 // After:
 let parent_page = self.pager.get_and_decode_node(parent_idx);
-let mut parent_interior = Arc::unwrap_or_clone(parent_page).interior().unwrap();
+let mut parent_interior = Rc::unwrap_or_clone(parent_page).interior().unwrap();
 ```
 
-**`src/storage/cell_reader.rs`** — drop the `Box<NodePage>` wrapper; use `Arc<NodePage>` directly:
+**`src/storage/cell_reader.rs`** — drop the `Box<NodePage>` wrapper; use `Rc<NodePage>` directly:
 
 ```rust
 // Before:
 let node: Box<NodePage> = Box::new(self.pager.get_and_decode_node(continuation));
 
 // After:
-let node: Arc<NodePage> = self.pager.get_and_decode_node(continuation);
+let node: Rc<NodePage> = self.pager.get_and_decode_node(continuation);
 ```
 
 **`src/storage/btree_verify.rs`** and **`src/storage/btree_graph.rs`** — change `match page { ... }` to `match page.as_ref() { ... }` at all 7 call sites. No consuming calls expected.
@@ -344,15 +397,17 @@ All existing `cargo test` tests must pass — this is a refactor with no behavio
 The return type of `get_and_decode_node` and signature of `write_node_page` both change; all
 callers must be updated in one go for the build to succeed.
 
-#### Step 125.1 — Arc decoded cache, updated API, all call sites
+#### Step 125.1 — Rc decoded cache, updated API, all call sites
 
-1. Change `Pager::decoded` field type.
-2. Update `get_and_decode_node` to return `Arc<NodePage>`.
-3. Update `write_node_page` to take `Arc<NodePage>`, store Arc directly.
-4. Update all call sites across `btree.rs`, `cell_reader.rs`, `btree_verify.rs`, `btree_graph.rs`.
-5. `cargo fmt && cargo build && cargo test`.
+1. Change `Pager::decoded` field type to `RefCell<HashMap<u32, Rc<NodePage>>>`.
+2. Update `get_and_decode_node` to return `Rc<NodePage>`.
+3. Update `write_node_page` to take `Rc<NodePage>`, store Rc directly, add `strong_count` assertion.
+4. Update `update_page` in `btree.rs` to hold `NodePage` by value and call `encode_and_set` directly
+   so the owned page is available for `split_page` on `NotEnoughSpaceInPage`.
+5. Update all call sites across `btree.rs`, `cell_reader.rs`, `btree_verify.rs`, `btree_graph.rs`.
+6. `cargo fmt && cargo build && cargo test`.
 
-**Commit:** `storage: cache Arc<NodePage> in decoded cache; write_node_page takes Arc`
+**Commit:** `storage: cache Rc<NodePage> in decoded cache; write_node_page takes Rc`
 
 ---
 
@@ -427,7 +482,7 @@ All existing `cargo test` tests must pass.
 
 ### What Changes
 
-After item 125, mutation paths in `btree.rs` call `Arc::unwrap_or_clone()` before modifying a
+After item 125, mutation paths in `btree.rs` call `Rc::unwrap_or_clone()` before modifying a
 page. Because the decoded cache still holds a reference, the strong count is always 2 and
 `unwrap_or_clone` always clones. This item eliminates that clone and, as described in **Invariant
 2**, enforces the take→mutate→write pairing at the API level via a closure:
@@ -437,15 +492,25 @@ pub fn mutate_node<R>(
     &mut self,
     page_no: u32,
     f: impl FnOnce(&mut NodePage) -> R,
-) -> (R, Result<(), EncodingError>)
+) -> (R, Result<(), (EncodingError, NodePage)>)
 ```
 
-The closure receives `&mut NodePage`. After the closure returns, `mutate_node` wraps the page in
-`Arc::new` (no clone — moves ownership) and writes it back via `write_node_page`. The write-back
-is mandatory and compile-time impossible to omit.
+The closure receives `&mut NodePage`. After the closure returns, `mutate_node` tries to encode the
+page; on success it wraps the page in `Rc::new` and stores it in the decoded cache (no clone — moves
+ownership). On `NotEnoughSpaceInPage`, the owned `NodePage` is returned in the `Err` variant so the
+caller can pass it directly to `split_page` without cloning. The write-back or error-return is
+mandatory and compile-time impossible to omit.
 
-A private `take_decoded_node` is still added internally to `Pager` for use by `mutate_node`; it is
-not exposed publicly.
+A private `take_decoded_node` is added internally to `Pager` for use by `mutate_node`; it is not
+exposed publicly.
+
+**Note on consuming methods in closures:** `interior(self)` and `split(self)` on `NodePage` take
+ownership. Since the closure receives `&mut NodePage`, these cannot be called directly inside a
+`mutate_node` closure. Split and parent-update paths that need to consume the page call
+`mutate_node` with a closure that only performs `insert_child_page` (on `&mut InteriorNodePage` via
+a new `interior_mut(&mut self)` method) or `remove_cell` (on `&mut LeafNodePage` via `leaf_mut`).
+The `split` call itself happens outside `mutate_node`, using the owned `NodePage` returned from the
+error variant. This requires adding `interior_mut` and `leaf_mut` methods to `NodePage`.
 
 ### Background
 
@@ -453,84 +518,141 @@ The complete zero-copy mutation flow after items 125+127:
 
 ```
 mutate_node(idx, |p| { ... })
-  ├─ take_decoded_node(idx)    → Arc (refcount = 1, removed from cache)
-  ├─ Arc::try_unwrap(arc)      → NodePage (zero copy — sole owner)
+  ├─ take_decoded_node(idx)    → Rc (refcount = 1, removed from cache)
+  ├─ Rc::try_unwrap(rc)        → NodePage (zero copy — sole owner)
   ├─ f(&mut page)              → closure mutates page
-  └─ write_node_page(Arc::new(page))  → moves page into Arc (no clone)
-                                       → serialise + store Arc in cache
+  ├─ encode_and_set(idx, &page) → serialise to disk
+  ├─ Ok  → decoded cache insert(Rc::new(page))   — no clone
+  └─ Err → return (r, Err((error, page)))        — page returned to caller
 ```
 
 vs. post-125, pre-127:
 
 ```
-get_and_decode_node(idx)    → Arc (refcount = 2)
-Arc::unwrap_or_clone(arc)   → NodePage (always clones — refcount was 2)
+get_and_decode_node(idx)    → Rc (refcount = 2)
+Rc::unwrap_or_clone(rc)     → NodePage (always clones — refcount was 2)
 mutate page inline
-write_node_page(Arc::new(page))
+update_page(page, stack)    → encode_and_set + cache insert
 ```
 
 ### Implementation Approach
 
+**`src/storage/node.rs` — add mutable accessor methods:**
+
+```rust
+impl NodePage {
+    pub fn interior_mut(&mut self) -> Option<&mut InteriorNodePage> {
+        match self {
+            NodePage::Interior(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    pub fn leaf_mut(&mut self) -> Option<&mut LeafNodePage> {
+        match self {
+            NodePage::Leaf(l) => Some(l),
+            _ => None,
+        }
+    }
+}
+```
+
 **`src/storage/pager.rs`:**
 
 ```rust
-/// Internal: remove decoded cache entry so the caller gets sole Arc ownership.
-fn take_decoded_node(&self, page_no: u32) -> Option<Arc<NodePage>> {
-    self.decoded.borrow_mut().remove(&page_no)
+/// Internal: remove decoded cache entry so the caller gets sole Rc ownership.
+fn take_decoded_node(&self, page_no: u32) -> Option<Rc<NodePage>> {
+    let rc = self.decoded.borrow_mut().remove(&page_no)?;
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        Rc::strong_count(&rc) == 1,
+        "taking page {} for mutation while {} readers hold references",
+        page_no,
+        Rc::strong_count(&rc) - 1
+    );
+    Some(rc)
+}
+
+/// Internal: get Rc from decoded cache, populating from disk if absent.
+fn get_decoded_rc(&self, page_no: u32) -> Rc<NodePage> {
+    self.get_and_decode_node(page_no)
 }
 
 /// Fetch page `page_no`, apply `f` to a mutable reference, then write the result back.
-/// Returns `(closure_result, write_result)`.
-/// `write_result` is `Err(NotEnoughSpaceInPage)` when the page is overfull after mutation;
-/// the caller is responsible for splitting in that case.
+/// Returns `(closure_result, Ok(()))` on success.
+/// Returns `(closure_result, Err((error, page)))` on encoding failure — the owned page
+/// is returned so the caller can split it without cloning.
 pub fn mutate_node<R>(
     &mut self,
     page_no: u32,
     f: impl FnOnce(&mut NodePage) -> R,
-) -> (R, Result<(), EncodingError>) {
-    let arc = self.take_decoded_node(page_no)
-        .unwrap_or_else(|| self.get_decoded_arc(page_no));  // private: returns Arc directly
+) -> (R, Result<(), (EncodingError, NodePage)>) {
+    let rc = self.take_decoded_node(page_no)
+        .unwrap_or_else(|| self.get_decoded_rc(page_no));
     // sole owner after take — try_unwrap always succeeds
-    let mut page = Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone());
+    let mut page = Rc::try_unwrap(rc).unwrap_or_else(|r| (*r).clone());
     let r = f(&mut page);
-    let result = self.write_node_page(page_no, Arc::new(page));
-    (r, result)
+    let result = self.encode_and_set(page_no, &page);
+    match result {
+        Ok(()) => {
+            self.decoded.borrow_mut().insert(page_no, Rc::new(page));
+            (r, Ok(()))
+        }
+        Err(e) => (r, Err((e, page))),
+    }
 }
 ```
 
 **`src/storage/btree.rs` — insert loop:**
 
 ```rust
-// Read via Ref (zero-copy, enforced by RefCell):
-let search_result = self.pager.get_decoded_ref(top_page_idx).search(key);
-// Ref dropped here — borrow released
+let search_result = self.pager.get_and_decode_node(top_page_idx).search(key);
+// Rc dropped here after search returns owned SearchResult
 match search_result {
     Found(i) => {
         let (_, result) = self.pager.mutate_node(top_page_idx, |p| {
             p.set_item_at_index(i, cell);
         });
-        self.handle_write_result(result, top_page_idx, stack);
+        match result {
+            Ok(()) => { /* fire probe */ }
+            Err((EncodingError::NotEnoughSpaceInPage, page)) => {
+                self.split_page(page, stack);
+            }
+            Err((EncodingError::SerializationError(e), _)) => panic!("{}", e),
+        }
     }
     NotPresent(i) => {
         let (_, result) = self.pager.mutate_node(top_page_idx, |p| {
             p.insert_item_at_index(i, cell);
         });
-        self.handle_write_result(result, top_page_idx, stack);
+        // same error handling
     }
     GoDown(_, child) => { stack.push(child); }
 }
 ```
 
-Where `handle_write_result` reads the (now-written) page back from the decoded cache to pass to
-`split_page` on overflow — or no-ops on success.
+**Split path** — parent update uses `interior_mut` inside the closure:
 
-**Split path and delete path** use `mutate_node` in the same pattern: pass a closure that calls
-`interior().unwrap()` + `insert_child_page`, or `remove_cell`, etc.
+```rust
+let (_, result) = self.pager.mutate_node(parent_idx, |p| {
+    p.interior_mut().unwrap().insert_child_page(right_first_key, right_idx);
+});
+// handle result (may recurse into split_page if parent is also overfull)
+```
+
+**Delete path** — uses `leaf_mut` inside the closure:
+
+```rust
+let (_, result) = self.pager.mutate_node(leaf_page_idx, |p| {
+    p.leaf_mut().unwrap().remove_cell(cell_index);
+});
+```
 
 ### Key Files
 
+- `src/storage/node.rs` — add `interior_mut` and `leaf_mut` methods to `NodePage`
 - `src/storage/pager.rs` — add private `take_decoded_node`, public `mutate_node`
-- `src/storage/btree.rs` — replace `Arc::unwrap_or_clone` + inline mutation with `mutate_node` calls at insert, split, and delete sites
+- `src/storage/btree.rs` — replace `Rc::unwrap_or_clone` + inline mutation with `mutate_node` calls at insert, split, and delete sites
 
 ### Tests
 
@@ -540,10 +662,13 @@ All existing `cargo test` tests must pass.
 
 #### Step 127.1 — `mutate_node` closure API + zero-copy mutation sites
 
-1. Add private `Pager::take_decoded_node()` and public `Pager::mutate_node()`.
-2. Replace inline `Arc::unwrap_or_clone` + mutation in the insert loop with `mutate_node`.
-3. Replace split-path and delete-path mutation sites with `mutate_node`.
-4. `cargo fmt && cargo build && cargo test`.
+1. Add `NodePage::interior_mut` and `NodePage::leaf_mut` to `node.rs`.
+2. Add private `Pager::take_decoded_node()` (with `strong_count` assertion) and public
+   `Pager::mutate_node()` returning `(R, Result<(), (EncodingError, NodePage)>)`.
+3. Replace inline `Rc::unwrap_or_clone` + mutation in the insert loop with `mutate_node`.
+4. Replace split-path parent-update with `mutate_node` using `interior_mut`.
+5. Replace delete-path leaf mutation with `mutate_node` using `leaf_mut`.
+6. `cargo fmt && cargo build && cargo test`.
 
 **Commit:** `storage: zero-copy page mutation via Pager::mutate_node closure API`
 
