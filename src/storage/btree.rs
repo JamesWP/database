@@ -111,14 +111,33 @@ const MIN_CELLS_PER_PAGE: usize = 4;
 /// Measured empirically — see `measure_cbor_framing_overhead` in node.rs (actual: 14 bytes).
 const LEAF_PAGE_BASE_FRAMING_BYTES: usize = 15;
 
-/// Conservative CBOR framing overhead per `Cell` (key bytes + struct wrapper overhead).
-/// The key is always 8 bytes (u64 rowid big-endian). Inline value bytes are added on top.
-/// Measured empirically — see `measure_cbor_framing_overhead` in node.rs (actual: 11 bytes).
-const CELL_FRAMING_BYTES: usize = 15;
+/// CBOR framing overhead per `Cell` (key bytes + all CBOR headers), excluding raw value data.
+///
+/// Measured as `cbor_size(cell) - value_len` across CBOR length-prefix tier boundaries
+/// — see `measure_cbor_framing_overhead` in node.rs. Re-tune with:
+///   cargo test measure_cbor_framing -- --nocapture
+///
+/// For data-tree row cells (the only cells whose values can overflow):
+///   keys are always 8-byte u64 rowids — key CBOR header is 1 byte (8 ≤ 23).
+///   Index-tree keys are larger but index values are always empty, so they never
+///   trigger overflow and are not subject to CHUNK_THRESHOLD.
+///
+/// Overhead breakdown (worst case: value ≥ 256 bytes):
+///   1  outer CBOR array header
+///   1  key byte-string header  (8-byte key ≤ 23, so 1-byte CBOR length prefix)
+///   8  key data bytes
+///   3  value byte-string header (value ≥ 256 bytes → 3-byte CBOR length prefix)
+///  ──
+///  13  total
+///
+/// Note: with serde_bytes the key header depends only on key LENGTH (not byte values),
+/// so high-valued key bytes no longer incur a per-byte varint penalty. Only the
+/// value length prefix still requires this tier-based accounting.
+const CELL_FRAMING_BYTES: usize = 13;
 
 /// Maximum inline value bytes stored directly in a `Cell` on a leaf page.
 /// Derived so that `MIN_CELLS_PER_PAGE` cells can always fit on one page.
-/// With PAGE_SIZE=4096: CHUNK_THRESHOLD = (4096 - 15) / 4 - 15 = 1005.
+/// With PAGE_SIZE=4096: CHUNK_THRESHOLD = (4096 - 15) / 4 - 13 = 1007.
 /// Typical SQL rows (< 500 bytes) now store inline with no overflow pages.
 const CHUNK_THRESHOLD: usize = (pager::PAGE_SIZE as usize - LEAF_PAGE_BASE_FRAMING_BYTES)
     / MIN_CELLS_PER_PAGE
