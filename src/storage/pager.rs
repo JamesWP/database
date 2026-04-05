@@ -156,7 +156,7 @@ impl Pager {
             return page.clone();
         }
 
-        // Cache miss: read from disk and insert into cache
+        // Cache miss: read from disk, insert into cache, return a copy
         let mut p = Page::default();
         let content = p.content.as_mut_slice();
 
@@ -164,11 +164,12 @@ impl Pager {
         let offset = PAGE_SIZE * (page_no as u64);
         file.seek(std::io::SeekFrom::Start(offset)).unwrap();
         file.read_exact(content).unwrap();
+        drop(file);
 
         probe!(database, page_read_cache_miss, page_no);
-        self.cache.borrow_mut().insert(page_no, (p.clone(), false));
-
-        p
+        let ret = p.clone();
+        self.cache.borrow_mut().insert(page_no, (p, false));
+        ret
     }
 
     fn get_and_decode<P: Borrow<P> + DeserializeOwned, PageNo: Borrow<u32>>(
@@ -202,20 +203,15 @@ impl Pager {
         node
     }
 
-    pub fn set<P: Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
-        let page_no = *idx.borrow();
-        let page = page.borrow();
-
-        probe!(database, page_write, page_no);
-        // Write through: update cache (clean) and write to disk immediately
-        self.cache
-            .borrow_mut()
-            .insert(page_no, (page.clone(), false));
-
+    pub fn set(&mut self, idx: u32, page: Page) {
+        probe!(database, page_write, idx);
+        // Write through: write to disk first, then move into cache (no clone)
         let mut file = self.file.borrow_mut();
-        let offset = PAGE_SIZE * (page_no as u64);
+        let offset = PAGE_SIZE * (idx as u64);
         file.seek(std::io::SeekFrom::Start(offset)).unwrap();
         file.write_all(&page.content).unwrap();
+        drop(file);
+        self.cache.borrow_mut().insert(idx, (page, false));
     }
 
     pub fn encode_and_set<P: Borrow<P> + Serialize, PageNo: Borrow<u32>>(
@@ -244,7 +240,7 @@ impl Pager {
             _ => {}
         };
 
-        self.set(idx, page);
+        self.set(*idx.borrow(), page);
 
         Ok(())
     }
@@ -430,8 +426,8 @@ mod test {
         page_two_content.content[0] = 20;
         page_two_content.content[20] = 20;
 
-        pager.set(page_one_idx, &page_one_content);
-        pager.set(page_two_idx, &page_two_content);
+        pager.set(page_one_idx, page_one_content);
+        pager.set(page_two_idx, page_two_content);
 
         // Re open file from disk
         let pager = Pager::new(path);
@@ -499,7 +495,7 @@ mod test {
             let mut page_content = pager.get(page_idx);
             page_content.content[0] = 42;
             page_content.content[100] = 99;
-            pager.set(page_idx, &page_content);
+            pager.set(page_idx, page_content);
         }
 
         // Drop the pager, create a new one on the same file
@@ -537,7 +533,7 @@ mod test {
         // Verify we can write to and read from the reused page
         let mut page_content = pager.get(page_d);
         page_content.content[0] = 123;
-        pager.set(page_d, &page_content);
+        pager.set(page_d, page_content);
 
         let read_back = pager.get(page_d);
         assert_eq!(123, read_back.content[0]);
@@ -556,7 +552,7 @@ mod test {
         for i in 0..4096 {
             page_content.content[i] = (i % 256) as u8;
         }
-        pager.set(page_idx, &page_content);
+        pager.set(page_idx, page_content);
 
         // Read it back and verify
         let read_back = pager.get(page_idx);
@@ -772,7 +768,7 @@ mod test {
         let mut page = pager.get(page_idx);
         page.content[0] = 77;
         page.content[255] = 88;
-        pager.set(page_idx, &page);
+        pager.set(page_idx, page);
 
         // Read it back — should be served from cache with the written values
         let read_back = pager.get(page_idx);
@@ -792,7 +788,7 @@ mod test {
 
         let mut page = pager.get(page_idx);
         page.content[42] = 123;
-        pager.set(page_idx, &page);
+        pager.set(page_idx, page);
 
         // Read the same page multiple times
         for _ in 0..10 {
@@ -877,7 +873,7 @@ mod test {
         for (idx, page_no) in [p1, p2, p3].iter().enumerate() {
             let mut page = pager.get(*page_no);
             page.content[0] = (idx + 1) as u8;
-            pager.set(*page_no, &page);
+            pager.set(*page_no, page);
         }
 
         assert_eq!(1, pager.get(p1).content[0]);
