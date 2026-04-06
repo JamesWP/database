@@ -189,17 +189,20 @@ impl Pager {
     /// invalidated automatically on any write through `set`.
     pub fn get_and_decode_node<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Rc<NodePage> {
         let page_no = *idx.borrow();
-        if let Some(page) = self.decoded.borrow().get(&page_no) {
-            return Rc::clone(page);
-        }
-        let node: NodePage = self.get_and_decode(page_no);
-        match &node {
+        let node = if let Some(page) = self.decoded.borrow().get(&page_no) {
+            Rc::clone(page)
+        } else {
+            let node = Rc::new(self.get_and_decode(page_no));
+            self.decoded.borrow_mut().insert(page_no, Rc::clone(&node));
+            node
+        };
+
+        match node.as_ref() {
             NodePage::Leaf(_) => probe!(database, page_read_leaf, page_no),
             NodePage::Interior(_) => probe!(database, page_read_interior, page_no),
             NodePage::OverflowPage(_) => probe!(database, page_read_overflow, page_no),
         }
-        let node = Rc::new(node);
-        self.decoded.borrow_mut().insert(page_no, Rc::clone(&node));
+
         node
     }
 

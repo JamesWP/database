@@ -297,8 +297,6 @@ where
                 .write_node_page(overfull_idx, Rc::new(left_half))
                 .expect("After split, parts are smaller");
 
-            // mutate_node takes the parent from the decoded cache (strong_count == 1)
-            // so Rc::try_unwrap succeeds — zero-copy mutation.
             let parent_idx = stack.pop().unwrap();
             probe!(database, page_write_interior, parent_idx);
             let (_, result) = self.pager.mutate_node(parent_idx, |p| {
