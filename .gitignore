@@ -15,3 +15,7 @@ doc/screenshots/*.checked
 test-out.gif
 test-out.txt
 sakila-schema-stripped.sql
+sakila.db
+perf.data
+.gitignore
+perf-stats.txt
