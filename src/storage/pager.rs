@@ -218,7 +218,7 @@ impl Pager {
         self.cache.borrow_mut().insert(idx, (page, false));
     }
 
-    pub fn encode_and_set<P: Borrow<P> + Serialize, PageNo: Borrow<u32>>(
+    fn encode_and_set<P: Borrow<P> + Serialize, PageNo: Borrow<u32>>(
         &mut self,
         idx: PageNo,
         v: P,
