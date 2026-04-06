@@ -1,4 +1,23 @@
 #!/bin/sh
 set -e
+
+echo "Running fmt before commit..."
+cargo fmt --check
+
 echo "Running tests before commit..."
-cargo test --quiet 2>&1 | tail -5
+output=$(cargo test --quiet 2>&1)
+echo "$output" | grep warning: >/dev/null \
+    && echo THERE ARE WARNINGS! Go fix! && exit 1
+echo "$output" | grep error: >/dev/null \
+    && echo THERE ARE ERRORS! Go fix! && exit 1
+echo "$output" | awk '
+    /test result:/ {
+        failed += $6; 
+        count += $4+$6+$8+$10
+    }
+    END {
+        print count " tests ran; " failed " tests failed"; 
+        if(failed == 0) { exit 1; }
+    }' \
+    && echo THERE ARE TEST FAILURES! Go fix! && exit 1
+exit 0

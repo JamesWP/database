@@ -3001,7 +3001,6 @@ mod tests {
     fn test_insert_unique_index_duplicate_raises_error() {
         use crate::engine::EngineError;
         use crate::planner::IndexMaintenanceInfo;
-        use crate::storage::encode_index_value;
 
         let test = TestDb::default();
         let mut btree: BTree = test.catalog.into();
@@ -3434,27 +3433,6 @@ mod tests {
 
         let yields = run_plan_with_btree(&plan, btree);
         assert_eq!(yields.len(), 0);
-    }
-
-    /// Insert index entries for a table with rows (user_id, amount) where index is on user_id.
-    /// Index key format: [encode_index_value(user_id)][rowid as be_u64]
-    fn insert_index_entries(
-        btree: &mut crate::storage::BTree,
-        index_root: u32,
-        rows: &[(i64, u64)], // (user_id, rowid)
-    ) {
-        use crate::engine::scalarvalue::ScalarValue;
-        use crate::storage::encode_index_value;
-        let mut cursor = btree.open(index_root);
-        let mut c = cursor.open_readwrite();
-        for (i, (user_id, rowid)) in rows.iter().enumerate() {
-            let col_bytes = encode_index_value(&ScalarValue::Integer(*user_id));
-            let rowid_bytes = rowid.to_be_bytes();
-            let mut key = col_bytes;
-            key.extend_from_slice(&rowid_bytes);
-            // Index value is just the primary key (rowid)
-            c.insert_u64(i as u64, key);
-        }
     }
 
     #[test]
