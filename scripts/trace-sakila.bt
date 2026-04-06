@@ -33,8 +33,9 @@ usdt:./target/release/database:database:cbor_row_decode      { @cbor_row_decode+
 
 // ─── USDT: storage / pager ───────────────────────────────────────────────────
 
-usdt:./target/release/database:database:page_read_cache_hit  { @page_read_cache_hit++; @page_read++; }
-usdt:./target/release/database:database:page_read_cache_miss { @page_read_cache_miss++; @page_read++; }
+usdt:./target/release/database:database:page_read            { @page_read++;            }
+usdt:./target/release/database:database:page_read_cache_hit  { @page_read_cache_hit++; }
+usdt:./target/release/database:database:page_read_cache_miss { @page_read_cache_miss++; }
 usdt:./target/release/database:database:page_write           { @page_write++;           }
 usdt:./target/release/database:database:page_read_zero       { @page_read_zero++;       }
 usdt:./target/release/database:database:page_read_freelist   { @page_read_freelist++;   }
@@ -58,6 +59,7 @@ usdt:./target/release/database:database:page_read_overflow   { @page_read_overfl
 usdt:./target/release/database:database:page_write_leaf      { @page_write_leaf++;      }
 usdt:./target/release/database:database:page_write_interior  { @page_write_interior++;  }
 usdt:./target/release/database:database:page_write_zero      { @page_write_zero++;      }
+usdt:./target/release/database:database:page_write_freelist  { @page_write_freelist++;  }
 
 // ─── USDT: B-tree structure ──────────────────────────────────────────────────
 
@@ -147,6 +149,7 @@ interval:s:1 {
     printf("  leaf:             %lld\n", @page_write_leaf);
     printf("  interior:         %lld\n", @page_write_interior);
     printf("  zero_page:        %lld\n", @page_write_zero);
+    printf("  freelist_page:    %lld\n", @page_write_freelist);
     printf("  -- catalog --\n");
     printf("  lookup_table:     %lld\n", @catalog_lookup_table);
     printf("  lookup_rootpage:  %lld\n", @catalog_lookup_by_rootpage);
@@ -194,7 +197,7 @@ END {
     printf("  row_insert:     %lld\n", @row_insert);
     printf("  page_split:     %lld\n", @page_split);
     printf("  overflow_write: %lld\n", @overflow_write);
-    printf("  node_page_clone:%lld\n", @node_page_clone);
+    printf("  node_page_clone: %lld\n", @node_page_clone);
 
     printf("\n  [page reads by type]\n");
     printf("  page_read:      %lld\n", @page_read);
@@ -209,6 +212,7 @@ END {
     printf("  leaf:           %lld\n", @page_write_leaf);
     printf("  interior:       %lld\n", @page_write_interior);
     printf("  zero_page:      %lld\n", @page_write_zero);
+    printf("  freelist_page:  %lld\n", @page_write_freelist);
 
     printf("\n  [catalog]\n");
     printf("  lookup_table:    %lld\n", @catalog_lookup_table);

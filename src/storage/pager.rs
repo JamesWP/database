@@ -140,6 +140,7 @@ impl Pager {
         } else {
             let page = self.get_and_decode(0);
             probe!(database, page_read_zero, 0u32);
+            probe!(database, page_read, 0u32);
             Some(page)
         }
     }
@@ -161,6 +162,7 @@ impl Pager {
             node
         };
 
+        probe!(database, page_read, page_no);
         match node.as_ref() {
             NodePage::Leaf(_) => probe!(database, page_read_leaf, page_no),
             NodePage::Interior(_) => probe!(database, page_read_interior, page_no),
@@ -246,11 +248,13 @@ impl Pager {
                 // Read the free list head page
                 let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
                 probe!(database, page_read_freelist, head_page_no);
+                probe!(database, page_read, head_page_no);
 
                 // Pop a page ID from the list
                 if let Some(page_id) = free_list_page.page_ids.pop() {
                     // Update the free list page
                     self.encode_and_set(head_page_no, &free_list_page).unwrap();
+                    probe!(database, page_write_freelist, head_page_no);
 
                     return page_id;
                 } else {
@@ -285,12 +289,14 @@ impl Pager {
         // If there's a free list head, try to add to it
         if let Some(head_page_no) = zero.free_list_head {
             let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
-            // probe!(database, page_read_freelist, head_page_no);  -- removed: same reason
+            // probe!(database, page_read_freelist, head_page_no);  -- removed: dead code causes invalid ELF note addresses
+            // probe!(database, page_read, head_page_no);           -- removed: same reason
 
             // Check if this page can fit more entries (~1000 is a safe limit)
             if free_list_page.page_ids.len() < 1000 {
                 free_list_page.page_ids.push(idx);
                 self.encode_and_set(head_page_no, &free_list_page).unwrap();
+                // probe!(database, page_write_freelist, head_page_no);  -- removed: dead code causes invalid ELF note addresses
                 return;
             }
         }
@@ -303,6 +309,7 @@ impl Pager {
         };
 
         self.encode_and_set(idx, &new_free_list_page).unwrap();
+        // probe!(database, page_write_freelist, idx);  -- removed: dead code causes invalid ELF note addresses
 
         // Update zero page to point to new head
         zero.free_list_head = Some(idx);
