@@ -19,3 +19,5 @@ sakila.db
 perf.data
 .gitignore
 perf-stats.txt
+
+pager-design/target
