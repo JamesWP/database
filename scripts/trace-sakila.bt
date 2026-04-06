@@ -80,7 +80,7 @@ tracepoint:syscalls:sys_enter_read  /comm == "database"/ {
     @read_start[tid] = nsecs;
     @syscall_reads++;
 }
-tracepoint:syscalls:sys_exit_read   /comm == "database" && @read_start[tid] && (int64)args->ret > 0/ {
+tracepoint:syscalls:sys_exit_read   /comm == "database" && @read_start[tid] != 0 && (int64)args->ret > 0/ {
     @read_lat_us  = hist((nsecs - @read_start[tid]) / 1000);
     @read_bytes  += (uint64)args->ret;
     delete(@read_start[tid]);
@@ -90,7 +90,7 @@ tracepoint:syscalls:sys_enter_write /comm == "database"/ {
     @write_start[tid] = nsecs;
     @syscall_writes++;
 }
-tracepoint:syscalls:sys_exit_write  /comm == "database" && @write_start[tid] && (int64)args->ret > 0/ {
+tracepoint:syscalls:sys_exit_write  /comm == "database" && @write_start[tid] != 0 && (int64)args->ret > 0/ {
     @write_lat_us  = hist((nsecs - @write_start[tid]) / 1000);
     @write_bytes  += (uint64)args->ret;
     delete(@write_start[tid]);
