@@ -14,7 +14,7 @@ pub struct ExprContext<'a> {
 /// Compile a PlanExpr to bytecode.
 ///
 /// `input_regs` contains the registers holding the current row's column values.
-/// For a ColumnRef with index i, we copy from input_regs[i].
+/// For a ColumnRef with index `i`, we copy from `input_regs[i]`.
 ///
 /// Returns the register containing the expression result.
 pub fn compile_expr(expr: &PlanExpr, input_regs: &[Reg], ctx: &mut ExprContext) -> Reg {

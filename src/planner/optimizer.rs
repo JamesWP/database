@@ -98,7 +98,7 @@ pub(super) fn fuse_projects(plan: LogicalPlan) -> LogicalPlan {
     }
 }
 
-/// Substitute ColumnRef(i) → inner_cols[i] recursively within an expression.
+/// Substitute `ColumnRef(i)` → `inner_cols[i]` recursively within an expression.
 fn substitute_column_refs(expr: PlanExpr, inner_cols: &[PlanExpr]) -> PlanExpr {
     match expr {
         PlanExpr::ColumnRef(i) => inner_cols.get(i).cloned().unwrap_or(PlanExpr::ColumnRef(i)),

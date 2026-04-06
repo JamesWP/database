@@ -1003,8 +1003,8 @@ pub fn decode_u64_key(bytes: &[u8]) -> u64 {
 
 /// Encode a single index column value as sortable bytes with a type tag prefix.
 ///
-/// Type tags ensure cross-type ordering: NULL(0x00) < INTEGER(0x01) < REAL(0x02) < TEXT(0x03).
-/// TEXT values are NUL-terminated ([0x03][utf8_bytes][0x00]) so that shorter strings are not
+/// Type tags ensure cross-type ordering: `NULL(0x00) < INTEGER(0x01) < REAL(0x02) < TEXT(0x03)`.
+/// TEXT values are NUL-terminated `([0x03][utf8_bytes][0x00])` so that shorter strings are not
 /// byte-level prefixes of longer strings. This ensures BlobStartsWith can reliably detect
 /// exact column-value equality (e.g. 'a' is not a prefix of 'apple' after NUL termination).
 /// The returned bytes are concatenated with other column encodings to form the full index key.

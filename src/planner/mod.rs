@@ -228,7 +228,7 @@ pub enum LogicalPlan {
     Values { rows: Vec<Vec<Literal>> },
 
     /// Generate a sequence of integers (leaf node, no inputs)
-    /// Useful for testing. Generates rows [start], [start+1], ..., [end-1]
+    /// Useful for testing. Generates rows `[start], [start+1], ..., [end-1]`
     /// Output: single integer column
     #[allow(dead_code)]
     Sequence { start: i64, end: i64 },
