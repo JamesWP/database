@@ -133,6 +133,7 @@ impl Pager {
         file.set_len(PAGE_SIZE * num_pages as u64).unwrap();
     }
 
+    #[inline(never)]
     pub fn get_zero_page(&self) -> Option<ZeroPage> {
         if self.get_file_size_pages() < 1 {
             None

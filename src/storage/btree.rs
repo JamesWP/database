@@ -837,7 +837,6 @@ impl BTree {
         if page_num == 0 {
             // ZeroPage
             let zero = pager.get_zero_page().unwrap();
-            probe!(database, page_read_zero, 0u32);
             println!("{}: {}", "Type".yellow(), "ZeroPage".green());
             println!("{:#?}", zero);
         } else {
