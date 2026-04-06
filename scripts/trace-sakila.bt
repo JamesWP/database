@@ -61,6 +61,7 @@ usdt:./target/release/database:database:page_write_zero      { @page_write_zero+
 
 // ─── USDT: B-tree structure ──────────────────────────────────────────────────
 
+usdt:./target/release/database:database:node_page_clone      { @node_page_clone++;      }
 usdt:./target/release/database:database:row_insert           { @row_insert++;           }
 usdt:./target/release/database:database:page_split           { @page_split++;           }
 usdt:./target/release/database:database:overflow_write       { @overflow_write++;       }
@@ -127,6 +128,7 @@ interval:s:1 {
     printf("  row_insert:       %lld\n", @row_insert);
     printf("  page_split:       %lld\n", @page_split);
     printf("  overflow_write:   %lld\n", @overflow_write);
+    printf("  node_page_clone:  %lld\n", @node_page_clone);
     printf("  -- page reads by type --\n");
     printf("  page_read:        %lld\n", @page_read);
     printf("  leaf:             %lld\n", @page_read_leaf);
@@ -186,6 +188,7 @@ END {
     printf("  row_insert:     %lld\n", @row_insert);
     printf("  page_split:     %lld\n", @page_split);
     printf("  overflow_write: %lld\n", @overflow_write);
+    printf("  node_page_clone:%lld\n", @node_page_clone);
 
     printf("\n  [page reads by type]\n");
     printf("  page_read:      %lld\n", @page_read);

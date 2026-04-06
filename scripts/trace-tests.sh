@@ -76,8 +76,8 @@ BPFTRACE_PID=$!
 sleep 1
 
 if [[ $SAKILA_MODE -eq 1 ]]; then
-    echo "==> Running: make test-sakila (5s timeout)"
-    timeout 5 make test-sakila || true
+    echo "==> Running: make test-sakila"
+    make test-sakila || true
 else
     echo "==> Running: cargo test ${CARGO_TEST_SUITE[*]:-} $*"
     cargo test "${CARGO_TEST_SUITE[@]}" "$@" || true

@@ -1,14 +1,26 @@
 use std::cmp::Ordering::{Equal, Greater, Less};
 
+use probe::probe;
 use serde::{Deserialize, Serialize};
 
 use super::cell::{Cell, Key};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum NodePage {
     Leaf(LeafNodePage),
     Interior(InteriorNodePage),
     OverflowPage(OverflowPage),
+}
+
+impl Clone for NodePage {
+    fn clone(&self) -> Self {
+        probe!(database, node_page_clone);
+        match self {
+            NodePage::Leaf(l) => NodePage::Leaf(l.clone()),
+            NodePage::Interior(i) => NodePage::Interior(i.clone()),
+            NodePage::OverflowPage(o) => NodePage::OverflowPage(o.clone()),
+        }
+    }
 }
 
 impl NodePage {

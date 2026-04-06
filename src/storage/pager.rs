@@ -102,6 +102,7 @@ pub enum EncodingError {
     SerializationError(String),
 }
 
+// Public API
 impl Pager {
     pub fn new(path: &str) -> Pager {
         let file = OpenOptions::new()
@@ -142,45 +143,6 @@ impl Pager {
         }
     }
 
-    fn set_zero_page(&mut self, zero: ZeroPage) {
-        self.encode_and_set(0, zero).unwrap();
-        probe!(database, page_write_zero, 0u32);
-    }
-
-    fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
-        let page_no = *idx.borrow();
-
-        // Cache hit: return a copy of the cached page
-        if let Some((page, _dirty)) = self.cache.borrow().get(&page_no) {
-            probe!(database, page_read_cache_hit, page_no);
-            return page.clone();
-        }
-
-        // Cache miss: read from disk, insert into cache, return a copy
-        let mut p = Page::default();
-        let content = p.content.as_mut_slice();
-
-        let mut file = self.file.borrow_mut();
-        let offset = PAGE_SIZE * (page_no as u64);
-        file.seek(std::io::SeekFrom::Start(offset)).unwrap();
-        file.read_exact(content).unwrap();
-        drop(file);
-
-        probe!(database, page_read_cache_miss, page_no);
-        let ret = p.clone();
-        self.cache.borrow_mut().insert(page_no, (p, false));
-        ret
-    }
-
-    fn get_and_decode<P: Borrow<P> + DeserializeOwned, PageNo: Borrow<u32>>(
-        &self,
-        idx: PageNo,
-    ) -> P {
-        let p = self.get(idx);
-        probe!(database, cbor_page_decode);
-        ciborium::de::from_reader(&p.content[..]).unwrap()
-    }
-
     /// Decode a page as a `NodePage`, firing the appropriate typed USDT probe
     /// (`page_read_leaf`, `page_read_interior`, or `page_read_overflow`) in one
     /// place rather than at every call site. This keeps probe site counts low
@@ -207,48 +169,6 @@ impl Pager {
         node
     }
 
-    fn set(&mut self, idx: u32, page: Page) {
-        probe!(database, page_write, idx);
-        // Write through: write to disk first, then move into cache (no clone)
-        let mut file = self.file.borrow_mut();
-        let offset = PAGE_SIZE * (idx as u64);
-        file.seek(std::io::SeekFrom::Start(offset)).unwrap();
-        file.write_all(&page.content).unwrap();
-        drop(file);
-        self.cache.borrow_mut().insert(idx, (page, false));
-    }
-
-    fn encode_and_set<P: Borrow<P> + Serialize, PageNo: Borrow<u32>>(
-        &mut self,
-        idx: PageNo,
-        v: P,
-    ) -> Result<(), EncodingError> {
-        let mut page = Page::default();
-        probe!(database, cbor_page_encode);
-        let result = ciborium::ser::into_writer(v.borrow(), &mut &mut page.content[..]);
-
-        match result {
-            Err(e) => {
-                // CBOR serialization errors typically indicate buffer overflow or data issues
-                let err_str = e.to_string();
-                if err_str.contains("failed to write whole buffer")
-                    || err_str.contains("write zero")
-                {
-                    return Err(EncodingError::NotEnoughSpaceInPage);
-                }
-                return Err(EncodingError::SerializationError(format!(
-                    "CBOR encoding failed: {}",
-                    e
-                )));
-            }
-            _ => {}
-        };
-
-        self.set(*idx.borrow(), page);
-
-        Ok(())
-    }
-
     /// Encode a `NodePage` to disk and populate the decoded cache (write-through).
     /// Prefer this over `encode_and_set` for all NodePage writes so that a
     /// subsequent read of the same page is always a cache hit.
@@ -267,20 +187,6 @@ impl Pager {
             self.decoded.borrow_mut().insert(idx, page);
         }
         result
-    }
-
-    /// Remove the decoded cache entry and return sole Rc ownership to the caller.
-    /// The strong_count assertion ensures no other caller is still holding a reference.
-    fn take_decoded_node(&self, page_no: u32) -> Option<Rc<NodePage>> {
-        let rc = self.decoded.borrow_mut().remove(&page_no)?;
-        #[cfg(debug_assertions)]
-        debug_assert!(
-            Rc::strong_count(&rc) == 1,
-            "taking page {} for mutation while {} callers hold references",
-            page_no,
-            Rc::strong_count(&rc) - 1
-        );
-        Some(rc)
     }
 
     /// Fetch page `page_no`, apply `f` to a mutable reference, then write the result back.
@@ -442,6 +348,104 @@ impl Pager {
                 println!("{message}: Page {i}: {node_page:?}");
             }
         }
+    }
+}
+
+// Private API
+impl Pager {
+    fn set_zero_page(&mut self, zero: ZeroPage) {
+        self.encode_and_set(0, zero).unwrap();
+        probe!(database, page_write_zero, 0u32);
+    }
+
+    fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
+        let page_no = *idx.borrow();
+
+        // Cache hit: return a copy of the cached page
+        if let Some((page, _dirty)) = self.cache.borrow().get(&page_no) {
+            probe!(database, page_read_cache_hit, page_no);
+            return page.clone();
+        }
+
+        // Cache miss: read from disk, insert into cache, return a copy
+        let mut p = Page::default();
+        let content = p.content.as_mut_slice();
+
+        let mut file = self.file.borrow_mut();
+        let offset = PAGE_SIZE * (page_no as u64);
+        file.seek(std::io::SeekFrom::Start(offset)).unwrap();
+        file.read_exact(content).unwrap();
+        drop(file);
+
+        probe!(database, page_read_cache_miss, page_no);
+        let ret = p.clone();
+        self.cache.borrow_mut().insert(page_no, (p, false));
+        ret
+    }
+
+    fn get_and_decode<P: Borrow<P> + DeserializeOwned, PageNo: Borrow<u32>>(
+        &self,
+        idx: PageNo,
+    ) -> P {
+        let p = self.get(idx);
+        probe!(database, cbor_page_decode);
+        ciborium::de::from_reader(&p.content[..]).unwrap()
+    }
+
+    fn set(&mut self, idx: u32, page: Page) {
+        probe!(database, page_write, idx);
+        // Write through: write to disk first, then move into cache (no clone)
+        let mut file = self.file.borrow_mut();
+        let offset = PAGE_SIZE * (idx as u64);
+        file.seek(std::io::SeekFrom::Start(offset)).unwrap();
+        file.write_all(&page.content).unwrap();
+        drop(file);
+        self.cache.borrow_mut().insert(idx, (page, false));
+    }
+
+    fn encode_and_set<P: Borrow<P> + Serialize, PageNo: Borrow<u32>>(
+        &mut self,
+        idx: PageNo,
+        v: P,
+    ) -> Result<(), EncodingError> {
+        let mut page = Page::default();
+        probe!(database, cbor_page_encode);
+        let result = ciborium::ser::into_writer(v.borrow(), &mut &mut page.content[..]);
+
+        match result {
+            Err(e) => {
+                // CBOR serialization errors typically indicate buffer overflow or data issues
+                let err_str = e.to_string();
+                if err_str.contains("failed to write whole buffer")
+                    || err_str.contains("write zero")
+                {
+                    return Err(EncodingError::NotEnoughSpaceInPage);
+                }
+                return Err(EncodingError::SerializationError(format!(
+                    "CBOR encoding failed: {}",
+                    e
+                )));
+            }
+            _ => {}
+        };
+
+        self.set(*idx.borrow(), page);
+
+        Ok(())
+    }
+
+    /// Remove the decoded cache entry and return sole Rc ownership to the caller.
+    /// The strong_count assertion ensures no other caller is still holding a reference.
+    fn take_decoded_node(&self, page_no: u32) -> Option<Rc<NodePage>> {
+        let rc = self.decoded.borrow_mut().remove(&page_no)?;
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            Rc::strong_count(&rc) == 1,
+            "taking page {} for mutation while {} callers hold references",
+            page_no,
+            Rc::strong_count(&rc) - 1
+        );
+        Some(rc)
     }
 }
 
