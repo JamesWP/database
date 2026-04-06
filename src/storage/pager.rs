@@ -147,7 +147,7 @@ impl Pager {
         probe!(database, page_write_zero, 0u32);
     }
 
-    pub fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
+    fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
         let page_no = *idx.borrow();
 
         // Cache hit: return a copy of the cached page
@@ -189,8 +189,9 @@ impl Pager {
     /// invalidated automatically on any write through `set`.
     pub fn get_and_decode_node<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Rc<NodePage> {
         let page_no = *idx.borrow();
-        let node = if let Some(page) = self.decoded.borrow().get(&page_no) {
-            Rc::clone(page)
+        let cached = self.decoded.borrow().get(&page_no).map(Rc::clone);
+        let node = if let Some(page) = cached {
+            page
         } else {
             let node = Rc::new(self.get_and_decode(page_no));
             self.decoded.borrow_mut().insert(page_no, Rc::clone(&node));
@@ -206,7 +207,7 @@ impl Pager {
         node
     }
 
-    pub fn set(&mut self, idx: u32, page: Page) {
+    fn set(&mut self, idx: u32, page: Page) {
         probe!(database, page_write, idx);
         // Write through: write to disk first, then move into cache (no clone)
         let mut file = self.file.borrow_mut();
