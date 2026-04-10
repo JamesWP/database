@@ -240,6 +240,38 @@ content, the next `read` is a clean miss and decodes from the new bytes.
 | Write a freshly constructed page | `write` directly — no read needed |
 | Need to hold node reference across `allocate` | Not possible with `read`; use `take` |
 
+### Schema cache ownership
+
+`BTree` owns a decoded schema cache — a `HashMap<String, TableSchema>` (or
+similar) that maps table and index names to their parsed definitions. This
+avoids re-parsing catalog cell bytes on every query plan.
+
+`NodePageStore` provides coherent page-level caching for all pages, including
+catalog pages. The catalog is a B-tree rooted at a well-known page and its
+`NodePage`s are cached identically to user data pages — there is no separate
+raw-byte cache for catalog pages.
+
+The schema cache sits one level above `NodePageStore`, owned by `BTree`. It is
+invalidated **explicitly at DDL call sites** (CREATE TABLE, DROP TABLE, CREATE
+INDEX, DROP INDEX). These are the only points at which catalog pages are
+written, and `BTree` controls all of them, so the invalidation point is always
+reachable and always known.
+
+This is a convention enforced by code structure, not the type system. The
+current implementation diverges from this — the existing pager has a separate
+decoded `NodePage` cache inside `Pager` alongside the raw page cache, and the
+schema cache is scattered. The new design collapses this to:
+
+```
+BTree         — owns schema cache (TableSchema, IndexSchema, …)
+NodePageStore — owns the single NodePage cache (all pages, including catalog)
+Pager         — raw I/O only, no caching
+```
+
+A write to any catalog page goes through `NodePageStore::write`, which keeps
+the `NodePage` cache coherent. The `BTree` DDL path then explicitly invalidates
+the schema cache. No other code path writes catalog pages.
+
 ### Where clones remain unavoidable
 
 One case: saving a cursor key before an insert for `RequiresSeek` repositioning.
