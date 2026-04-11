@@ -1,9 +1,9 @@
 // SQL test runner helpers - used by tests and update-sql-tests binary
 // This module is public but intended for internal testing use only
 
-use crate::catalog::Catalog;
 use crate::db::{execute, ExecuteResult};
 use crate::engine::scalarvalue::ScalarValue;
+use crate::storage::BTree;
 use std::fs;
 use std::path::PathBuf;
 
@@ -52,7 +52,7 @@ pub fn parse_sql_test_file(content: &str) -> Vec<SqlStatement> {
 }
 
 /// Execute a single SQL statement against catalog, return output lines
-fn execute_statement(sql: &str, catalog: &mut Catalog) -> Vec<String> {
+fn execute_statement(sql: &str, catalog: &mut BTree) -> Vec<String> {
     match execute(sql, catalog) {
         Ok(result) => match result {
             ExecuteResult::CreateTable { table_name } => {
@@ -84,7 +84,7 @@ fn execute_statement(sql: &str, catalog: &mut Catalog) -> Vec<String> {
 fn execute_sql_script_parsed(statements: &[SqlStatement]) -> Vec<Vec<String>> {
     let temp_file = tempfile::NamedTempFile::new().unwrap();
     let temp_path = temp_file.path().to_str().unwrap();
-    let mut catalog = Catalog::create(temp_path);
+    let mut catalog = BTree::new(temp_path);
 
     statements
         .iter()

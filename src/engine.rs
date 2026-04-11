@@ -1485,7 +1485,7 @@ mod test {
     #[test]
     fn test_btree_open() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
         {
             let mut cursor = btree.open(root);
@@ -1532,7 +1532,7 @@ mod test {
     #[test]
     fn test_read_all_data() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1584,7 +1584,7 @@ mod test {
     #[test]
     fn test_read_cursor_string_values() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1651,7 +1651,7 @@ mod test {
     #[test]
     fn test_engine_with_program_simple() {
         let test = TestDb::default();
-        let btree: BTree = test.catalog.into();
+        let btree = test.btree;
 
         let r0 = Reg::new(0);
         let ops = [
@@ -1670,7 +1670,7 @@ mod test {
     #[test]
     fn test_engine_with_program_btree_scan() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         // Insert test data
@@ -1717,7 +1717,7 @@ mod test {
     #[test]
     fn test_engine_run_empty_table() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
         // No data inserted - empty table
 
@@ -1745,7 +1745,7 @@ mod test {
     #[test]
     fn test_write_cursor_and_read_back() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let r_cursor = Reg::new(0);
@@ -1790,7 +1790,7 @@ mod test {
     #[test]
     fn test_move_last_and_read_key() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         // Pre-populate with some data
@@ -1835,7 +1835,7 @@ mod test {
     #[test]
     fn test_write_cursor_on_empty_table() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let r_cursor = Reg::new(0);
@@ -1868,7 +1868,7 @@ mod test {
     #[test]
     fn test_engine_run_multiple_yields() {
         let test = TestDb::default();
-        let btree: BTree = test.catalog.into();
+        let btree = test.btree;
 
         let r0 = Reg::new(0);
         let ops = [
@@ -1893,7 +1893,7 @@ mod test {
     #[test]
     fn test_move_cursor_find() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         // Insert some test data
@@ -1976,7 +1976,7 @@ mod test {
             Operation::Halt,
         ];
 
-        let mut engine = Engine::with_program(&ops, 3, TestDb::default().catalog.into());
+        let mut engine = Engine::with_program(&ops, 3, TestDb::default().btree);
         let yields = engine.run_with_limit(100);
 
         // Rows should come out in sorted order (ascending)
@@ -2026,7 +2026,7 @@ mod test {
             Operation::Halt,                       // addr 18
         ];
 
-        let mut engine = Engine::with_program(&ops, 3, TestDb::default().catalog.into());
+        let mut engine = Engine::with_program(&ops, 3, TestDb::default().btree);
         let yields = engine.run_with_limit(100);
 
         // Should yield 6 rows total: 3 from first pass + 3 from second pass
@@ -2054,7 +2054,7 @@ mod test {
         use crate::test::TestDb;
 
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         // Insert test data: keys 10, 20, 30 with values [30], [10], [20]
@@ -2137,7 +2137,7 @@ mod test {
         use crate::test::TestDb;
 
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         // Insert test data
@@ -2226,7 +2226,7 @@ mod test {
     fn test_blob_prefix_le_at_bound() {
         // BlobPrefixLe: key == bound → in range (true), i.e. <= is satisfied
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2269,7 +2269,7 @@ mod test {
     fn test_blob_prefix_le_exceeded() {
         // BlobPrefixLe: key > bound → out of range (false)
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2314,7 +2314,7 @@ mod test {
     fn test_blob_prefix_lt_at_bound() {
         // BlobPrefixLt: key == bound → out of range (false), strict less-than not satisfied
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2355,7 +2355,7 @@ mod test {
     fn test_read_current_key_and_decode() {
         // ReadCurrentKey + BlobSliceTail + DecodeU64Key extracts the rowid from an index key
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let rowid: u64 = 42;

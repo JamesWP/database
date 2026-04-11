@@ -1,6 +1,6 @@
 mod repl;
 
-use database::catalog::Catalog;
+use database::storage::BTree;
 use repl::{Repl, SharedState};
 
 fn main() {
@@ -51,8 +51,8 @@ fn main() {
 
     let db_path = db_path.canonicalize().unwrap();
 
-    let catalog = Catalog::create(db_path.to_str().unwrap());
-    let shared = SharedState::new(db_path.clone(), catalog);
+    let btree = BTree::new(db_path.to_str().unwrap());
+    let shared = SharedState::new(db_path.clone(), btree);
 
     let mut repl = Repl::new(shared);
 

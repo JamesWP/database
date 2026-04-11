@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::catalog::Catalog;
 use crate::frontend::ast;
+use crate::storage::BTree;
 
 use schema::resolve_table;
 
@@ -59,7 +59,7 @@ impl ColumnResolver for SelectResolver<'_> {
 
 pub(crate) fn plan_select(
     select: ast::SelectStatement,
-    catalog: &Catalog,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     if select.joins.is_empty() {
         plan_select_single(select, catalog)
@@ -71,7 +71,7 @@ pub(crate) fn plan_select(
 /// Plan a SELECT with no joins (single-table path).
 fn plan_select_single(
     select: ast::SelectStatement,
-    catalog: &Catalog,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     // 1. Extract table info from FROM clause
     let (table_name, table_ref) = extract_table_info(&select.from)?;
@@ -139,7 +139,7 @@ fn plan_select_single(
 /// Plan a SELECT with one or more JOINs.
 fn plan_select_joined(
     select: ast::SelectStatement,
-    catalog: &Catalog,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     // Support exactly one join for now
     if select.joins.len() != 1 {
@@ -490,8 +490,8 @@ mod tests {
     /// Create a test database with a "users" table (id, name, age) registered in the catalog.
     fn make_users_db() -> (TestDb, u32) {
         let mut test = TestDb::default();
-        let users_root = test.catalog.btree_mut().create_tree();
-        test.catalog.insert_entry(
+        let users_root = test.btree.create_tree();
+        test.btree.insert_entry(
             "table",
             "users",
             "users",
@@ -512,7 +512,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT id, name FROM users");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
@@ -533,7 +533,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT name FROM users WHERE age > 21");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Filter {
@@ -561,7 +561,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT name FROM users LIMIT 10");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Limit {
             input: Box::new(LogicalPlan::Project {
@@ -584,7 +584,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT * FROM users");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
@@ -606,8 +606,8 @@ mod tests {
     fn test_select_star_multi_column() {
         // Create table with 5 columns
         let mut test = TestDb::default();
-        let root = test.catalog.btree_mut().create_tree();
-        test.catalog.insert_entry(
+        let root = test.btree.create_tree();
+        test.btree.insert_entry(
             "table",
             "data",
             "data",
@@ -616,7 +616,7 @@ mod tests {
         );
 
         let stmt = parse_sql("SELECT * FROM data");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
@@ -641,7 +641,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT *, 999 FROM users");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
@@ -665,7 +665,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT 999, * FROM users");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
@@ -689,7 +689,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT *, age + 10 FROM users");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
@@ -718,7 +718,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT id FROM nonexistent");
 
-        let result = plan(stmt, &test.catalog);
+        let result = plan(stmt, &test.btree);
 
         assert_eq!(
             result,
@@ -732,7 +732,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT nonexistent FROM users");
 
-        let result = plan(stmt, &test.catalog);
+        let result = plan(stmt, &test.btree);
 
         assert_eq!(
             result,
@@ -748,7 +748,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT NULL FROM users");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
@@ -767,7 +767,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("SELECT id, NULL, name FROM users");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
@@ -793,7 +793,7 @@ mod tests {
     fn test_plan_having_count_star() {
         let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT name, COUNT(*) FROM users GROUP BY name HAVING COUNT(*) > 3");
-        let result = plan(stmt, &test.catalog).expect("Planning failed");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
         // Walk to find the Aggregate node
         fn find_aggregate(plan: &LogicalPlan) -> Option<&LogicalPlan> {
             match plan {
@@ -817,7 +817,7 @@ mod tests {
     fn test_plan_having_without_group_by_errors() {
         let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT id FROM users HAVING COUNT(*) > 1");
-        let err = plan(stmt, &test.catalog).expect_err("Expected planning error");
+        let err = plan(stmt, &test.btree).expect_err("Expected planning error");
         assert!(matches!(err, PlanError::InvalidHaving(_)));
     }
 
@@ -831,7 +831,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT name, age FROM users ORDER BY age");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning should succeed");
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
 
         // Check structure: Scan -> Project -> Sort
         if let LogicalPlan::Sort { input, sort_keys } = plan {
@@ -863,7 +863,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT name FROM users ORDER BY age");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning should succeed");
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
 
         // Check structure: Scan -> Project(name, age) -> Sort -> Project(name)
         if let LogicalPlan::Project { input, columns } = plan {
@@ -914,7 +914,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT name FROM users ORDER BY age DESC, name ASC");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning should succeed");
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
 
         // Should have final projection to remove age
         if let LogicalPlan::Project { input, .. } = plan {
@@ -942,7 +942,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("SELECT upper(name) FROM users ORDER BY age");
 
-        let plan = plan(stmt, &test.catalog).expect("Planning should succeed");
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
 
         // Should have structure: Scan -> Project(upper(name), age) -> Sort -> Project(upper(name))
         if let LogicalPlan::Project { input, columns } = plan {
@@ -992,8 +992,8 @@ mod tests {
         let mut test = TestDb::default();
 
         // Create departments table (id, name)
-        let dept_root = test.catalog.btree_mut().create_tree();
-        test.catalog.insert_entry(
+        let dept_root = test.btree.create_tree();
+        test.btree.insert_entry(
             "table",
             "departments",
             "departments",
@@ -1002,8 +1002,8 @@ mod tests {
         );
 
         // Create employees table (id, name, dept_id)
-        let emp_root = test.catalog.btree_mut().create_tree();
-        test.catalog.insert_entry(
+        let emp_root = test.btree.create_tree();
+        test.btree.insert_entry(
             "table",
             "employees",
             "employees",
@@ -1015,7 +1015,7 @@ mod tests {
         let stmt = parse_sql(
             "SELECT e.name, d.name FROM employees AS e JOIN departments AS d ON e.dept_id = d.id",
         );
-        let plan = plan(stmt, &test.catalog).expect("Planning should succeed");
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
 
         // Verify plan structure: Project { Join { Scan(employees), Scan(departments), ... }, ... }
         if let LogicalPlan::Project { input, columns } = plan {
@@ -1061,18 +1061,18 @@ mod tests {
 
         // Create table and index
         let sql_table = "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)";
-        let users_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let users_root = test.btree.create_tree();
+        test.btree
             .insert_entry("table", "users", "users", users_root, sql_table);
 
         let sql_index = "CREATE INDEX idx_age ON users(age)";
-        let index_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let index_root = test.btree.create_tree();
+        test.btree
             .insert_entry("index", "idx_age", "users", index_root, sql_index);
 
         // Query that should use index
         let stmt = parse_sql("SELECT name FROM users WHERE age = 30");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         match plan {
             LogicalPlan::Project { input, .. } => match *input {
@@ -1106,18 +1106,18 @@ mod tests {
         let mut test = TestDb::default();
 
         let sql_table = "CREATE TABLE data (id INTEGER, value INTEGER)";
-        let data_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let data_root = test.btree.create_tree();
+        test.btree
             .insert_entry("table", "data", "data", data_root, sql_table);
 
         let sql_index = "CREATE INDEX idx_value ON data(value)";
-        let index_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let index_root = test.btree.create_tree();
+        test.btree
             .insert_entry("index", "idx_value", "data", index_root, sql_index);
 
         // Test greater than
         let stmt = parse_sql("SELECT id FROM data WHERE value > 20");
-        let p = plan(stmt, &test.catalog).expect("Planning failed");
+        let p = plan(stmt, &test.btree).expect("Planning failed");
         match p {
             LogicalPlan::Project { input, .. } => match *input {
                 LogicalPlan::RowidLookup {
@@ -1146,7 +1146,7 @@ mod tests {
 
         // Test range with AND
         let stmt = parse_sql("SELECT id FROM data WHERE value >= 10 AND value <= 40");
-        let p = plan(stmt, &test.catalog).expect("Planning failed");
+        let p = plan(stmt, &test.btree).expect("Planning failed");
         match p {
             LogicalPlan::Project { input, .. } => match *input {
                 LogicalPlan::RowidLookup { input, .. } => match *input {
@@ -1171,19 +1171,19 @@ mod tests {
         let mut test = TestDb::default();
 
         let sql_table = "CREATE TABLE events (id INTEGER, year INTEGER, month INTEGER)";
-        let root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let root = test.btree.create_tree();
+        test.btree
             .insert_entry("table", "events", "events", root, sql_table);
 
         // Multi-column index on (year, month)
         let sql_index = "CREATE INDEX idx_year_month ON events(year, month)";
-        let index_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let index_root = test.btree.create_tree();
+        test.btree
             .insert_entry("index", "idx_year_month", "events", index_root, sql_index);
 
         // Query on first column should use the index
         let stmt = parse_sql("SELECT id FROM events WHERE year = 2024");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         match plan {
             LogicalPlan::Project { input, .. } => match *input {
@@ -1212,19 +1212,19 @@ mod tests {
         let mut test = TestDb::default();
 
         let sql_table = "CREATE TABLE events (id INTEGER, year INTEGER, month INTEGER)";
-        let root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let root = test.btree.create_tree();
+        test.btree
             .insert_entry("table", "events", "events", root, sql_table);
 
         // Multi-column index on (year, month) - only second column referenced
         let sql_index = "CREATE INDEX idx_year_month ON events(year, month)";
-        let index_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let index_root = test.btree.create_tree();
+        test.btree
             .insert_entry("index", "idx_year_month", "events", index_root, sql_index);
 
         // Query on second column should NOT use the index (falls back to table scan)
         let stmt = parse_sql("SELECT id FROM events WHERE month = 6");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         // Should NOT contain IndexScan (uses table scan + filter instead)
         fn contains_index_scan(p: &LogicalPlan) -> bool {
@@ -1248,12 +1248,12 @@ mod tests {
         let mut test = TestDb::default();
 
         let sql_table = "CREATE TABLE colors (id INTEGER, category TEXT)";
-        let colors_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let colors_root = test.btree.create_tree();
+        test.btree
             .insert_entry("table", "colors", "colors", colors_root, sql_table);
 
         let stmt = parse_sql("SELECT DISTINCT category FROM colors");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         // Plan should be: Distinct { Project { Scan } }
         match plan {
@@ -1277,12 +1277,12 @@ mod tests {
     fn make_btree_with_index_on_age() -> (TestDb,) {
         let mut test = TestDb::default();
         let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
-        let users_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let users_root = test.btree.create_tree();
+        test.btree
             .insert_entry("table", "users", "users", users_root, sql_table);
         let sql_index = "CREATE INDEX idx_age ON users(age)";
-        let index_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let index_root = test.btree.create_tree();
+        test.btree
             .insert_entry("index", "idx_age", "users", index_root, sql_index);
         (test,)
     }
@@ -1302,7 +1302,7 @@ mod tests {
     fn test_sort_elided_for_index_scan() {
         let (test,) = make_btree_with_index_on_age();
         let stmt = parse_sql("SELECT id FROM users WHERE age > 20 ORDER BY age");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
         assert!(
             !plan_contains_sort(&plan),
             "expected sort to be elided, got:\n{:#?}",
@@ -1314,7 +1314,7 @@ mod tests {
     fn test_sort_not_elided_for_desc() {
         let (test,) = make_btree_with_index_on_age();
         let stmt = parse_sql("SELECT id FROM users WHERE age > 20 ORDER BY age DESC");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
         assert!(plan_contains_sort(&plan), "DESC should not be elided");
     }
 
@@ -1322,7 +1322,7 @@ mod tests {
     fn test_sort_not_elided_for_different_column() {
         let (test,) = make_btree_with_index_on_age();
         let stmt = parse_sql("SELECT id FROM users WHERE age > 20 ORDER BY id");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
         assert!(
             plan_contains_sort(&plan),
             "non-indexed column should not be elided"
@@ -1336,16 +1336,16 @@ mod tests {
 
     fn make_join_db() -> (TestDb, u32, u32) {
         let mut test = TestDb::default();
-        let orders_root = test.catalog.btree_mut().create_tree();
-        test.catalog.insert_entry(
+        let orders_root = test.btree.create_tree();
+        test.btree.insert_entry(
             "table",
             "orders",
             "orders",
             orders_root,
             "CREATE TABLE orders (id INTEGER, user_id INTEGER, amount INTEGER)",
         );
-        let users_root = test.catalog.btree_mut().create_tree();
-        test.catalog.insert_entry(
+        let users_root = test.btree.create_tree();
+        test.btree.insert_entry(
             "table",
             "users",
             "users",
@@ -1361,7 +1361,7 @@ mod tests {
         let stmt = parse_sql(
             "SELECT orders.id FROM orders JOIN users ON orders.user_id = users.id LIMIT 5",
         );
-        let result = plan(stmt, &test.catalog).expect("Planning failed");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
 
         // Top-level node must be Limit
         match result {
@@ -1394,7 +1394,7 @@ mod tests {
         let stmt = parse_sql(
             "SELECT DISTINCT orders.user_id FROM orders JOIN users ON orders.user_id = users.id",
         );
-        let result = plan(stmt, &test.catalog).expect("Planning failed");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
 
         // Top-level node must be Distinct
         assert!(
@@ -1409,7 +1409,7 @@ mod tests {
         let stmt = parse_sql(
             "SELECT orders.id, users.name FROM orders JOIN users ON orders.user_id = users.id ORDER BY orders.id",
         );
-        let result = plan(stmt, &test.catalog).expect("Planning failed");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
 
         // Top-level node must be Sort
         assert!(

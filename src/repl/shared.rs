@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use database::catalog::Catalog;
+use database::storage::BTree;
 
 /// State shared across all modes
 pub struct SharedState {
-    /// The Catalog (schema + BTree storage)
-    pub btree: Box<Catalog>,
+    /// The BTree (schema + storage)
+    pub btree: Box<BTree>,
 
     /// Database file path
     #[allow(dead_code)]
@@ -13,9 +13,9 @@ pub struct SharedState {
 }
 
 impl SharedState {
-    pub fn new(db_path: PathBuf, catalog: Catalog) -> Self {
+    pub fn new(db_path: PathBuf, btree: BTree) -> Self {
         SharedState {
-            btree: Box::new(catalog),
+            btree: Box::new(btree),
             db_path,
         }
     }
