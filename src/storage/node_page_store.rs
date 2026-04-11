@@ -151,6 +151,7 @@ impl NodePageStore {
 
     fn ensure_cached(&mut self, id: PageId) -> Result<(), Error> {
         if self.cache.contains_key(&id) {
+            probe!(database, page_read_cache_hit, id.as_u32());
             return Ok(());
         }
         let bytes = self.pager.read_raw(id);
