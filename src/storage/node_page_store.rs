@@ -4,7 +4,8 @@ use std::path::Path;
 use probe::probe;
 
 use super::node::NodePage;
-use super::page_id::{Error, PageId};
+use super::error::Error;
+use super::page_id::PageId;
 use super::pager::{Pager, PAGE_SIZE};
 
 /// The middle layer of the storage stack.
