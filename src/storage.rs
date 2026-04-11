@@ -1,6 +1,7 @@
 mod cell;
 mod cell_reader;
 mod node;
+mod page_id;
 mod pager;
 
 /// Btree module heavily inspired by the fantastic article: https://cglab.ca/~abeinges/blah/rust-btree-case/
@@ -20,3 +21,4 @@ pub use btree::encode_u64_key;
 pub use btree::BTree;
 pub use btree::CursorHandle;
 pub use cell_reader::CellReader;
+pub use page_id::{Error as StorageError, PageId};
