@@ -13,6 +13,7 @@ use crate::storage::cell::Cell;
 use crate::storage::node::{NodePage, OverflowPage, SearchResult};
 
 use super::btree_verify::VerifyError;
+use super::catalog_cache::{extract_columns_from_index_sql, CatalogSnapshot, IndexInfo};
 use super::cell::Value;
 use super::node::{self, InteriorNodePage};
 use super::node_page_store::NodePageStore;
@@ -21,47 +22,13 @@ use super::page_id::PageId;
 use super::pager;
 use super::{btree_graph, btree_verify, CellReader};
 
-// ── Catalog cache types ───────────────────────────────────────────────────────
+// ── constants ─────────────────────────────────────────────────────────────────
 
 /// Root page of the `db_schema` catalog table.
 /// Always page 1 on every database (page 0 is the ZeroPage header).
 const CATALOG_ROOT: u32 = 1;
 
 /// Metadata for a single index from the catalog.
-#[derive(Debug, Clone)]
-pub struct IndexInfo {
-    pub index_name: String,
-    pub column_names: Vec<String>,
-    pub rootpage: u32,
-    /// The DDL SQL stored in the catalog (e.g. `CREATE UNIQUE INDEX ...`).
-    /// Use this to determine uniqueness rather than the index name prefix.
-    pub sql: String,
-}
-
-#[derive(Clone)]
-struct CatalogSnapshot {
-    /// table name → (rootpage, DDL sql)
-    tables: HashMap<String, (u32, String)>,
-    /// rootpage → table name (reverse lookup)
-    by_rootpage: HashMap<u32, String>,
-    /// table name → all indexes for that table
-    indexes: HashMap<String, Vec<IndexInfo>>,
-}
-
-fn extract_columns_from_index_sql(sql: &str) -> Vec<String> {
-    if let Some(start) = sql.find('(') {
-        if let Some(end) = sql[start..].find(')') {
-            let inside = &sql[start + 1..start + end];
-            return inside
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-        }
-    }
-    vec![]
-}
-
 /// Cursor position state machine
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CursorPosition {
