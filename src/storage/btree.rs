@@ -1253,6 +1253,7 @@ pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Ve
             key
         }
         ScalarValue::Floating(f) => {
+            // IEEE 754 sortable encoding: flip sign bit (and all bits if negative)
             let bits = f.to_bits();
             let sortable = if bits >> 63 == 0 {
                 bits ^ 0x8000_0000_0000_0000
@@ -1264,9 +1265,10 @@ pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Ve
             key
         }
         ScalarValue::String(s) => {
+            // NUL-terminated: ensures 'a' ([0x03,0x61,0x00]) is not a prefix of 'apple'
             let mut key = vec![0x03];
             key.extend_from_slice(s.as_bytes());
-            key.push(0x00);
+            key.push(0x00); // NUL terminator
             key
         }
         _ => panic!("encode_index_value: unsupported type {:?}", value),
