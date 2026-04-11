@@ -1,7 +1,5 @@
 use std::{
-    borrow::Borrow,
     cell::RefCell,
-    collections::HashMap,
     fs::{File, OpenOptions},
     io::{Read, Seek, Write},
     os::unix::prelude::MetadataExt,
@@ -10,28 +8,9 @@ use std::{
 use probe::probe;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-use super::node::NodePage;
+use super::page_id::PageId;
 
-pub struct Page {
-    // TODO: maybe share an existing open page
-    content: [u8; PAGE_SIZE as usize],
-}
-
-impl Default for Page {
-    fn default() -> Self {
-        Self {
-            content: [0; PAGE_SIZE as usize],
-        }
-    }
-}
-
-impl Clone for Page {
-    fn clone(&self) -> Self {
-        Self {
-            content: self.content,
-        }
-    }
-}
+pub(super) const PAGE_SIZE: u64 = 2 << 11; // 4096 bytes
 
 /// Linked list page for tracking free pages
 #[derive(Serialize, Deserialize)]
@@ -44,7 +23,6 @@ struct FreeListPage {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ZeroPage {
-    // Contains metadata usefull to the pager
     /// Magic number to identify database files: 0x53514C69 ("SQLi")
     magic: u32,
 
@@ -66,13 +44,9 @@ impl Default for ZeroPage {
     }
 }
 
-pub struct Pager {
+pub(super) struct Pager {
     path: String,
     file: RefCell<File>,
-    /// In-memory page cache: page_number → (page_content, is_dirty)
-    cache: RefCell<HashMap<u32, (Page, bool)>>,
-    /// Decoded NodePage cache: avoids repeated CBOR deserialization
-    decoded: RefCell<HashMap<u32, NodePage>>,
 }
 
 impl std::fmt::Debug for Pager {
@@ -86,23 +60,12 @@ impl std::fmt::Debug for Pager {
 
 impl Drop for Pager {
     fn drop(&mut self) {
-        // Flush the file buffer to ensure OS-level buffering is committed.
-        // With write-through caching, there are no dirty cache pages,
-        // but the file handle may have unflushed OS buffers.
         self.file.borrow_mut().flush().unwrap();
     }
 }
 
-pub(crate) const PAGE_SIZE: u64 = 2 << 11;
-
-#[derive(Debug)]
-pub enum EncodingError {
-    NotEnoughSpaceInPage,
-    SerializationError(String),
-}
-
 impl Pager {
-    pub fn new(path: &str) -> Pager {
+    pub(super) fn new(path: &str) -> Pager {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -113,341 +76,211 @@ impl Pager {
         Pager {
             path: path.to_owned(),
             file: RefCell::new(file),
-            cache: RefCell::new(HashMap::new()),
-            decoded: RefCell::new(HashMap::new()),
         }
     }
 
-    pub fn get_file_size_pages(&self) -> u32 {
+    pub(super) fn get_file_size_pages(&self) -> u32 {
         let file = self.file.borrow();
         let file_size_bytes = file.metadata().unwrap().size();
-        let num_pages = file_size_bytes / PAGE_SIZE;
-
-        num_pages as u32
+        (file_size_bytes / PAGE_SIZE) as u32
     }
 
-    pub fn set_file_size_pages(&self, num_pages: u32) {
+    fn set_file_size_pages(&self, num_pages: u32) {
         let file = self.file.borrow();
         file.set_len(PAGE_SIZE * num_pages as u64).unwrap();
     }
 
-    pub fn get_zero_page(&self) -> Option<ZeroPage> {
+    pub(super) fn get_zero_page(&self) -> Option<ZeroPage> {
         if self.get_file_size_pages() < 1 {
-            None
-        } else {
-            let page = self.get_and_decode(0);
-            probe!(database, page_read_zero, 0u32);
-            Some(page)
+            return None;
         }
+        let bytes = self.read_bytes(0);
+        probe!(database, page_read_zero, 0u32);
+        Some(Self::cbor_decode(&bytes))
     }
 
     fn set_zero_page(&mut self, zero: ZeroPage) {
-        self.encode_and_set(0, zero).unwrap();
+        let bytes = Self::cbor_encode(&zero).expect("ZeroPage serialization failed");
+        self.write_bytes(0, &bytes);
         probe!(database, page_write_zero, 0u32);
     }
 
-    pub fn get<PageNo: Borrow<u32>>(&self, idx: PageNo) -> Page {
-        let page_no = *idx.borrow();
-
-        // Cache hit: return a copy of the cached page
-        if let Some((page, _dirty)) = self.cache.borrow().get(&page_no) {
-            probe!(database, page_read_cache_hit, page_no);
-            return page.clone();
-        }
-
-        // Cache miss: read from disk and insert into cache
-        let mut p = Page::default();
-        let content = p.content.as_mut_slice();
-
-        let mut file = self.file.borrow_mut();
-        let offset = PAGE_SIZE * (page_no as u64);
-        file.seek(std::io::SeekFrom::Start(offset)).unwrap();
-        file.read_exact(content).unwrap();
-
+    /// Read a raw page from disk (no cache).
+    pub(super) fn read_raw(&self, id: PageId) -> [u8; PAGE_SIZE as usize] {
+        let page_no = id.as_u32();
         probe!(database, page_read_cache_miss, page_no);
-        self.cache.borrow_mut().insert(page_no, (p.clone(), false));
-
-        p
+        self.read_bytes(page_no)
     }
 
-    fn get_and_decode<P: Borrow<P> + DeserializeOwned, PageNo: Borrow<u32>>(
-        &self,
-        idx: PageNo,
-    ) -> P {
-        let p = self.get(idx);
-        probe!(database, cbor_page_decode);
-        ciborium::de::from_reader(&p.content[..]).unwrap()
-    }
-
-    /// Decode a page as a `NodePage`, firing the appropriate typed USDT probe
-    /// (`page_read_leaf`, `page_read_interior`, or `page_read_overflow`) in one
-    /// place rather than at every call site. This keeps probe site counts low
-    /// enough that bpftrace can attach without crashing. Results are cached in
-    /// `self.decoded` to avoid repeated CBOR deserialization; the cache is
-    /// invalidated automatically on any write through `set`.
-    pub fn get_and_decode_node<PageNo: Borrow<u32>>(&self, idx: PageNo) -> NodePage {
-        let page_no = *idx.borrow();
-        if let Some(page) = self.decoded.borrow().get(&page_no) {
-            return page.clone();
-        }
-        let node: NodePage = self.get_and_decode(page_no);
-        match &node {
-            NodePage::Leaf(_) => probe!(database, page_read_leaf, page_no),
-            NodePage::Interior(_) => probe!(database, page_read_interior, page_no),
-            NodePage::OverflowPage(_) => probe!(database, page_read_overflow, page_no),
-        }
-        self.decoded.borrow_mut().insert(page_no, node.clone());
-        node
-    }
-
-    pub fn set<P: Borrow<Page>, PageNo: Borrow<u32>>(&mut self, idx: PageNo, page: P) {
-        let page_no = *idx.borrow();
-        let page = page.borrow();
-
-        probe!(database, page_write, page_no);
-        // Write through: update cache (clean) and write to disk immediately
-        self.cache
-            .borrow_mut()
-            .insert(page_no, (page.clone(), false));
-
+    fn read_bytes(&self, page_no: u32) -> [u8; PAGE_SIZE as usize] {
+        let mut bytes = [0u8; PAGE_SIZE as usize];
         let mut file = self.file.borrow_mut();
         let offset = PAGE_SIZE * (page_no as u64);
         file.seek(std::io::SeekFrom::Start(offset)).unwrap();
-        file.write_all(&page.content).unwrap();
+        file.read_exact(&mut bytes).unwrap();
+        bytes
     }
 
-    pub fn encode_and_set<P: Borrow<P> + Serialize, PageNo: Borrow<u32>>(
-        &mut self,
-        idx: PageNo,
-        v: P,
-    ) -> Result<(), EncodingError> {
-        let mut page = Page::default();
-        probe!(database, cbor_page_encode);
-        let result = ciborium::ser::into_writer(v.borrow(), &mut &mut page.content[..]);
-
-        match result {
-            Err(e) => {
-                // CBOR serialization errors typically indicate buffer overflow or data issues
-                let err_str = e.to_string();
-                if err_str.contains("failed to write whole buffer")
-                    || err_str.contains("write zero")
-                {
-                    return Err(EncodingError::NotEnoughSpaceInPage);
-                }
-                return Err(EncodingError::SerializationError(format!(
-                    "CBOR encoding failed: {}",
-                    e
-                )));
-            }
-            _ => {}
-        };
-
-        self.set(idx, page);
-
-        Ok(())
+    /// Write raw page bytes to disk.
+    pub(super) fn write_raw(&mut self, id: PageId, bytes: &[u8; PAGE_SIZE as usize]) {
+        probe!(database, page_write, id.as_u32());
+        self.write_bytes(id.as_u32(), bytes);
     }
 
-    /// Encode a `NodePage` to disk and populate the decoded cache (write-through).
-    /// Prefer this over `encode_and_set` for all NodePage writes so that a
-    /// subsequent read of the same page is always a cache hit.
-    pub fn write_node_page(&mut self, idx: u32, page: &NodePage) -> Result<(), EncodingError> {
-        let result = self.encode_and_set(idx, page);
-        if result.is_ok() {
-            self.decoded.borrow_mut().insert(idx, page.clone());
-        }
-        result
+    fn write_bytes(&mut self, page_no: u32, bytes: &[u8; PAGE_SIZE as usize]) {
+        let mut file = self.file.borrow_mut();
+        let offset = PAGE_SIZE * (page_no as u64);
+        file.seek(std::io::SeekFrom::Start(offset)).unwrap();
+        file.write_all(bytes).unwrap();
     }
 
-    pub fn allocate(&mut self) -> u32 {
+    // ── internal CBOR helpers (ZeroPage and FreeListPage only) ───────────────
+
+    fn cbor_encode<T: Serialize>(v: &T) -> Option<[u8; PAGE_SIZE as usize]> {
+        let mut bytes = [0u8; PAGE_SIZE as usize];
+        ciborium::ser::into_writer(v, &mut &mut bytes[..]).ok()?;
+        Some(bytes)
+    }
+
+    fn cbor_decode<T: DeserializeOwned>(bytes: &[u8; PAGE_SIZE as usize]) -> T {
+        ciborium::de::from_reader(&bytes[..]).unwrap()
+    }
+
+    // ── page lifecycle ────────────────────────────────────────────────────────
+
+    pub(super) fn allocate(&mut self) -> PageId {
         let num_pages = self.get_file_size_pages();
 
-        // we dont have any pages
         if num_pages == 0 {
-            // Allocate two pages, one for the pager and one to return to the caller
+            // Empty file: allocate page 0 (ZeroPage) and page 1 (first data page).
             self.set_file_size_pages(2);
-
-            // Write out new zero page
-            let zero = ZeroPage::default();
-            self.set_zero_page(zero);
-
-            probe!(database, page_allocate, 1);
-
-            // New page is the first page
-            1
+            self.set_zero_page(ZeroPage::default());
+            probe!(database, page_allocate, 1u32);
+            PageId(1)
         } else {
             let mut zero = self.get_zero_page().unwrap();
 
-            // Try to get a page from the free list
+            // Try to reclaim a page from the free list.
             if let Some(head_page_no) = zero.free_list_head {
-                // Read the free list head page
-                let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
+                let bytes = self.read_bytes(head_page_no);
+                let mut free_list_page: FreeListPage = Self::cbor_decode(&bytes);
                 probe!(database, page_read_freelist, head_page_no);
 
-                // Pop a page ID from the list
                 if let Some(page_id) = free_list_page.page_ids.pop() {
-                    // Update the free list page
-                    self.encode_and_set(head_page_no, &free_list_page).unwrap();
-
-                    return page_id;
+                    // Update the partially-drained free list page.
+                    let updated =
+                        Self::cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                    self.write_bytes(head_page_no, &updated);
+                    return PageId(page_id);
                 } else {
-                    // This free list page is empty, reclaim it or move to next
+                    // Free list page is now empty; reclaim it as the returned page.
                     zero.free_list_head = free_list_page.next;
                     self.set_zero_page(zero);
-
-                    // Return the page that was being used as FreeListPage container
-                    return head_page_no;
+                    return PageId(head_page_no);
                 }
             }
 
-            // No free pages available, expand the file
+            // No free pages: expand the file.
             self.set_file_size_pages(num_pages + 1);
-
             probe!(database, page_allocate, num_pages);
-
-            num_pages
+            PageId(num_pages)
         }
     }
 
-    #[allow(dead_code)]
-    pub fn dealocate(&mut self, idx: u32) {
-        // probe!(database, page_deallocate, idx);  -- removed: dead code causes invalid ELF note addresses
+    pub(super) fn free(&mut self, id: PageId) {
+        let idx = id.as_u32();
         if idx == 0 {
-            panic!("Cant dealloc page zero");
+            panic!("Cannot free page zero");
         }
-        self.decoded.borrow_mut().remove(&idx);
 
         let mut zero = self.get_zero_page().unwrap();
 
-        // If there's a free list head, try to add to it
         if let Some(head_page_no) = zero.free_list_head {
-            let mut free_list_page: FreeListPage = self.get_and_decode(head_page_no);
-            // probe!(database, page_read_freelist, head_page_no);  -- removed: same reason
+            let bytes = self.read_bytes(head_page_no);
+            let mut free_list_page: FreeListPage = Self::cbor_decode(&bytes);
 
-            // Check if this page can fit more entries (~1000 is a safe limit)
             if free_list_page.page_ids.len() < 1000 {
                 free_list_page.page_ids.push(idx);
-                self.encode_and_set(head_page_no, &free_list_page).unwrap();
+                let updated =
+                    Self::cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                self.write_bytes(head_page_no, &updated);
                 return;
             }
         }
 
-        // Need to create a new free list page
-        // Use the page being freed as the new FreeListPage container
+        // Create a new free list page using the freed page as its container.
         let new_free_list_page = FreeListPage {
             next: zero.free_list_head,
-            page_ids: vec![], // Empty - this page becomes the container
+            page_ids: vec![],
         };
+        let bytes = Self::cbor_encode(&new_free_list_page).expect("FreeListPage encode failed");
+        self.write_bytes(idx, &bytes);
 
-        self.encode_and_set(idx, &new_free_list_page).unwrap();
-
-        // Update zero page to point to new head
         zero.free_list_head = Some(idx);
         self.set_zero_page(zero);
     }
 
-    /// Validate the database format version. Panics if unsupported.
-    pub fn validate_format_version(&self) {
-        if let Some(zero) = self.get_zero_page() {
-            match zero.format_version {
-                0 => panic!(
-                    "Database format version 0 (JSON) is no longer supported. \
-                     Please recreate your database. Pre-1.0 databases are not \
-                     backwards compatible."
-                ),
-                1 => panic!(
-                    "Database format version 1 is no longer supported. \
-                     Please recreate your database. The catalog root page is now \
-                     hardcoded at page 1 rather than stored in the file header."
-                ),
-                2 => { /* current CBOR format - continue normally */ }
-                v => panic!(
-                    "Unknown database format version {}. \
-                     This database may have been created by a newer version.",
-                    v
-                ),
-            }
-        }
-    }
-
-    pub fn flush(&mut self) -> std::io::Result<()> {
-        use std::io::Write;
+    pub(super) fn flush(&mut self) -> std::io::Result<()> {
         self.file.borrow_mut().flush()
     }
-
-    #[allow(dead_code)]
-    pub fn debug(&self, message: &str) {
-        // probes removed from this dead code function to avoid invalid ELF note addresses:
-        //   probe!(database, page_read_zero, 0u32);
-        //   probe!(database, page_read_leaf, i);
-        //   probe!(database, page_read_interior, i);
-        //   probe!(database, page_read_overflow, i);
-        for i in 0..self.get_file_size_pages() {
-            if i == 0 {
-                let zero_page: ZeroPage = self.get_and_decode(0);
-                println!("{message}: Page {i} (ZeroPage): {zero_page:?}");
-            } else {
-                let node_page: NodePage = self.get_and_decode_node(i);
-                println!("{message}: Page {i}: {node_page:?}");
-            }
-        }
-    }
 }
+
+// ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod test {
     use tempfile::NamedTempFile;
 
-    use super::Pager;
-    use crate::storage::node::NodePage;
+    use super::{PageId, Pager, PAGE_SIZE};
+
+    fn open_pager() -> (NamedTempFile, Pager) {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        let pager = Pager::new(path);
+        (file, pager)
+    }
 
     #[test]
     fn simple() {
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-
-        let mut pager = Pager::new(path);
+        let (_f, mut pager) = open_pager();
 
         assert_eq!(0, pager.get_file_size_pages());
 
         let page_one_idx = pager.allocate();
-
         let page_two_idx = pager.allocate();
 
         assert_eq!(3, pager.get_file_size_pages());
 
-        let mut page_one_content = pager.get(page_one_idx);
-        let mut page_two_content = pager.get(page_two_idx);
+        let mut p1 = [0u8; PAGE_SIZE as usize];
+        p1[0] = 10;
+        p1[10] = 10;
+        pager.write_raw(page_one_idx, &p1);
 
-        page_one_content.content[0] = 10;
-        page_one_content.content[10] = 10;
+        let mut p2 = [0u8; PAGE_SIZE as usize];
+        p2[0] = 20;
+        p2[20] = 20;
+        pager.write_raw(page_two_idx, &p2);
 
-        page_two_content.content[0] = 20;
-        page_two_content.content[20] = 20;
-
-        pager.set(page_one_idx, &page_one_content);
-        pager.set(page_two_idx, &page_two_content);
-
-        // Re open file from disk
-        let pager = Pager::new(path);
+        // Re-open file from disk.
+        let path = pager.path.clone();
+        drop(pager);
+        let pager = Pager::new(&path);
 
         assert_eq!(3, pager.get_file_size_pages());
 
-        let page_one_content = pager.get(page_one_idx);
-        let page_two_content = pager.get(page_two_idx);
+        let r1 = pager.read_raw(page_one_idx);
+        let r2 = pager.read_raw(page_two_idx);
 
-        assert_eq!(10, page_one_content.content[0]);
-        assert_eq!(10, page_one_content.content[10]);
+        assert_eq!(10, r1[0]);
+        assert_eq!(10, r1[10]);
 
-        assert_eq!(20, page_two_content.content[0]);
-        assert_eq!(20, page_two_content.content[20]);
+        assert_eq!(20, r2[0]);
+        assert_eq!(20, r2[20]);
     }
 
     #[test]
     fn free_list() {
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-
-        let mut pager = Pager::new(path);
+        let (_f, mut pager) = open_pager();
 
         let a = pager.allocate();
         let _b = pager.allocate();
@@ -458,12 +291,12 @@ mod test {
 
         let max_size = pager.get_file_size_pages();
 
-        pager.dealocate(a);
-        pager.dealocate(c);
-        pager.dealocate(e);
-        pager.dealocate(f);
+        pager.free(a);
+        pager.free(c);
+        pager.free(e);
+        pager.free(f);
 
-        // no shrinking of underlying file
+        // No shrinking of underlying file.
         assert_eq!(max_size, pager.get_file_size_pages());
 
         let _a2 = pager.allocate();
@@ -471,411 +304,215 @@ mod test {
         let _e2 = pager.allocate();
         let _f2 = pager.allocate();
 
-        // no further allocation needed, dealocated pages reused
+        // No further allocation needed; freed pages are reused.
         assert_eq!(max_size, pager.get_file_size_pages());
 
-        // allocate one more page
+        // Allocate one more page.
         let _g = pager.allocate();
-
-        // more pages allocated
         assert_eq!(max_size + 1, pager.get_file_size_pages());
     }
 
     #[test]
     fn test_pager_persistence() {
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
+        let (_f, mut pager) = open_pager();
+        let path = pager.path.clone();
 
-        // Write pages to a file
-        {
-            let mut pager = Pager::new(path);
-            let page_idx = pager.allocate();
-            let mut page_content = pager.get(page_idx);
-            page_content.content[0] = 42;
-            page_content.content[100] = 99;
-            pager.set(page_idx, &page_content);
-        }
+        let page_idx = pager.allocate();
+        let mut bytes = [0u8; PAGE_SIZE as usize];
+        bytes[0] = 42;
+        bytes[100] = 99;
+        pager.write_raw(page_idx, &bytes);
+        drop(pager);
 
-        // Drop the pager, create a new one on the same file
-        {
-            let pager = Pager::new(path);
-            let page_content = pager.get(1); // First allocated page is always 1
-            assert_eq!(42, page_content.content[0]);
-            assert_eq!(99, page_content.content[100]);
-        }
+        let pager = Pager::new(&path);
+        let r = pager.read_raw(PageId(1));
+        assert_eq!(42, r[0]);
+        assert_eq!(99, r[100]);
     }
 
     #[test]
     fn test_pager_free_list_roundtrip() {
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
+        let (_f, mut pager) = open_pager();
 
-        let mut pager = Pager::new(path);
-
-        // Allocate 3 pages
         let page_a = pager.allocate();
         let page_b = pager.allocate();
         let page_c = pager.allocate();
 
-        assert_eq!(page_a, 1);
-        assert_eq!(page_b, 2);
-        assert_eq!(page_c, 3);
+        assert_eq!(PageId(1), page_a);
+        assert_eq!(PageId(2), page_b);
+        assert_eq!(PageId(3), page_c);
 
-        // Deallocate middle page
-        pager.dealocate(page_b);
+        pager.free(page_b);
 
-        // Allocate again - should reuse the freed page
         let page_d = pager.allocate();
-        assert_eq!(page_b, page_d, "Should reuse the deallocated page");
+        assert_eq!(page_b, page_d, "Should reuse the freed page");
 
-        // Verify we can write to and read from the reused page
-        let mut page_content = pager.get(page_d);
-        page_content.content[0] = 123;
-        pager.set(page_d, &page_content);
-
-        let read_back = pager.get(page_d);
-        assert_eq!(123, read_back.content[0]);
+        let mut bytes = [0u8; PAGE_SIZE as usize];
+        bytes[0] = 123;
+        pager.write_raw(page_d, &bytes);
+        let r = pager.read_raw(page_d);
+        assert_eq!(123, r[0]);
     }
 
     #[test]
     fn test_pager_page_boundary() {
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-
-        let mut pager = Pager::new(path);
+        let (_f, mut pager) = open_pager();
         let page_idx = pager.allocate();
 
-        // Write exactly 4096 bytes to a page
-        let mut page_content = pager.get(page_idx);
-        for i in 0..4096 {
-            page_content.content[i] = (i % 256) as u8;
+        let mut bytes = [0u8; PAGE_SIZE as usize];
+        for i in 0..PAGE_SIZE as usize {
+            bytes[i] = (i % 256) as u8;
         }
-        pager.set(page_idx, &page_content);
+        pager.write_raw(page_idx, &bytes);
 
-        // Read it back and verify
-        let read_back = pager.get(page_idx);
-        for i in 0..4096 {
-            assert_eq!((i % 256) as u8, read_back.content[i]);
+        let r = pager.read_raw(page_idx);
+        for i in 0..PAGE_SIZE as usize {
+            assert_eq!((i % 256) as u8, r[i]);
         }
     }
 
     #[test]
     fn test_multi_page_free_list() {
-        // Test that free list can span multiple FreeListPages (>1000 entries)
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
+        let (_f, mut pager) = open_pager();
 
-        let mut pager = Pager::new(path);
-
-        // Allocate 1100 pages (capacity is 1000; 1100 spans exactly 2 FreeListPages)
         let mut allocated = Vec::new();
         for _ in 0..1100 {
             allocated.push(pager.allocate());
         }
-
         let size_after_alloc = pager.get_file_size_pages();
 
-        // Deallocate all 1100 pages (should create multiple FreeListPages)
         for page in allocated.clone() {
-            pager.dealocate(page);
+            pager.free(page);
         }
-
-        // File size should not have grown (freed pages used as FreeListPage containers)
         assert_eq!(size_after_alloc, pager.get_file_size_pages());
 
-        // Re-allocate all 1100 pages - should reuse freed pages
         let mut reallocated = Vec::new();
         for _ in 0..1100 {
             reallocated.push(pager.allocate());
         }
-
-        // File size should still be the same (no new pages needed)
         assert_eq!(size_after_alloc, pager.get_file_size_pages());
 
-        // All pages should be reused (though possibly in different order)
-        let mut allocated_sorted = allocated.clone();
-        allocated_sorted.sort();
-        let mut reallocated_sorted = reallocated.clone();
-        reallocated_sorted.sort();
-        assert_eq!(allocated_sorted, reallocated_sorted);
+        let mut a = allocated.clone();
+        a.sort_by_key(|p| p.as_u32());
+        let mut r = reallocated.clone();
+        r.sort_by_key(|p| p.as_u32());
+        assert_eq!(a, r);
     }
 
     #[test]
     fn test_large_scale_alloc_dealloc() {
-        // Test allocating and deallocating 2000+ pages
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
+        let (_f, mut pager) = open_pager();
 
-        let mut pager = Pager::new(path);
-
-        // Allocate 500 pages
         let mut pages = Vec::new();
         for _ in 0..500 {
             pages.push(pager.allocate());
         }
 
         let max_size = pager.get_file_size_pages();
-        assert!(max_size >= 501); // At least 500 data pages + zero page
+        assert!(max_size >= 501);
 
-        // Deallocate half of them
         for i in (0..500).step_by(2) {
-            pager.dealocate(pages[i]);
+            pager.free(pages[i]);
         }
-
-        // File size should not change
         assert_eq!(max_size, pager.get_file_size_pages());
 
-        // Allocate 250 new pages - should reuse the freed ones
         for _ in 0..250 {
             pager.allocate();
         }
-
-        // File size should still be the same
         assert_eq!(max_size, pager.get_file_size_pages());
 
-        // Allocate one more - should expand the file
         pager.allocate();
         assert_eq!(max_size + 1, pager.get_file_size_pages());
     }
 
     #[test]
     fn test_empty_free_list() {
-        // Test behavior when free list is empty
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
+        let (_f, mut pager) = open_pager();
 
-        let mut pager = Pager::new(path);
-
-        // Allocate some pages
         let a = pager.allocate();
         let b = pager.allocate();
         let c = pager.allocate();
-
         let size1 = pager.get_file_size_pages();
 
-        // Deallocate them
-        pager.dealocate(a);
-        pager.dealocate(b);
-        pager.dealocate(c);
+        pager.free(a);
+        pager.free(b);
+        pager.free(c);
 
-        // Allocate them back (empties the free list)
         pager.allocate();
         pager.allocate();
         pager.allocate();
 
-        // Free list should now be empty
-        // Allocating another page should expand the file
         pager.allocate();
         assert_eq!(size1 + 1, pager.get_file_size_pages());
     }
 
     #[test]
     fn test_free_list_persistence_large() {
-        // Test that large free lists persist across database close/reopen
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
+        let (_f, mut pager) = open_pager();
+        let path = pager.path.clone();
 
-        let max_size;
-        {
-            let mut pager = Pager::new(path);
-
-            // Allocate 500 pages
-            let mut pages = Vec::new();
-            for _ in 0..500 {
-                pages.push(pager.allocate());
-            }
-
-            max_size = pager.get_file_size_pages();
-
-            // Deallocate all of them
-            for page in pages {
-                pager.dealocate(page);
-            }
+        let mut pages = Vec::new();
+        for _ in 0..500 {
+            pages.push(pager.allocate());
         }
+        let max_size = pager.get_file_size_pages();
 
-        // Reopen and verify free list is intact
-        {
-            let mut pager = Pager::new(path);
+        for page in pages {
+            pager.free(page);
+        }
+        drop(pager);
 
-            // File size should be unchanged
-            assert_eq!(max_size, pager.get_file_size_pages());
+        let mut pager = Pager::new(&path);
+        assert_eq!(max_size, pager.get_file_size_pages());
 
-            // Should be able to allocate 500 pages without expanding file
-            for _ in 0..500 {
-                pager.allocate();
-            }
-
-            assert_eq!(max_size, pager.get_file_size_pages());
-
-            // Next allocation should expand
+        for _ in 0..500 {
             pager.allocate();
-            assert_eq!(max_size + 1, pager.get_file_size_pages());
         }
+        assert_eq!(max_size, pager.get_file_size_pages());
+
+        pager.allocate();
+        assert_eq!(max_size + 1, pager.get_file_size_pages());
     }
 
     #[test]
     fn test_free_last_allocated_page() {
-        // Edge case: free the most recently allocated page
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-
-        let mut pager = Pager::new(path);
+        let (_f, mut pager) = open_pager();
 
         let a = pager.allocate();
         let b = pager.allocate();
         let c = pager.allocate();
-
         let size = pager.get_file_size_pages();
 
-        // Free the last allocated page
-        pager.dealocate(c);
-
-        // File should not shrink
+        pager.free(c);
         assert_eq!(size, pager.get_file_size_pages());
 
-        // Should be able to reuse it
         let c2 = pager.allocate();
         assert_eq!(c, c2);
-
-        // File should not have expanded
         assert_eq!(size, pager.get_file_size_pages());
 
-        // Free first allocated page
-        pager.dealocate(a);
-
-        // Allocate should reuse it
+        pager.free(a);
         let a2 = pager.allocate();
         assert_eq!(a, a2);
 
-        // Verify b is still valid
-        let page_b = pager.get(b);
-        assert_eq!(page_b.content[0], 0); // Should be zeros (never written to)
+        let rb = pager.read_raw(b);
+        assert_eq!(rb[0], 0);
     }
 
     #[test]
-    fn test_page_cache_read_hit() {
-        // After a write, a subsequent read should return the cached value
-        // (not go to disk) and return the correct data.
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-
-        let mut pager = Pager::new(path);
-        let page_idx = pager.allocate();
-
-        // Write a page
-        let mut page = pager.get(page_idx);
-        page.content[0] = 77;
-        page.content[255] = 88;
-        pager.set(page_idx, &page);
-
-        // Read it back — should be served from cache with the written values
-        let read_back = pager.get(page_idx);
-        assert_eq!(77, read_back.content[0]);
-        assert_eq!(88, read_back.content[255]);
-        assert_eq!(0, read_back.content[1]); // untouched bytes are zero
-    }
-
-    #[test]
-    fn test_page_cache_repeated_reads() {
-        // Multiple reads of the same page should return consistent data.
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-
-        let mut pager = Pager::new(path);
-        let page_idx = pager.allocate();
-
-        let mut page = pager.get(page_idx);
-        page.content[42] = 123;
-        pager.set(page_idx, &page);
-
-        // Read the same page multiple times
-        for _ in 0..10 {
-            let p = pager.get(page_idx);
-            assert_eq!(123, p.content[42]);
-        }
-    }
-
-    #[test]
-    fn test_decoded_cache_hit() {
-        // get_and_decode_node called twice on the same page should populate the decoded cache
-        // so the second call returns the cached struct without re-decoding.
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-
-        use crate::storage::node::LeafNodePage;
-
-        let mut pager = Pager::new(path);
-        let idx = pager.allocate();
-
-        // Write a NodePage
-        let node = NodePage::Leaf(LeafNodePage::default());
-        pager.encode_and_set(idx, &node).unwrap();
-
-        // Clear the decoded cache to simulate a fresh read
-        pager.decoded.borrow_mut().clear();
-        assert_eq!(0, pager.decoded.borrow().len());
-
-        // First read — should miss the cache and populate it
-        let _p1 = pager.get_and_decode_node(idx);
-        assert_eq!(
-            1,
-            pager.decoded.borrow().len(),
-            "cache should have one entry after first read"
-        );
-
-        // Second read — should hit the cache (length stays 1)
-        let _p2 = pager.get_and_decode_node(idx);
-        assert_eq!(
-            1,
-            pager.decoded.borrow().len(),
-            "cache length unchanged on second read"
-        );
-    }
-
-    #[test]
-    fn test_decoded_cache_evicted_on_deallocate() {
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-
-        use crate::storage::node::LeafNodePage;
-
-        let mut pager = Pager::new(path);
-        let idx = pager.allocate();
-
-        let node = NodePage::Leaf(LeafNodePage::default());
-        pager.encode_and_set(idx, &node).unwrap();
-        let _ = pager.get_and_decode_node(idx); // populate cache
-
-        assert!(pager.decoded.borrow().contains_key(&idx));
-
-        pager.dealocate(idx);
-
-        assert!(
-            !pager.decoded.borrow().contains_key(&idx),
-            "decoded cache must evict on deallocate"
-        );
-    }
-
-    #[test]
-    fn test_page_cache_correct_after_mutations() {
-        // After writing multiple pages, all should be readable with correct data.
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_str().unwrap();
-
-        let mut pager = Pager::new(path);
-
+    fn test_read_write_roundtrip() {
+        let (_f, mut pager) = open_pager();
         let p1 = pager.allocate();
         let p2 = pager.allocate();
         let p3 = pager.allocate();
 
-        for (idx, page_no) in [p1, p2, p3].iter().enumerate() {
-            let mut page = pager.get(*page_no);
-            page.content[0] = (idx + 1) as u8;
-            pager.set(*page_no, &page);
+        for (idx, page_id) in [p1, p2, p3].iter().enumerate() {
+            let mut bytes = [0u8; PAGE_SIZE as usize];
+            bytes[0] = (idx + 1) as u8;
+            pager.write_raw(*page_id, &bytes);
         }
 
-        assert_eq!(1, pager.get(p1).content[0]);
-        assert_eq!(2, pager.get(p2).content[0]);
-        assert_eq!(3, pager.get(p3).content[0]);
+        assert_eq!(1, pager.read_raw(p1)[0]);
+        assert_eq!(2, pager.read_raw(p2)[0]);
+        assert_eq!(3, pager.read_raw(p3)[0]);
     }
 }

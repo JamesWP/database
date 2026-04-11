@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use probe::probe;
+
 use super::node::NodePage;
 use super::page_id::{Error, PageId};
-use super::pager::{EncodingError, Pager};
+use super::pager::{Pager, PAGE_SIZE};
 
 /// The middle layer of the storage stack.
 ///
@@ -71,13 +73,13 @@ impl NodePageStore {
     /// Allocate a fresh page and return its `PageId`.
     /// Must be called before any `read` or `take` within the same operation.
     pub fn allocate(&mut self) -> Result<PageId, Error> {
-        Ok(PageId(self.pager.allocate()))
+        Ok(self.pager.allocate())
     }
 
     /// Return a page to the free list and evict it from the cache.
     pub fn free(&mut self, id: PageId) -> Result<(), Error> {
         self.cache.remove(&id);
-        self.pager.dealocate(id.as_u32());
+        self.pager.free(id);
         Ok(())
     }
 
@@ -98,8 +100,10 @@ impl NodePageStore {
         if let Some(node) = self.cache.remove(&id) {
             return Ok(node);
         }
-        // Cache miss: load from pager's decoded cache (or disk).
-        Ok(self.pager.get_and_decode_node(id.as_u32()))
+        // Cache miss: decode directly from disk.
+        let bytes = self.pager.read_raw(id);
+        probe!(database, cbor_page_decode);
+        ciborium::de::from_reader(&bytes[..]).map_err(|e| Error::Decode(e.to_string()))
     }
 
     /// Encode `node` and write it to disk, inserting it into the cache.
@@ -108,13 +112,22 @@ impl NodePageStore {
     /// exceeds `PAGE_SIZE` — the node is returned to the caller so a split
     /// can be performed without a re-fetch or clone.
     pub fn write(&mut self, id: PageId, node: NodePage) -> Result<(), Error> {
-        match self.pager.encode_and_set(id.as_u32(), &node) {
+        let mut bytes = [0u8; PAGE_SIZE as usize];
+        probe!(database, cbor_page_encode);
+        match ciborium::ser::into_writer(&node, &mut &mut bytes[..]) {
             Ok(()) => {
+                self.pager.write_raw(id, &bytes);
                 self.cache.insert(id, node);
                 Ok(())
             }
-            Err(EncodingError::NotEnoughSpaceInPage) => Err(Error::PageFull(node)),
-            Err(EncodingError::SerializationError(msg)) => Err(Error::Decode(msg)),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("failed to write whole buffer") || msg.contains("write zero") {
+                    Err(Error::PageFull(node))
+                } else {
+                    Err(Error::Decode(format!("CBOR encoding failed: {}", msg)))
+                }
+            }
         }
     }
 
@@ -136,7 +149,15 @@ impl NodePageStore {
         if self.cache.contains_key(&id) {
             return Ok(());
         }
-        let node = self.pager.get_and_decode_node(id.as_u32());
+        let bytes = self.pager.read_raw(id);
+        probe!(database, cbor_page_decode);
+        let node: NodePage =
+            ciborium::de::from_reader(&bytes[..]).map_err(|e| Error::Decode(e.to_string()))?;
+        match &node {
+            NodePage::Leaf(_) => probe!(database, page_read_leaf, id.as_u32()),
+            NodePage::Interior(_) => probe!(database, page_read_interior, id.as_u32()),
+            NodePage::OverflowPage(_) => probe!(database, page_read_overflow, id.as_u32()),
+        }
         self.cache.insert(id, node);
         Ok(())
     }
