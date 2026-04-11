@@ -8,6 +8,7 @@ use std::sync::Arc;
 use colored::Colorize;
 use probe::probe;
 
+use crate::engine::scalarvalue::ScalarValue;
 use crate::storage::cell::Cell;
 use crate::storage::node::{NodePage, OverflowPage, SearchResult};
 
@@ -18,6 +19,47 @@ use super::node_page_store::NodePageStore;
 use super::page_id::{self as page_id, PageId};
 use super::pager;
 use super::{btree_graph, btree_verify, CellReader};
+
+// ── Catalog cache types ───────────────────────────────────────────────────────
+
+/// Root page of the `db_schema` catalog table.
+/// Always page 1 on every database (page 0 is the ZeroPage header).
+const CATALOG_ROOT: u32 = 1;
+
+/// Metadata for a single index from the catalog.
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub index_name: String,
+    pub column_names: Vec<String>,
+    pub rootpage: u32,
+    /// The DDL SQL stored in the catalog (e.g. `CREATE UNIQUE INDEX ...`).
+    /// Use this to determine uniqueness rather than the index name prefix.
+    pub sql: String,
+}
+
+#[derive(Clone)]
+struct CatalogSnapshot {
+    /// table name → (rootpage, DDL sql)
+    tables: HashMap<String, (u32, String)>,
+    /// rootpage → table name (reverse lookup)
+    by_rootpage: HashMap<u32, String>,
+    /// table name → all indexes for that table
+    indexes: HashMap<String, Vec<IndexInfo>>,
+}
+
+fn extract_columns_from_index_sql(sql: &str) -> Vec<String> {
+    if let Some(start) = sql.find('(') {
+        if let Some(end) = sql[start..].find(')') {
+            let inside = &sql[start + 1..start + end];
+            return inside
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+    }
+    vec![]
+}
 
 /// Cursor position state machine
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,7 +83,7 @@ enum CursorPosition {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CursorState {
     root_page: u32,
-    pub position: CursorPosition,
+    position: CursorPosition,
 }
 
 impl CursorState {}
@@ -731,25 +773,47 @@ pub struct BTree {
     /// Entries are never decreased — only advanced after each write or cleared on
     /// `DROP TABLE` — so the cache stays valid across DELETEs and UPDATEs.
     rowid_cache: Arc<RefCell<HashMap<u32, u64>>>,
+    /// In-memory cache of catalog metadata, built lazily on first read and
+    /// invalidated on any catalog write.  Uses `RefCell` so read-only lookup
+    /// methods can populate the cache without requiring `&mut self`.
+    catalog_cache: RefCell<Option<CatalogSnapshot>>,
 }
 
 impl BTree {
     pub fn new(path: &str) -> BTree {
         let store = NodePageStore::open(Path::new(path))
             .unwrap_or_else(|e| panic!("Failed to open database: {e}"));
-        let needs_validate = store.page_count() > 0;
-        let btree = BTree {
+        let is_new = store.page_count() == 0;
+        let mut btree = BTree {
             store: Arc::new(RefCell::new(store)),
             rowid_cache: Arc::new(RefCell::new(HashMap::new())),
+            catalog_cache: RefCell::new(None),
         };
-        if needs_validate {
+        if !is_new {
             btree
                 .store
                 .borrow()
                 .validate_format_version()
                 .unwrap_or_else(|e| panic!("{e}"));
+        } else {
+            // Fresh database: bootstrap the catalog tree.
+            btree.bootstrap_catalog();
         }
         btree
+    }
+
+    /// Bootstrap a fresh database by creating the catalog B-tree (root page 1)
+    /// and inserting the self-referencing `db_schema` entry.
+    fn bootstrap_catalog(&mut self) {
+        let root = self.create_tree();
+        assert_eq!(root, CATALOG_ROOT, "catalog root must always be page 1");
+        self.insert_entry(
+            "table",
+            "db_schema",
+            "db_schema",
+            root,
+            "CREATE TABLE db_schema (type TEXT, name TEXT, tbl_name TEXT, rootpage INTEGER, sql TEXT)",
+        );
     }
 
     /// Invalidate the rowid cache entry for a given rootpage (call on DROP TABLE).
@@ -799,6 +863,208 @@ impl BTree {
     pub fn debug(&self, message: &str) {
         let _ = message;
         // Pager::debug removed in item 131; stub retained to avoid test breakage.
+    }
+
+    // ── Catalog API ───────────────────────────────────────────────────────────
+
+    /// Insert a new entry (table or index) into the catalog.
+    pub fn insert_entry(
+        &mut self,
+        obj_type: &str,
+        name: &str,
+        tbl_name: &str,
+        rootpage: u32,
+        sql: &str,
+    ) {
+        let key = self.next_catalog_key();
+        let row_values = vec![
+            ScalarValue::String(obj_type.to_string()),
+            ScalarValue::String(name.to_string()),
+            ScalarValue::String(tbl_name.to_string()),
+            ScalarValue::Integer(rootpage as i64),
+            ScalarValue::String(sql.to_string()),
+        ];
+        let mut row = Vec::new();
+        ciborium::ser::into_writer(&row_values, &mut row).unwrap();
+        let mut cursor = self.open(CATALOG_ROOT);
+        cursor.open_cursor().insert_u64(key, row);
+        *self.catalog_cache.borrow_mut() = None;
+    }
+
+    /// Look up a table by name. Returns `(rootpage, sql)` if found.
+    pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> {
+        probe!(database, catalog_lookup_table);
+        self.ensure_catalog_cache();
+        self.catalog_cache
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .tables
+            .get(table_name)
+            .cloned()
+    }
+
+    /// Reverse lookup: find the table name for a given root page.
+    pub fn lookup_table_by_rootpage(&self, rootpage: u32) -> Option<String> {
+        probe!(database, catalog_lookup_by_rootpage);
+        self.ensure_catalog_cache();
+        self.catalog_cache
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .by_rootpage
+            .get(&rootpage)
+            .cloned()
+    }
+
+    /// Return all index metadata for a given table.
+    pub fn lookup_indexes_for_table(&self, table_name: &str) -> Vec<IndexInfo> {
+        probe!(database, catalog_lookup_indexes);
+        self.ensure_catalog_cache();
+        self.catalog_cache
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .indexes
+            .get(table_name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Return all catalog entries as raw `(type, name, tbl_name, rootpage, sql)` tuples.
+    pub fn scan_entries(&self) -> Vec<(String, String, String, u32, String)> {
+        probe!(database, catalog_scan);
+        let mut entries = Vec::new();
+        let mut cursor = self.open(CATALOG_ROOT);
+        let mut c = cursor.open_cursor();
+        c.first();
+        loop {
+            match c.get_entry() {
+                None => break,
+                Some(mut reader) => {
+                    let values = reader.decode_as_array();
+                    if values.len() >= 5 {
+                        let obj_type = values[0].as_str().unwrap_or("").to_string();
+                        let name = values[1].as_str().unwrap_or("").to_string();
+                        let tbl_name = values[2].as_str().unwrap_or("").to_string();
+                        let rootpage = values[3].as_u64().unwrap_or(0) as u32;
+                        let sql = values[4].as_str().unwrap_or("").to_string();
+                        entries.push((obj_type, name, tbl_name, rootpage, sql));
+                    }
+                }
+            }
+            c.next();
+        }
+        entries
+    }
+
+    /// Delete the catalog entry for a table and all its associated indexes.
+    /// Returns `true` if the table entry was found and deleted.
+    pub fn delete_entries_for_table(&mut self, table_name: &str) -> bool {
+        let mut deleted_any = false;
+        let mut cursor = self.open(CATALOG_ROOT);
+        let mut c = cursor.open_cursor();
+        c.first();
+        loop {
+            let mut entry = match c.get_entry() {
+                None => break,
+                Some(reader) => reader,
+            };
+            let values = entry.decode_as_array();
+            if values.len() >= 5 {
+                let obj_type = values[0].as_str().unwrap_or("");
+                let name = values[1].as_str().unwrap_or("");
+                let tbl_name = values[2].as_str().unwrap_or("");
+                if (obj_type == "table" && name == table_name)
+                    || (obj_type == "index" && tbl_name == table_name)
+                {
+                    c.delete_current();
+                    deleted_any = true;
+                    continue;
+                }
+            }
+            c.next();
+        }
+        *self.catalog_cache.borrow_mut() = None;
+        deleted_any
+    }
+
+    // ── catalog private helpers ───────────────────────────────────────────────
+
+    fn ensure_catalog_cache(&self) {
+        if self.catalog_cache.borrow().is_none() {
+            let snapshot = self.build_catalog_snapshot();
+            *self.catalog_cache.borrow_mut() = Some(snapshot);
+        }
+    }
+
+    fn build_catalog_snapshot(&self) -> CatalogSnapshot {
+        let mut tables: HashMap<String, (u32, String)> = HashMap::new();
+        let mut by_rootpage: HashMap<u32, String> = HashMap::new();
+        let mut indexes: HashMap<String, Vec<IndexInfo>> = HashMap::new();
+
+        let mut cursor = self.open(CATALOG_ROOT);
+        let mut c = cursor.open_cursor();
+        c.first();
+        loop {
+            match c.get_entry() {
+                None => break,
+                Some(mut reader) => {
+                    let values = reader.decode_as_array();
+                    if values.len() >= 5 {
+                        let obj_type = values[0].as_str().unwrap_or("");
+                        let name = values[1].as_str().unwrap_or("").to_string();
+                        let tbl_name = values[2].as_str().unwrap_or("").to_string();
+                        let rootpage = values[3].as_u64().unwrap_or(0) as u32;
+                        let sql = values[4].as_str().unwrap_or("").to_string();
+                        match obj_type {
+                            "table" => {
+                                by_rootpage.insert(rootpage, name.clone());
+                                tables.insert(name, (rootpage, sql));
+                            }
+                            "index" => {
+                                let column_names = extract_columns_from_index_sql(&sql);
+                                indexes.entry(tbl_name).or_default().push(IndexInfo {
+                                    index_name: name,
+                                    column_names,
+                                    rootpage,
+                                    sql,
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            c.next();
+        }
+        CatalogSnapshot {
+            tables,
+            by_rootpage,
+            indexes,
+        }
+    }
+
+    fn next_catalog_key(&self) -> u64 {
+        let mut cursor = self.open(CATALOG_ROOT);
+        let mut c = cursor.open_cursor();
+        c.last();
+        if let Some(entry) = c.get_entry() {
+            decode_u64_key(entry.key()) + 1
+        } else {
+            0
+        }
+    }
+
+    /// Invalidate the catalog cache — call after any catalog write.
+    pub fn invalidate_catalog_cache(&self) {
+        *self.catalog_cache.borrow_mut() = None;
+    }
+
+    /// Test-only helper: check whether the catalog cache is populated.
+    #[cfg(test)]
+    pub fn catalog_cache_populated(&self) -> bool {
+        self.catalog_cache.borrow().is_some()
     }
 
     /// Inspect a page and print its raw CBOR structure.
@@ -949,8 +1215,7 @@ impl BTree {
 
 impl Display for BTree {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let catalog = crate::catalog::Catalog::from(self.clone());
-        btree_graph::dump(f, &catalog)?;
+        btree_graph::dump(f, self)?;
         Ok(())
     }
 }

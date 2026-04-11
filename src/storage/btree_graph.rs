@@ -6,7 +6,6 @@ use super::cell_reader::CellReader;
 use super::node::NodePage;
 use super::node_page_store::NodePageStore;
 use super::page_id::PageId;
-use crate::catalog::Catalog;
 use crate::engine::scalarvalue::ScalarValue;
 
 const CATALOG_ROOT: u32 = 1;
@@ -302,8 +301,7 @@ fn write_subgraph<W: Write>(
     Ok(())
 }
 
-pub fn dump<W: Write>(output: &mut W, catalog: &Catalog) -> Result {
-    let btree = catalog.btree();
+pub fn dump<W: Write>(output: &mut W, btree: &BTree) -> Result {
     writeln!(output, "digraph Database {{")?;
     writeln!(output, "\tnode [shape=record fontname=\"monospace\"]")?;
     writeln!(output, "\trankdir=\"LR\";")?;
@@ -318,7 +316,7 @@ pub fn dump<W: Write>(output: &mut W, catalog: &Catalog) -> Result {
     )?;
 
     // User tables and indexes (skip root pages already rendered)
-    for (kind, name, tbl_name, rootpage, _sql) in catalog.scan_entries() {
+    for (kind, name, tbl_name, rootpage, _sql) in btree.scan_entries() {
         if rootpage == CATALOG_ROOT {
             continue;
         }
@@ -327,7 +325,7 @@ pub fn dump<W: Write>(output: &mut W, catalog: &Catalog) -> Result {
                 write_subgraph(output, btree, rootpage, &name, TreeKind::Table)?;
             }
             "index" => {
-                let col_names: Vec<String> = catalog
+                let col_names: Vec<String> = btree
                     .lookup_indexes_for_table(&tbl_name)
                     .into_iter()
                     .find(|i| i.index_name == name)
