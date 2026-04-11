@@ -82,17 +82,15 @@ enum CursorPosition {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CursorState {
+struct CursorState {
     root_page: u32,
     position: CursorPosition,
 }
 
-impl CursorState {}
-
 #[derive(Debug, Clone)]
 pub struct CursorHandle {
     pub(super) store: Arc<RefCell<NodePageStore>>,
-    pub state: CursorState,
+    state: CursorState,
 }
 
 impl CursorHandle {
