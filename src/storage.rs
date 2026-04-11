@@ -1,5 +1,6 @@
 mod cell;
 mod cell_reader;
+mod error;
 mod node;
 mod node_page_store;
 mod page_id;
@@ -23,4 +24,5 @@ pub use btree::CursorHandle;
 pub use btree::IndexInfo;
 pub use cell_reader::CellReader;
 pub use node_page_store::NodePageStore;
-pub use page_id::{Error as StorageError, PageId};
+pub use error::Error as StorageError;
+pub use page_id::PageId;

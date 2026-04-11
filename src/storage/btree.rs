@@ -16,7 +16,8 @@ use super::btree_verify::VerifyError;
 use super::cell::Value;
 use super::node::{self, InteriorNodePage};
 use super::node_page_store::NodePageStore;
-use super::page_id::{self as page_id, PageId};
+use super::error::Error as StorageError;
+use super::page_id::PageId;
 use super::pager;
 use super::{btree_graph, btree_verify, CellReader};
 
@@ -262,7 +263,7 @@ impl<'a> Cursor<'a> {
                             }
                             break;
                         }
-                        Err(page_id::Error::PageFull(top_page)) => {
+                        Err(StorageError::PageFull(top_page)) => {
                             self.split_page(top_page, stack);
                             break;
                         }
@@ -285,7 +286,7 @@ impl<'a> Cursor<'a> {
                             }
                             break;
                         }
-                        Err(page_id::Error::PageFull(top_page)) => {
+                        Err(StorageError::PageFull(top_page)) => {
                             self.split_page(top_page, stack);
                             break;
                         }
@@ -407,7 +408,7 @@ impl<'a> Cursor<'a> {
 
             probe!(database, page_write_interior, parent_idx);
             match self.store.write(PageId(parent_idx), parent_node) {
-                Err(page_id::Error::PageFull(parent_node)) => {
+                Err(StorageError::PageFull(parent_node)) => {
                     stack.push(parent_idx);
                     self.split_page(parent_node, stack);
                 }
