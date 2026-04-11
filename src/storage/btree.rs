@@ -2099,16 +2099,19 @@ mod test {
 
     #[test]
     fn test_cursor_position_states() {
+        // Verify cursor position state transitions
         let test = TestDb::default();
         let mut btree: BTree = test.catalog.into();
         let root = btree.create_tree();
 
         let mut cursor_handle = btree.open(root);
 
+        // Initial state should be Unpositioned
         assert_eq!(cursor_handle.state.position, CursorPosition::Unpositioned);
 
+        // Insert some values
         {
-            let mut cursor = cursor_handle.open_cursor();
+            let mut cursor = cursor_handle.open_readwrite();
             cursor.insert_u64(1, b"one".to_vec());
             cursor.insert_u64(2, b"two".to_vec());
             cursor.insert_u64(3, b"three".to_vec());
@@ -2116,8 +2119,52 @@ mod test {
 
         use super::encode_u64_key;
 
+        // After first(), should be Valid
         {
-            let mut cursor = cursor_handle.open_cursor();
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            assert!(matches!(
+                cursor.cursor_state.position,
+                CursorPosition::Valid { .. }
+            ));
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(1).as_slice()
+            );
+        }
+
+        // Navigate through all entries
+        {
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            cursor.next(); // Move to key 2
+            assert!(matches!(
+                cursor.cursor_state.position,
+                CursorPosition::Valid { .. }
+            ));
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(2).as_slice()
+            );
+
+            cursor.next(); // Move to key 3
+            assert!(matches!(
+                cursor.cursor_state.position,
+                CursorPosition::Valid { .. }
+            ));
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(3).as_slice()
+            );
+
+            cursor.next(); // Move past end
+            assert_eq!(cursor.cursor_state.position, CursorPosition::AtEnd);
+            assert!(cursor.get_entry().is_none());
+        }
+
+        // Test insert invalidates position (RequiresSeek)
+        {
+            let mut cursor = cursor_handle.open_readwrite();
             cursor.first();
             assert!(matches!(
                 cursor.cursor_state.position,
@@ -2135,6 +2182,16 @@ mod test {
                 cursor.cursor_state.position,
                 CursorPosition::Valid { .. }
             ));
+        }
+
+        // Test empty tree → AtEnd
+        {
+            let empty_root = btree.create_tree();
+            let mut empty_cursor = btree.open(empty_root);
+            let mut cursor = empty_cursor.open_readonly();
+            cursor.first();
+            assert_eq!(cursor.cursor_state.position, CursorPosition::AtEnd);
+            assert!(cursor.get_entry().is_none());
         }
     }
 
@@ -2193,5 +2250,479 @@ mod test {
             cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
             assert_eq!(buf, large_value);
         }
+    }
+
+    #[test]
+    fn test_cursor_next_after_delete() {
+        // Delete current key, verify next() lands on correct successor
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=5u64 {
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        // Position at key 3, delete it, verify next() gives us 4
+        {
+            use super::encode_u64_key;
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find_u64(3);
+            cursor.delete_current();
+
+            // After delete, cursor is in RequiresSeek state with saved_key=3
+            // next() should call ensure_positioned() -> find(3) -> lands on 4
+            cursor.next();
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(4).as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn test_cursor_next_after_delete_last() {
+        // Delete the last key, verify next() reaches AtEnd
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=3u64 {
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find_u64(3);
+            cursor.delete_current();
+            cursor.next();
+            assert_eq!(cursor.cursor_state.position, CursorPosition::AtEnd);
+            assert!(cursor.get_entry().is_none());
+        }
+    }
+
+    #[test]
+    fn test_cursor_next_after_insert() {
+        // Insert during scan, verify iteration continues correctly
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert_u64(1, b"one".to_vec());
+            cursor.insert_u64(3, b"three".to_vec());
+            cursor.insert_u64(5, b"five".to_vec());
+        }
+
+        // Position at key 1, insert key 2, verify next() lands on 2
+        {
+            use super::encode_u64_key;
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find_u64(1);
+            cursor.insert_u64(2, b"two".to_vec());
+            // After insert, cursor is in RequiresSeek state with saved_key=1
+            cursor.next();
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(2).as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn test_cursor_survives_split() {
+        // Insert enough to trigger page split, verify navigation still works
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=50u64 {
+                cursor.insert_u64(i, format!("value_{}", i).into_bytes());
+            }
+        }
+
+        {
+            use super::encode_u64_key;
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find_u64(10);
+
+            // Insert 50 more keys to force splits
+            for i in 51..=100u64 {
+                cursor.insert_u64(i, format!("value_{}", i).into_bytes());
+            }
+
+            // Cursor should still be able to navigate from key 10
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(10).as_slice()
+            );
+            cursor.next();
+            assert_eq!(
+                cursor.get_entry().unwrap().key(),
+                encode_u64_key(11).as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn test_cursor_delete_all_forward() {
+        // Delete every key via first() + loop of delete_current() + next()
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=10u64 {
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.first();
+            while cursor.get_entry().is_some() {
+                cursor.delete_current();
+                cursor.next();
+            }
+        }
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            assert!(cursor.get_entry().is_none());
+        }
+    }
+
+    #[test]
+    fn test_cursor_get_entry_after_mutation() {
+        // Verify get_entry() re-seeks after delete
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for i in 1..=3u64 {
+                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+            }
+        }
+
+        {
+            use super::encode_u64_key;
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.find_u64(2);
+            cursor.delete_current();
+
+            // get_entry() should trigger ensure_positioned() and find key 3
+            let entry = cursor.get_entry().unwrap();
+            assert_eq!(entry.key(), encode_u64_key(3).as_slice());
+        }
+    }
+
+    #[test]
+    fn test_cursor_refind_after_insert() {
+        // After inserts, first()/next() should navigate correctly
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        {
+            use super::encode_u64_key;
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert_u64(1, b"value1".to_vec());
+            cursor.insert_u64(2, b"value2".to_vec());
+            cursor.insert_u64(3, b"value3".to_vec());
+            cursor.first();
+
+            let entry = cursor.get_entry().expect("Should find first entry");
+            assert_eq!(entry.key(), encode_u64_key(1).as_slice());
+            cursor.next();
+            let entry = cursor.get_entry().expect("Should find second entry");
+            assert_eq!(entry.key(), encode_u64_key(2).as_slice());
+            cursor.next();
+            let entry = cursor.get_entry().expect("Should find third entry");
+            assert_eq!(entry.key(), encode_u64_key(3).as_slice());
+        }
+    }
+
+    // ── Variable-length key tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_variable_length_keys_ordering() {
+        // Keys of different lengths should sort lexicographically
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for key in &[b"abc" as &[u8], b"b", b"a", b"ab"] {
+                cursor.insert(key, b"value".to_vec());
+            }
+        }
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            for expected_key in &[b"a" as &[u8], b"ab", b"abc", b"b"] {
+                let entry = cursor.get_entry().expect("Should have entry");
+                assert_eq!(entry.key(), *expected_key);
+                cursor.next();
+            }
+            assert!(cursor.get_entry().is_none(), "Should be at end");
+        }
+    }
+
+    #[test]
+    fn test_variable_length_keys_long_key() {
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        let long_key: Vec<u8> = (0u8..=255).cycle().take(1024).collect();
+        let short_key: Vec<u8> = b"short".to_vec();
+        let medium_key: Vec<u8> = b"medium_length_key_here".to_vec();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert(&long_key, b"long_value".to_vec());
+            cursor.insert(&short_key, b"short_value".to_vec());
+            cursor.insert(&medium_key, b"medium_value".to_vec());
+        }
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            assert!(cursor.find(&long_key), "Long key should be found");
+            assert_eq!(cursor.get_entry().unwrap().key(), long_key.as_slice());
+        }
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            assert!(cursor.find(&short_key), "Short key should be found");
+        }
+    }
+
+    #[test]
+    fn test_variable_length_keys_mixed_lengths() {
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        let keys: Vec<Vec<u8>> = vec![
+            vec![0x01],
+            vec![0x00, 0x00, 0x00, 0x01],
+            vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+            vec![0x00; 16],
+            vec![0xFF],
+            vec![0x00, 0xFF],
+        ];
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for key in &keys {
+                cursor.insert(key, b"v".to_vec());
+            }
+        }
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            let mut prev_key: Vec<u8> = vec![];
+            let mut count = 0;
+            while let Some(entry) = cursor.get_entry() {
+                let k = entry.key().to_vec();
+                assert!(k > prev_key, "Keys must be strictly increasing");
+                prev_key = k;
+                count += 1;
+                cursor.next();
+            }
+            assert_eq!(count, keys.len(), "All keys should be present");
+        }
+    }
+
+    #[test]
+    fn test_variable_length_keys_splits() {
+        // Insert many variable-length keys to trigger B-tree splits
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        let mut keys: Vec<Vec<u8>> = (0u32..80)
+            .map(|i| {
+                let len = 1 + (i as usize % 20);
+                let mut k = vec![0u8; len];
+                k[0] = (i >> 8) as u8;
+                if len > 1 {
+                    k[1] = (i & 0xFF) as u8;
+                }
+                k
+            })
+            .collect();
+        keys.sort();
+        keys.dedup();
+        let num_keys = keys.len();
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            for key in &keys {
+                cursor.insert(key, b"val".to_vec());
+            }
+            cursor.verify().unwrap();
+        }
+
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readonly();
+            cursor.first();
+            let mut count = 0;
+            let mut prev_key: Vec<u8> = vec![];
+            while let Some(entry) = cursor.get_entry() {
+                let k = entry.key().to_vec();
+                assert!(k > prev_key, "Keys must be strictly increasing");
+                prev_key = k;
+                count += 1;
+                cursor.next();
+            }
+            assert_eq!(count, num_keys, "All keys should be accessible after splits");
+        }
+    }
+
+    // ── Overflow boundary tests ───────────────────────────────────────────────
+
+    /// Return the number of pages allocated after inserting a value.
+    fn page_count(btree: &BTree) -> u32 {
+        btree.store.borrow().page_count()
+    }
+
+    /// Insert a value and return the number of new pages allocated.
+    fn overflow_pages_for(btree: &mut BTree, root: u32, key: u64, value: Vec<u8>) -> u32 {
+        let before = page_count(btree);
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_readwrite();
+            cursor.insert_u64(key, value);
+        }
+        let after = page_count(btree);
+        after.saturating_sub(before)
+    }
+
+    #[test]
+    fn test_chunk_threshold_no_overflow() {
+        // A value of exactly CHUNK_THRESHOLD bytes should store inline — no overflow pages.
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        let value = vec![0xAAu8; CHUNK_THRESHOLD];
+        let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
+        assert_eq!(
+            pages_added, 0,
+            "CHUNK_THRESHOLD bytes should store inline (no overflow pages), got {pages_added}"
+        );
+
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_readonly();
+        cursor.first();
+        let mut buf = Vec::new();
+        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, value);
+    }
+
+    #[test]
+    fn test_chunk_threshold_plus_one_spills_to_one_overflow_page() {
+        // A value of CHUNK_THRESHOLD + 1 bytes should spill to exactly one overflow page.
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        let value = vec![0x55u8; CHUNK_THRESHOLD + 1];
+        let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
+        assert_eq!(
+            pages_added, 1,
+            "CHUNK_THRESHOLD+1 bytes should use exactly 1 overflow page, got {pages_added}"
+        );
+
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_readonly();
+        cursor.first();
+        let mut buf = Vec::new();
+        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, value);
+    }
+
+    #[test]
+    fn test_overflow_limit_boundary_two_pages() {
+        // CHUNK_THRESHOLD + OVERFLOW_LIMIT bytes: inline + exactly 1 overflow page
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        let value = vec![0x77u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT];
+        let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
+        assert_eq!(
+            pages_added, 1,
+            "CHUNK_THRESHOLD + OVERFLOW_LIMIT bytes should fit in 1 overflow page, got {pages_added}"
+        );
+
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_readonly();
+        cursor.first();
+        let mut buf = Vec::new();
+        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, value);
+    }
+
+    #[test]
+    fn test_overflow_chain_three_pages() {
+        // CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 + 1 bytes: 3 overflow pages
+        let test = TestDb::default();
+        let mut btree: BTree = test.catalog.into();
+        let root = btree.create_tree();
+
+        let value = vec![0x33u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 + 1];
+        let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
+        assert_eq!(
+            pages_added, 3,
+            "CHUNK_THRESHOLD + OVERFLOW_LIMIT*2 + 1 bytes should create 3 overflow pages, got {pages_added}"
+        );
+
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_readonly();
+        cursor.first();
+        let mut buf = Vec::new();
+        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, value);
     }
 }
