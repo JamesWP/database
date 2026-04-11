@@ -47,27 +47,24 @@ impl NodePageStore {
     }
 
     pub fn validate_format_version(&self) -> Result<(), Error> {
-        if let Some(zero) = self.pager.get_zero_page() {
-            match zero.format_version {
-                0 => Err(Error::FormatError(
-                    "Database format version 0 (JSON) is no longer supported. \
-                     Please recreate your database."
-                        .into(),
-                )),
-                1 => Err(Error::FormatError(
-                    "Database format version 1 is no longer supported. \
-                     Please recreate your database."
-                        .into(),
-                )),
-                2 => Ok(()),
-                v => Err(Error::FormatError(format!(
-                    "Unknown database format version {}. \
-                     This database may have been created by a newer version.",
-                    v
-                ))),
-            }
-        } else {
-            Ok(()) // empty file — no version to validate
+        match self.format_version() {
+            None => Ok(()), // empty file — no version to validate
+            Some(0) => Err(Error::FormatError(
+                "Database format version 0 (JSON) is no longer supported. \
+                 Please recreate your database."
+                    .into(),
+            )),
+            Some(1) => Err(Error::FormatError(
+                "Database format version 1 is no longer supported. \
+                 Please recreate your database."
+                    .into(),
+            )),
+            Some(2) => Ok(()),
+            Some(v) => Err(Error::FormatError(format!(
+                "Unknown database format version {}. \
+                 This database may have been created by a newer version.",
+                v
+            ))),
         }
     }
 
@@ -138,10 +135,16 @@ impl NodePageStore {
         Ok(())
     }
 
-    /// Read the ZeroPage (page 0) — used by diagnostic tools such as
-    /// `BTree::inspect_page`.  Returns `None` on an empty database.
-    pub fn get_zero_page(&self) -> Option<super::pager::ZeroPage> {
-        self.pager.get_zero_page()
+    /// Return the on-disk format version, or `None` if the database is empty.
+    pub fn format_version(&self) -> Option<u16> {
+        self.pager.get_zero_page().map(|z| z.format_version)
+    }
+
+    /// Return a debug string representation of the ZeroPage for diagnostic
+    /// tools (e.g. `BTree::inspect_page`).  Returns `None` if the database is
+    /// empty.
+    pub fn zero_page_debug(&self) -> Option<String> {
+        self.pager.get_zero_page().map(|z| format!("{:#?}", z))
     }
 
     // ── private helpers ──────────────────────────────────────────────────────

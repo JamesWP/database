@@ -1090,10 +1090,11 @@ impl BTree {
         println!("{}", "=====================================".bright_black());
 
         if page_num == 0 {
-            let zero = store.get_zero_page().unwrap();
             probe!(database, page_read_zero, 0u32);
             println!("{}: {}", "Type".yellow(), "ZeroPage".green());
-            println!("{:#?}", zero);
+            if let Some(desc) = store.zero_page_debug() {
+                println!("{}", desc);
+            }
         } else {
             let node = {
                 let n = store.read(PageId(page_num)).map_err(|e| e.to_string())?;
