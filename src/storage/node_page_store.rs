@@ -1,0 +1,242 @@
+use std::collections::HashMap;
+use std::path::Path;
+
+use super::node::NodePage;
+use super::page_id::{Error, PageId};
+use super::pager::{EncodingError, Pager};
+
+/// The middle layer of the storage stack.
+///
+/// Wraps `Pager` (raw file I/O) and owns a decoded `NodePage` cache.
+/// All B-tree code talks exclusively to `NodePageStore` — it never touches
+/// `Pager` directly.
+///
+/// ## Ownership model
+///
+/// * `read(id)` — borrows a `&NodePage` from the cache (populating on miss).
+///   The borrow must be dropped before calling `allocate`, `take`, or `write`.
+/// * `take(id)` — removes the entry from the cache and returns the `NodePage`
+///   owned.  The caller mutates it and hands it back with `write`.
+/// * `write(id, node)` — encodes the node to disk and stores it in the cache
+///   (no clone).  On overflow returns `Err(Error::PageFull(node))` so the
+///   caller gets the node back for splitting.
+/// * `allocate` — must be called **before** any `read`/`take` for the same
+///   operation; the borrow checker enforces this.
+pub struct NodePageStore {
+    pager: Pager,
+    cache: HashMap<PageId, NodePage>,
+}
+
+impl NodePageStore {
+    pub fn open(path: &Path) -> Result<Self, Error> {
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| Error::Io(std::io::Error::other("non-UTF-8 path")))?;
+        Ok(NodePageStore {
+            pager: Pager::new(path_str),
+            cache: HashMap::new(),
+        })
+    }
+
+    pub fn page_count(&self) -> u32 {
+        self.pager.get_file_size_pages()
+    }
+
+    pub fn validate_format_version(&self) -> Result<(), Error> {
+        if let Some(zero) = self.pager.get_zero_page() {
+            match zero.format_version {
+                0 => Err(Error::FormatError(
+                    "Database format version 0 (JSON) is no longer supported. \
+                     Please recreate your database."
+                        .into(),
+                )),
+                1 => Err(Error::FormatError(
+                    "Database format version 1 is no longer supported. \
+                     Please recreate your database."
+                        .into(),
+                )),
+                2 => Ok(()),
+                v => Err(Error::FormatError(format!(
+                    "Unknown database format version {}. \
+                     This database may have been created by a newer version.",
+                    v
+                ))),
+            }
+        } else {
+            Ok(()) // empty file — no version to validate
+        }
+    }
+
+    /// Allocate a fresh page and return its `PageId`.
+    /// Must be called before any `read` or `take` within the same operation.
+    pub fn allocate(&mut self) -> Result<PageId, Error> {
+        Ok(PageId(self.pager.allocate()))
+    }
+
+    /// Return a page to the free list and evict it from the cache.
+    pub fn free(&mut self, id: PageId) -> Result<(), Error> {
+        self.cache.remove(&id);
+        self.pager.dealocate(id.as_u32());
+        Ok(())
+    }
+
+    /// Borrow a `&NodePage` from the cache (fetching from disk on miss).
+    ///
+    /// The returned reference must be dropped before calling `allocate`,
+    /// `take`, or `write` — the borrow checker enforces this.
+    pub fn read(&mut self, id: PageId) -> Result<&NodePage, Error> {
+        self.ensure_cached(id)?;
+        Ok(self.cache.get(&id).unwrap())
+    }
+
+    /// Remove the page from the cache and return it owned.
+    ///
+    /// On a cache miss the page is loaded from disk without being inserted
+    /// into the cache.  The caller is expected to hand it back via `write`.
+    pub fn take(&mut self, id: PageId) -> Result<NodePage, Error> {
+        if let Some(node) = self.cache.remove(&id) {
+            return Ok(node);
+        }
+        // Cache miss: load from pager's decoded cache (or disk).
+        Ok(self.pager.get_and_decode_node(id.as_u32()))
+    }
+
+    /// Encode `node` and write it to disk, inserting it into the cache.
+    ///
+    /// Returns `Err(Error::PageFull(node))` when the encoded representation
+    /// exceeds `PAGE_SIZE` — the node is returned to the caller so a split
+    /// can be performed without a re-fetch or clone.
+    pub fn write(&mut self, id: PageId, node: NodePage) -> Result<(), Error> {
+        match self.pager.encode_and_set(id.as_u32(), &node) {
+            Ok(()) => {
+                self.cache.insert(id, node);
+                Ok(())
+            }
+            Err(EncodingError::NotEnoughSpaceInPage) => Err(Error::PageFull(node)),
+            Err(EncodingError::SerializationError(msg)) => Err(Error::Decode(msg)),
+        }
+    }
+
+    /// Flush the underlying file handle.
+    pub fn flush(&mut self) -> Result<(), Error> {
+        self.pager.flush()?;
+        Ok(())
+    }
+
+    // ── private helpers ──────────────────────────────────────────────────────
+
+    fn ensure_cached(&mut self, id: PageId) -> Result<(), Error> {
+        if self.cache.contains_key(&id) {
+            return Ok(());
+        }
+        let node = self.pager.get_and_decode_node(id.as_u32());
+        self.cache.insert(id, node);
+        Ok(())
+    }
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use tempfile::NamedTempFile;
+
+    use super::*;
+    use crate::storage::node::{LeafNodePage, NodePage};
+
+    fn open_store() -> (NamedTempFile, NodePageStore) {
+        let file = NamedTempFile::new().unwrap();
+        let store = NodePageStore::open(file.path()).unwrap();
+        (file, store)
+    }
+
+    fn leaf() -> NodePage {
+        NodePage::Leaf(LeafNodePage::default())
+    }
+
+    #[test]
+    fn read_populates_cache_on_miss() {
+        let (_f, mut store) = open_store();
+        let id = store.allocate().unwrap();
+        store.write(id, leaf()).unwrap();
+        // Clear cache to simulate a cold read.
+        store.cache.clear();
+
+        assert!(!store.cache.contains_key(&id), "cache should be empty");
+        let _ = store.read(id).unwrap();
+        assert!(store.cache.contains_key(&id), "read should populate cache");
+    }
+
+    #[test]
+    fn second_read_is_cache_hit() {
+        let (_f, mut store) = open_store();
+        let id = store.allocate().unwrap();
+        store.write(id, leaf()).unwrap();
+        store.cache.clear();
+
+        let _ = store.read(id).unwrap();
+        let len_after_first = store.cache.len();
+        let _ = store.read(id).unwrap();
+        assert_eq!(
+            store.cache.len(),
+            len_after_first,
+            "cache size unchanged on second read"
+        );
+    }
+
+    #[test]
+    fn take_removes_from_cache() {
+        let (_f, mut store) = open_store();
+        let id = store.allocate().unwrap();
+        store.write(id, leaf()).unwrap();
+
+        assert!(store.cache.contains_key(&id));
+        let _ = store.take(id).unwrap();
+        assert!(
+            !store.cache.contains_key(&id),
+            "take must evict cache entry"
+        );
+    }
+
+    #[test]
+    fn write_after_take_repopulates_cache() {
+        let (_f, mut store) = open_store();
+        let id = store.allocate().unwrap();
+        store.write(id, leaf()).unwrap();
+
+        let node = store.take(id).unwrap();
+        assert!(!store.cache.contains_key(&id));
+        store.write(id, node).unwrap();
+        assert!(
+            store.cache.contains_key(&id),
+            "write should repopulate cache"
+        );
+    }
+
+    #[test]
+    fn take_on_miss_loads_from_disk() {
+        let (_f, mut store) = open_store();
+        let id = store.allocate().unwrap();
+        store.write(id, leaf()).unwrap();
+        store.cache.clear();
+
+        let node = store.take(id).unwrap();
+        assert!(matches!(node, NodePage::Leaf(_)));
+        // Cache remains empty after take-on-miss.
+        assert!(!store.cache.contains_key(&id));
+    }
+
+    #[test]
+    fn free_evicts_cache_entry() {
+        let (_f, mut store) = open_store();
+        let id = store.allocate().unwrap();
+        store.write(id, leaf()).unwrap();
+
+        assert!(store.cache.contains_key(&id));
+        store.free(id).unwrap();
+        assert!(
+            !store.cache.contains_key(&id),
+            "free must evict cache entry"
+        );
+    }
+}
