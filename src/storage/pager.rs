@@ -96,11 +96,11 @@ impl Pager {
         }
         let bytes = self.read_bytes(0);
         probe!(database, page_read_zero, 0u32);
-        Some(Self::cbor_decode(&bytes))
+        Some(cbor_decode(&bytes))
     }
 
     fn set_zero_page(&mut self, zero: ZeroPage) {
-        let bytes = Self::cbor_encode(&zero).expect("ZeroPage serialization failed");
+        let bytes = cbor_encode(&zero).expect("ZeroPage serialization failed");
         self.write_bytes(0, &bytes);
         probe!(database, page_write_zero, 0u32);
     }
@@ -134,18 +134,6 @@ impl Pager {
         file.write_all(bytes).unwrap();
     }
 
-    // ── internal CBOR helpers (ZeroPage and FreeListPage only) ───────────────
-
-    fn cbor_encode<T: Serialize>(v: &T) -> Option<[u8; PAGE_SIZE as usize]> {
-        let mut bytes = [0u8; PAGE_SIZE as usize];
-        ciborium::ser::into_writer(v, &mut &mut bytes[..]).ok()?;
-        Some(bytes)
-    }
-
-    fn cbor_decode<T: DeserializeOwned>(bytes: &[u8; PAGE_SIZE as usize]) -> T {
-        ciborium::de::from_reader(&bytes[..]).unwrap()
-    }
-
     // ── page lifecycle ────────────────────────────────────────────────────────
 
     pub(super) fn allocate(&mut self) -> PageId {
@@ -163,13 +151,13 @@ impl Pager {
             // Try to reclaim a page from the free list.
             if let Some(head_page_no) = zero.free_list_head {
                 let bytes = self.read_bytes(head_page_no);
-                let mut free_list_page: FreeListPage = Self::cbor_decode(&bytes);
+                let mut free_list_page: FreeListPage = cbor_decode(&bytes);
                 probe!(database, page_read_freelist, head_page_no);
 
                 if let Some(page_id) = free_list_page.page_ids.pop() {
                     // Update the partially-drained free list page.
                     let updated =
-                        Self::cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                        cbor_encode(&free_list_page).expect("FreeListPage encode failed");
                     self.write_bytes(head_page_no, &updated);
                     return PageId(page_id);
                 } else {
@@ -197,12 +185,12 @@ impl Pager {
 
         if let Some(head_page_no) = zero.free_list_head {
             let bytes = self.read_bytes(head_page_no);
-            let mut free_list_page: FreeListPage = Self::cbor_decode(&bytes);
+            let mut free_list_page: FreeListPage = cbor_decode(&bytes);
 
             if free_list_page.page_ids.len() < 1000 {
                 free_list_page.page_ids.push(idx);
                 let updated =
-                    Self::cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                    cbor_encode(&free_list_page).expect("FreeListPage encode failed");
                 self.write_bytes(head_page_no, &updated);
                 return;
             }
@@ -213,7 +201,7 @@ impl Pager {
             next: zero.free_list_head,
             page_ids: vec![],
         };
-        let bytes = Self::cbor_encode(&new_free_list_page).expect("FreeListPage encode failed");
+        let bytes = cbor_encode(&new_free_list_page).expect("FreeListPage encode failed");
         self.write_bytes(idx, &bytes);
 
         zero.free_list_head = Some(idx);
@@ -223,6 +211,18 @@ impl Pager {
     pub(super) fn flush(&mut self) -> std::io::Result<()> {
         self.file.borrow_mut().flush()
     }
+}
+
+// ── internal CBOR helpers (ZeroPage and FreeListPage only) ───────────────────
+
+fn cbor_encode<T: Serialize>(v: &T) -> Option<[u8; PAGE_SIZE as usize]> {
+    let mut bytes = [0u8; PAGE_SIZE as usize];
+    ciborium::ser::into_writer(v, &mut &mut bytes[..]).ok()?;
+    Some(bytes)
+}
+
+fn cbor_decode<T: DeserializeOwned>(bytes: &[u8; PAGE_SIZE as usize]) -> T {
+    ciborium::de::from_reader(&bytes[..]).unwrap()
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
