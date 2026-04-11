@@ -2,72 +2,73 @@ use crate::engine::scalarvalue::ScalarValue;
 use probe::probe;
 
 use super::node::NodePage;
-use super::pager::Pager;
+use super::node_page_store::NodePageStore;
+use super::page_id::PageId;
 
-pub struct CellReader<'a> {
-    pager: &'a Pager,
+/// Reads cell data from a leaf page, following overflow chains eagerly on
+/// construction.  After `new` returns the store borrow is released — no
+/// lifetime tie to the store.
+pub struct CellReader {
     key: Vec<u8>,
-    continuation: Option<u32>,
 
-    // Owned buffer - safe, no dangling pointers
+    // Owned buffer containing the complete (possibly multi-page) value.
     buf: Vec<u8>,
     buf_pos: usize,
 }
 
-impl<'a> std::io::Read for CellReader<'a> {
+impl std::io::Read for CellReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // Read from current position in buffer
         let available = self.buf.len() - self.buf_pos;
-        if available > 0 {
-            let to_copy = available.min(buf.len());
-            buf[..to_copy].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + to_copy]);
-            self.buf_pos += to_copy;
-            return Ok(to_copy);
+        if available == 0 {
+            return Ok(0);
         }
-
-        // If we've exhausted the buffer, try to load overflow page
-        match self.continuation {
-            None => Ok(0),
-            Some(continuation) => {
-                let node: Box<NodePage> = Box::new(self.pager.get_and_decode_node(continuation));
-                let overflow_page = match node.as_ref() {
-                    NodePage::OverflowPage(p) => p,
-                    _ => panic!("Expected overflow page"),
-                };
-
-                // Append overflow data to buffer
-                self.buf.extend_from_slice(overflow_page.value());
-                self.continuation = overflow_page.continuation();
-
-                // Try reading again
-                self.read(buf)
-            }
-        }
+        let to_copy = available.min(buf.len());
+        buf[..to_copy].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + to_copy]);
+        self.buf_pos += to_copy;
+        Ok(to_copy)
     }
 }
 
-impl<'a> CellReader<'a> {
-    pub fn new(pager: &'a Pager, leaf_page_idx: u32, cell_idx: usize) -> Option<CellReader<'a>> {
-        let node: Box<NodePage> = Box::new(pager.get_and_decode_node(leaf_page_idx));
+impl CellReader {
+    /// Construct a `CellReader` for the cell at `cell_idx` on `leaf_page_idx`.
+    ///
+    /// All overflow pages are followed eagerly so the store borrow does not
+    /// outlive this function.  Returns `None` if the cell does not exist.
+    pub fn new(
+        store: &mut NodePageStore,
+        leaf_page_idx: u32,
+        cell_idx: usize,
+    ) -> Option<CellReader> {
+        // Read the leaf page with a short-lived borrow.
+        let (key, mut buf, mut continuation) = {
+            let node = store.read(PageId(leaf_page_idx)).ok()?;
+            let leaf_page = node.leaf()?;
+            let cell = leaf_page.get_item_at_index(cell_idx)?;
+            (
+                cell.key().to_vec(),
+                cell.value().to_vec(),
+                cell.continuation(),
+            )
+        }; // node borrow ends here
 
-        let leaf_page = node
-            .leaf()
-            .expect("Values are always supposed to be in leaf pages");
-
-        let cell = leaf_page.get_item_at_index(cell_idx)?;
-        let key = cell.key().to_vec();
-        let continuation = cell.continuation();
-        let value = cell.value();
-
-        // Copy value bytes into owned buffer - safe, no dangling pointers
-        let buf = value.to_vec();
+        // Eagerly follow the overflow chain.
+        while let Some(cont_page) = continuation {
+            let (content, next) = {
+                let node = store.read(PageId(cont_page)).ok()?;
+                let overflow = match node {
+                    NodePage::OverflowPage(p) => p,
+                    _ => return None,
+                };
+                (overflow.value().to_vec(), overflow.continuation())
+            }; // node borrow ends here
+            buf.extend_from_slice(&content);
+            continuation = next;
+        }
 
         Some(CellReader {
-            pager,
+            key,
             buf,
             buf_pos: 0,
-            key,
-            continuation,
         })
     }
 
@@ -101,14 +102,14 @@ mod tests {
         ciborium::ser::into_writer(&vec![1, 2, 3], &mut value).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readwrite();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.insert_u64(key, value.clone());
         }
 
         // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readonly();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
@@ -133,14 +134,14 @@ mod tests {
         ciborium::ser::into_writer(&large_value, &mut value_json).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readwrite();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.insert_u64(key, value_json.clone());
         }
 
         // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readonly();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
@@ -169,14 +170,14 @@ mod tests {
         ciborium::ser::into_writer(&very_large_value, &mut value_json).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readwrite();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.insert_u64(key, value_json.clone());
         }
 
         // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readonly();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
@@ -209,14 +210,14 @@ mod tests {
         ciborium::ser::into_writer(&values, &mut value_bytes).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readwrite();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.insert_u64(key, value_bytes.clone());
         }
 
         // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readonly();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
@@ -248,14 +249,14 @@ mod tests {
         ciborium::ser::into_writer(&values, &mut value_bytes).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readwrite();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.insert_u64(key, value_bytes.clone());
         }
 
         // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readonly();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();
@@ -283,14 +284,14 @@ mod tests {
         ciborium::ser::into_writer(&values, &mut value_bytes).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readwrite();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.insert_u64(key, value_bytes.clone());
         }
 
         // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
-            let mut cursor = cursor_handle.open_readonly();
+            let mut cursor = cursor_handle.open_cursor();
             cursor.first();
 
             let mut reader = cursor.get_entry().unwrap();

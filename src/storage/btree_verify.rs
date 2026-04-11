@@ -2,7 +2,8 @@ use crate::storage::node::NodePage;
 
 use super::{
     node::{self, InteriorNodePage, LeafNodePage},
-    pager::Pager,
+    node_page_store::NodePageStore,
+    page_id::PageId,
 };
 
 #[derive(Debug)]
@@ -19,7 +20,7 @@ impl From<node::VerifyError> for VerifyError {
     }
 }
 
-fn verify_leaf(_pager: &Pager, leaf: LeafNodePage) -> Result<usize, VerifyError> {
+fn verify_leaf(_store: &mut NodePageStore, leaf: LeafNodePage) -> Result<usize, VerifyError> {
     // Check each leaf page has keys (unless its a root node)
     assert!(leaf.num_items() > 0);
 
@@ -29,7 +30,10 @@ fn verify_leaf(_pager: &Pager, leaf: LeafNodePage) -> Result<usize, VerifyError>
     Ok(0)
 }
 
-fn verify_interior(pager: &Pager, interior: InteriorNodePage) -> Result<usize, VerifyError> {
+fn verify_interior(
+    store: &mut NodePageStore,
+    interior: InteriorNodePage,
+) -> Result<usize, VerifyError> {
     // if interior page contains edges to leaves, all edges must be leaves
     // if interior page contains edges to interior nodes, each interior node must have leaves at the same level
     // Check all interior node's keys are in order
@@ -43,7 +47,12 @@ fn verify_interior(pager: &Pager, interior: InteriorNodePage) -> Result<usize, V
     // Check all interior node's child page's keys are within bounds
     for edge in 0..interior.num_edges() - 1 {
         let child_page_idx = interior.get_child_page_by_index(edge);
-        let child_page: NodePage = pager.get_and_decode_node(child_page_idx);
+        let child_page: NodePage = {
+            let n = store
+                .read(PageId(child_page_idx))
+                .map_err(|_| VerifyError::Imbalance)?;
+            n.clone()
+        };
 
         let edge_key = interior.get_key_by_index(edge);
         let smallest_key = child_page.smallest_key();
@@ -57,8 +66,13 @@ fn verify_interior(pager: &Pager, interior: InteriorNodePage) -> Result<usize, V
 
     for edge in 0..interior.num_edges() {
         let edge_idx = interior.get_child_page_by_index(edge);
-        let edge: NodePage = pager.get_and_decode_node(edge_idx);
-        let level = verify_node(pager, edge)?;
+        let edge_node: NodePage = {
+            let n = store
+                .read(PageId(edge_idx))
+                .map_err(|_| VerifyError::Imbalance)?;
+            n.clone()
+        };
+        let level = verify_node(store, edge_node)?;
         edge_levels.push(level);
     }
 
@@ -78,16 +92,21 @@ fn verify_interior(pager: &Pager, interior: InteriorNodePage) -> Result<usize, V
     Ok(first_level)
 }
 
-fn verify_node(pager: &Pager, node: NodePage) -> Result<usize, VerifyError> {
+fn verify_node(store: &mut NodePageStore, node: NodePage) -> Result<usize, VerifyError> {
     match node {
-        NodePage::Leaf(l) => verify_leaf(pager, l),
-        NodePage::Interior(i) => verify_interior(pager, i),
+        NodePage::Leaf(l) => verify_leaf(store, l),
+        NodePage::Interior(i) => verify_interior(store, i),
         NodePage::OverflowPage(_) => Ok(1000),
     }
 }
 
-pub fn verify(pager: &Pager, root_page_idx: u32) -> Result<(), VerifyError> {
-    let root_page: NodePage = pager.get_and_decode_node(root_page_idx);
+pub fn verify(store: &mut NodePageStore, root_page_idx: u32) -> Result<(), VerifyError> {
+    let root_page: NodePage = {
+        let n = store
+            .read(PageId(root_page_idx))
+            .map_err(|_| VerifyError::Imbalance)?;
+        n.clone()
+    };
 
     match root_page {
         NodePage::Leaf(l) => {
@@ -95,7 +114,7 @@ pub fn verify(pager: &Pager, root_page_idx: u32) -> Result<(), VerifyError> {
             l.verify_key_ordering()?;
         }
         NodePage::Interior(i) => {
-            verify_interior(pager, i)?;
+            verify_interior(store, i)?;
         }
         NodePage::OverflowPage(_) => {
             panic!()

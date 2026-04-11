@@ -22,6 +22,7 @@ use super::pager::{EncodingError, Pager};
 ///   caller gets the node back for splitting.
 /// * `allocate` — must be called **before** any `read`/`take` for the same
 ///   operation; the borrow checker enforces this.
+#[derive(Debug)]
 pub struct NodePageStore {
     pager: Pager,
     cache: HashMap<PageId, NodePage>,
@@ -121,6 +122,12 @@ impl NodePageStore {
     pub fn flush(&mut self) -> Result<(), Error> {
         self.pager.flush()?;
         Ok(())
+    }
+
+    /// Read the ZeroPage (page 0) — used by diagnostic tools such as
+    /// `BTree::inspect_page`.  Returns `None` on an empty database.
+    pub fn get_zero_page(&self) -> Option<super::pager::ZeroPage> {
+        self.pager.get_zero_page()
     }
 
     // ── private helpers ──────────────────────────────────────────────────────
