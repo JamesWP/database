@@ -15,9 +15,9 @@ use crate::storage::node::{NodePage, OverflowPage, SearchResult};
 use super::btree_verify::VerifyError;
 use super::catalog_cache::{extract_columns_from_index_sql, CatalogSnapshot, IndexInfo};
 use super::cell::Value;
+use super::error::Error as StorageError;
 use super::node::{self, InteriorNodePage};
 use super::node_page_store::NodePageStore;
-use super::error::Error as StorageError;
 use super::page_id::PageId;
 use super::pager;
 use super::{btree_graph, btree_verify, CellReader};
@@ -1256,7 +1256,7 @@ mod test {
     #[test]
     fn test_create_blank() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
 
         let root = btree.create_tree();
 
@@ -1288,7 +1288,7 @@ mod test {
     #[test]
     fn test_create_and_insert() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
 
         let root = btree.create_tree();
 
@@ -1316,7 +1316,7 @@ mod test {
     #[test]
     fn test_insert_many() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
 
         let root = btree.create_tree();
 
@@ -1352,7 +1352,7 @@ mod test {
     #[test]
     fn test_search_many() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
 
         let root = btree.create_tree();
 
@@ -1388,7 +1388,7 @@ mod test {
     #[test]
     fn multi_level_insertion() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
 
         let root = btree.create_tree();
 
@@ -1477,7 +1477,7 @@ mod test {
         let large_test_case = [(28, ('A', 976))];
 
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         do_test_ordering(&large_test_case, &mut btree, true);
 
         println!("{btree}");
@@ -1488,7 +1488,7 @@ mod test {
         #[test]
         fn test_ordering(ordering: bool, elements in prop::collection::vec(&(50..60u64, &(prop::char::range('A', 'Z'), 500..600usize)), 10..20usize)) {
             let test = TestDb::default();
-            let mut btree: BTree = test.catalog.into();
+            let mut btree = test.btree;
             do_test_ordering(elements.as_slice(), &mut btree, ordering);
         }
 
@@ -1505,7 +1505,7 @@ mod test {
             mut keys in prop::collection::vec(0u64..100_000, 50..100usize),
         ) {
             let test = TestDb::default();
-            let mut btree: BTree = test.catalog.into();
+            let mut btree = test.btree;
             let root = btree.create_tree();
 
             // Deduplicate so every key is unique
@@ -1566,7 +1566,7 @@ mod test {
     #[test]
     fn test_user_table_root_stable_after_splits() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
 
         let initial_root = btree.create_tree();
 
@@ -1593,7 +1593,7 @@ mod test {
     #[test]
     fn test_empty_table_scan() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let mut cursor_handle = btree.open(root);
@@ -1609,7 +1609,7 @@ mod test {
     #[test]
     fn test_duplicate_key_insert() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1641,7 +1641,7 @@ mod test {
     #[test]
     fn test_find_nonexistent_key() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1662,7 +1662,7 @@ mod test {
     #[test]
     fn test_cursor_prev_from_middle() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1712,7 +1712,7 @@ mod test {
         use rand::SeedableRng;
 
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let mut keys: Vec<u64> = (0..200).collect();
@@ -1751,7 +1751,7 @@ mod test {
     #[test]
     fn test_cursor_last_single_page() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1780,7 +1780,7 @@ mod test {
     #[test]
     fn test_cursor_last_multi_level() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1809,7 +1809,7 @@ mod test {
     #[test]
     fn test_cursor_last_then_prev() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1843,7 +1843,7 @@ mod test {
     #[test]
     fn test_find_returns_true_for_existing() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1871,7 +1871,7 @@ mod test {
     #[test]
     fn test_find_returns_false_for_missing() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1900,7 +1900,7 @@ mod test {
     #[test]
     fn test_btree_delete_single() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1932,7 +1932,7 @@ mod test {
     #[test]
     fn test_btree_delete_nonexistent() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1959,7 +1959,7 @@ mod test {
     #[test]
     fn test_btree_delete_from_multi_page() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -1989,7 +1989,7 @@ mod test {
     #[test]
     fn test_btree_delete_then_scan() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2034,7 +2034,7 @@ mod test {
     #[test]
     fn test_btree_delete_all() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2068,7 +2068,7 @@ mod test {
     fn test_cursor_position_states() {
         // Verify cursor position state transitions
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let mut cursor_handle = btree.open(root);
@@ -2165,7 +2165,7 @@ mod test {
     #[test]
     fn test_measure_cbor_framing() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let mut cursor_handle = btree.open(root);
@@ -2198,7 +2198,7 @@ mod test {
     #[test]
     fn test_large_overflow() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let large_value = vec![42u8; OVERFLOW_LIMIT * 3 + 1];
@@ -2223,7 +2223,7 @@ mod test {
     fn test_cursor_next_after_delete() {
         // Delete current key, verify next() lands on correct successor
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2256,7 +2256,7 @@ mod test {
     fn test_cursor_next_after_delete_last() {
         // Delete the last key, verify next() reaches AtEnd
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2282,7 +2282,7 @@ mod test {
     fn test_cursor_next_after_insert() {
         // Insert during scan, verify iteration continues correctly
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2313,7 +2313,7 @@ mod test {
     fn test_cursor_survives_split() {
         // Insert enough to trigger page split, verify navigation still works
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2352,7 +2352,7 @@ mod test {
     fn test_cursor_delete_all_forward() {
         // Delete every key via first() + loop of delete_current() + next()
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2385,7 +2385,7 @@ mod test {
     fn test_cursor_get_entry_after_mutation() {
         // Verify get_entry() re-seeks after delete
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2413,7 +2413,7 @@ mod test {
     fn test_cursor_refind_after_insert() {
         // After inserts, first()/next() should navigate correctly
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2442,7 +2442,7 @@ mod test {
     fn test_variable_length_keys_ordering() {
         // Keys of different lengths should sort lexicographically
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         {
@@ -2469,7 +2469,7 @@ mod test {
     #[test]
     fn test_variable_length_keys_long_key() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let long_key: Vec<u8> = (0u8..=255).cycle().take(1024).collect();
@@ -2501,7 +2501,7 @@ mod test {
     #[test]
     fn test_variable_length_keys_mixed_lengths() {
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let keys: Vec<Vec<u8>> = vec![
@@ -2542,7 +2542,7 @@ mod test {
     fn test_variable_length_keys_splits() {
         // Insert many variable-length keys to trigger B-tree splits
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let mut keys: Vec<Vec<u8>> = (0u32..80)
@@ -2582,7 +2582,10 @@ mod test {
                 count += 1;
                 cursor.next();
             }
-            assert_eq!(count, num_keys, "All keys should be accessible after splits");
+            assert_eq!(
+                count, num_keys,
+                "All keys should be accessible after splits"
+            );
         }
     }
 
@@ -2609,7 +2612,7 @@ mod test {
     fn test_chunk_threshold_no_overflow() {
         // A value of exactly CHUNK_THRESHOLD bytes should store inline — no overflow pages.
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let value = vec![0xAAu8; CHUNK_THRESHOLD];
@@ -2631,7 +2634,7 @@ mod test {
     fn test_chunk_threshold_plus_one_spills_to_one_overflow_page() {
         // A value of CHUNK_THRESHOLD + 1 bytes should spill to exactly one overflow page.
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let value = vec![0x55u8; CHUNK_THRESHOLD + 1];
@@ -2653,7 +2656,7 @@ mod test {
     fn test_overflow_limit_boundary_two_pages() {
         // CHUNK_THRESHOLD + OVERFLOW_LIMIT bytes: inline + exactly 1 overflow page
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let value = vec![0x77u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT];
@@ -2675,7 +2678,7 @@ mod test {
     fn test_overflow_chain_three_pages() {
         // CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 + 1 bytes: 3 overflow pages
         let test = TestDb::default();
-        let mut btree: BTree = test.catalog.into();
+        let mut btree = test.btree;
         let root = btree.create_tree();
 
         let value = vec![0x33u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 + 1];

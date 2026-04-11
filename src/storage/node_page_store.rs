@@ -3,8 +3,8 @@ use std::path::Path;
 
 use probe::probe;
 
-use super::node::NodePage;
 use super::error::Error;
+use super::node::NodePage;
 use super::page_id::PageId;
 use super::pager::{Pager, PAGE_SIZE};
 

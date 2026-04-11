@@ -1,8 +1,8 @@
 //! Query optimizer: rewrites a naive LogicalPlan tree to use indexes and elide redundant sorts.
 
-use crate::catalog::Catalog;
 use crate::frontend::ast::Statement;
 use crate::frontend::parse;
+use crate::storage::BTree;
 
 use super::{BinaryOp, JoinStrategy, Literal, LogicalPlan, PlanExpr, UnaryOp};
 
@@ -126,7 +126,7 @@ fn substitute_column_refs(expr: PlanExpr, inner_cols: &[PlanExpr]) -> PlanExpr {
 ///
 /// Rule 1: Filter(predicate, Scan) → IndexScan+RowidLookup when a matching index exists.
 /// Rule 2: Sort(keys, plan) → plan when an IndexScan below already provides the ordering.
-pub(super) fn optimize(plan: LogicalPlan, catalog: &Catalog) -> LogicalPlan {
+pub(super) fn optimize(plan: LogicalPlan, catalog: &BTree) -> LogicalPlan {
     match plan {
         // Rule 1: Scan+Filter → IndexScan+RowidLookup when a matching index exists.
         LogicalPlan::Filter { predicate, input } => {
@@ -277,7 +277,7 @@ fn try_index_scan_plan(
     predicate: &PlanExpr,
     table_rootpage: u32,
     scan_columns: &[usize],
-    catalog: &Catalog,
+    catalog: &BTree,
 ) -> Option<LogicalPlan> {
     let table_name = catalog.lookup_table_by_rootpage(table_rootpage)?;
     let indexes = catalog.lookup_indexes_for_table(&table_name);
@@ -348,7 +348,7 @@ fn try_index_probe_plan(
     on_condition: &PlanExpr,
     right: &LogicalPlan,
     left_column_count: usize,
-    catalog: &Catalog,
+    catalog: &BTree,
 ) -> Option<(LogicalPlan, PlanExpr)> {
     // Right side must be a plain Scan (or possibly RowidLookup wrapping a scan that
     // the sub-optimizer already rewrote — we only handle the Scan case here).
@@ -658,7 +658,7 @@ fn try_covering_index_scan(
     input: &LogicalPlan,
     table_rootpage: u32,
     scan_columns: &[usize],
-    catalog: &Catalog,
+    catalog: &BTree,
 ) -> Option<LogicalPlan> {
     // Only applies when the direct child is a plain IndexScan.
     let (index_rootpage, index_col_idx, lower_bound, upper_bound) = match input {
@@ -716,8 +716,8 @@ mod tests {
     /// Create a test database with users(id, name, age) table.
     fn make_users_db() -> (TestDb, u32) {
         let mut db = TestDb::default();
-        let root = db.catalog.btree_mut().create_tree();
-        db.catalog.insert_entry(
+        let root = db.btree.create_tree();
+        db.btree.insert_entry(
             "table",
             "users",
             "users",
@@ -730,8 +730,8 @@ mod tests {
     /// Create a test database with users(id, name, age) and an index on age.
     fn make_users_db_with_age_index() -> (TestDb, u32) {
         let (mut db, root) = make_users_db();
-        let idx_root = db.catalog.btree_mut().create_tree();
-        db.catalog.insert_entry(
+        let idx_root = db.btree.create_tree();
+        db.btree.insert_entry(
             "index",
             "idx_age",
             "users",
@@ -789,7 +789,7 @@ mod tests {
                 crate::frontend::ast::Statement::Select(s) => s,
                 _ => panic!("expected select"),
             },
-            &db.catalog,
+            &db.btree,
         )
         .expect("plan_select failed");
 
@@ -819,7 +819,7 @@ mod tests {
             }),
         };
 
-        let optimized = optimize(naive, &db.catalog);
+        let optimized = optimize(naive, &db.btree);
         assert!(
             matches!(&optimized, LogicalPlan::RowidLookup { input, .. }
                 if matches!(input.as_ref(), LogicalPlan::IndexScan { .. })),
@@ -832,7 +832,7 @@ mod tests {
     fn optimizer_elides_sort_over_index_scan() {
         // Build Sort(age ASC, Project(RowidLookup(IndexScan(age)))) and assert Sort is absent.
         let (db, root) = make_users_db_with_age_index();
-        let idx_root = db.catalog.lookup_indexes_for_table("users")[0].rootpage;
+        let idx_root = db.btree.lookup_indexes_for_table("users")[0].rootpage;
 
         let index_plan = make_index_scan(root, idx_root, 2); // age is col 2
 
@@ -854,7 +854,7 @@ mod tests {
             input: Box::new(project),
         };
 
-        let optimized = optimize(sort_plan, &db.catalog);
+        let optimized = optimize(sort_plan, &db.btree);
         assert!(
             !matches!(optimized, LogicalPlan::Sort { .. }),
             "expected Sort to be elided, got: {:?}",
@@ -893,7 +893,7 @@ mod tests {
             }),
         };
 
-        let optimized = optimize(plan, &db.catalog);
+        let optimized = optimize(plan, &db.btree);
         assert!(
             matches!(optimized, LogicalPlan::Sort { .. }),
             "expected Sort to remain when no index, got: {:?}",
@@ -1011,8 +1011,8 @@ mod tests {
     #[test]
     fn optimizer_promotes_nested_loop_to_hash_when_no_index() {
         let (mut db, users_root) = make_users_db();
-        let orders_root = db.catalog.btree_mut().create_tree();
-        db.catalog.insert_entry(
+        let orders_root = db.btree.create_tree();
+        db.btree.insert_entry(
             "table",
             "orders",
             "orders",
@@ -1042,7 +1042,7 @@ mod tests {
             left_column_count: 3,
         };
 
-        let optimized = optimize(plan, &db.catalog);
+        let optimized = optimize(plan, &db.btree);
         assert!(
             matches!(
                 &optimized,
@@ -1063,16 +1063,16 @@ mod tests {
         // Join { NestedLoop, Scan(users), Scan(orders), on: users.id = orders.user_id }
         // = ColumnRef(0) = ColumnRef(3)  [0 is left.id; 3 = left_col_count(3) + 0 (user_id)]
         let (mut db, users_root) = make_users_db();
-        let orders_root = db.catalog.btree_mut().create_tree();
-        db.catalog.insert_entry(
+        let orders_root = db.btree.create_tree();
+        db.btree.insert_entry(
             "table",
             "orders",
             "orders",
             orders_root,
             "CREATE TABLE orders (user_id INTEGER, amount INTEGER)",
         );
-        let idx_root = db.catalog.btree_mut().create_tree();
-        db.catalog.insert_entry(
+        let idx_root = db.btree.create_tree();
+        db.btree.insert_entry(
             "index",
             "idx_orders_user",
             "orders",
@@ -1100,7 +1100,7 @@ mod tests {
             left_column_count: 3,
         };
 
-        let optimized = optimize(plan, &db.catalog);
+        let optimized = optimize(plan, &db.btree);
 
         // Should keep NestedLoop with IndexProbe as right child
         assert!(

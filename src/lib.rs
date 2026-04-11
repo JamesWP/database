@@ -1,6 +1,6 @@
 // Library exports for integration tests and external use
 
-pub mod catalog;
+mod catalog;
 pub mod compiler;
 pub mod db;
 pub mod engine;

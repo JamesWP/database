@@ -1,4 +1,3 @@
-use crate::catalog::Catalog;
 use crate::compiler;
 use crate::engine::scalarvalue::ScalarValue;
 use crate::engine::Engine;
@@ -6,6 +5,7 @@ use crate::explain::{ExplainSchema, IndexMeta, TableMeta};
 use crate::frontend::ast::{ColumnConstraint, DataType, Statement};
 use crate::frontend::{parse, ParseError};
 use crate::planner::{self, LogicalPlan, PlanError};
+use crate::storage::BTree;
 use probe::probe;
 
 #[derive(Debug)]
@@ -101,7 +101,7 @@ impl std::fmt::Display for ExecuteError {
     }
 }
 
-pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, ExecuteError> {
+pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteError> {
     let sql_bytes = sql.as_bytes();
     probe!(
         database,
@@ -124,7 +124,7 @@ pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, Execut
                 return Err(ExecuteError::TableAlreadyExists(name.clone()));
             }
 
-            let root_page = catalog.btree_mut().create_tree();
+            let root_page = catalog.create_tree();
             let ddl = sql.to_string();
             catalog.insert_entry("table", name, name, root_page, &ddl);
 
@@ -135,7 +135,7 @@ pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, Execut
                 if is_pk || is_uq {
                     let prefix = if is_pk { "_pk_" } else { "_uq_" };
                     let index_name = format!("{}{}_{}", prefix, name, col.name);
-                    let index_rootpage = catalog.btree_mut().create_tree();
+                    let index_rootpage = catalog.create_tree();
                     let index_sql = format!(
                         "CREATE UNIQUE INDEX {} ON {}({})",
                         index_name, name, col.name
@@ -163,7 +163,7 @@ pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, Execut
             // Invalidate the rowid cache before deleting so a subsequent CREATE
             // TABLE + INSERT on the same rootpage starts rowids from 1.
             if let Some((rootpage, _)) = catalog.lookup_table(name) {
-                catalog.btree().invalidate_rowid_cache(rootpage);
+                catalog.invalidate_rowid_cache(rootpage);
             }
 
             // Delete the catalog entry (and associated indexes)
@@ -237,7 +237,7 @@ pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, Execut
             }
 
             // 5. Create the index B-tree
-            let index_rootpage = catalog.btree_mut().create_tree();
+            let index_rootpage = catalog.create_tree();
 
             // 6. Populate index by running a PopulateIndex plan via the engine
             let plan = LogicalPlan::PopulateIndex {
@@ -253,7 +253,7 @@ pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, Execut
             Engine::with_program(
                 compiled.operations(),
                 compiled.num_registers(),
-                catalog.btree().clone(),
+                catalog.clone(),
             )
             .run();
 
@@ -279,7 +279,7 @@ pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, Execut
             let engine = Engine::with_program(
                 compiled.operations(),
                 compiled.num_registers(),
-                catalog.btree().clone(),
+                catalog.clone(),
             );
             Ok(ExecuteResult::Query(QueryExecution::new(
                 engine,
@@ -302,7 +302,7 @@ pub fn execute(sql: &str, catalog: &mut Catalog) -> Result<ExecuteResult, Execut
     }
 }
 
-pub fn build_explain_schema(catalog: &Catalog) -> ExplainSchema {
+pub fn build_explain_schema(catalog: &BTree) -> ExplainSchema {
     let mut schema = ExplainSchema::default();
     for (obj_type, name, tbl_name, rootpage, sql) in catalog.scan_entries() {
         match obj_type.as_str() {
@@ -339,7 +339,7 @@ mod tests {
     use crate::test::TestDb;
 
     /// Execute a SQL query and collect all rows.
-    fn collect_rows(sql: &str, catalog: &mut Catalog) -> Vec<Vec<ScalarValue>> {
+    fn collect_rows(sql: &str, catalog: &mut BTree) -> Vec<Vec<ScalarValue>> {
         match execute(sql, catalog).expect("execute failed") {
             ExecuteResult::Query(mut q) => {
                 let mut rows = Vec::new();
@@ -371,13 +371,13 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
         let rows = explain_rows(
             execute(
                 "EXPLAIN SELECT id, name FROM users WHERE age = 30",
-                &mut test.catalog,
+                &mut test.btree,
             )
             .unwrap(),
         );
@@ -397,14 +397,14 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
-        execute("CREATE INDEX idx_age ON users(age)", &mut test.catalog).unwrap();
+        execute("CREATE INDEX idx_age ON users(age)", &mut test.btree).unwrap();
         let rows = explain_rows(
             execute(
                 "EXPLAIN SELECT id FROM users WHERE age = 30",
-                &mut test.catalog,
+                &mut test.btree,
             )
             .unwrap(),
         );
@@ -422,9 +422,9 @@ mod tests {
     #[test]
     fn test_explain_does_not_execute() {
         let mut test = TestDb::default();
-        execute("CREATE TABLE t (id INTEGER)", &mut test.catalog).unwrap();
-        execute("EXPLAIN INSERT INTO t VALUES (1)", &mut test.catalog).unwrap();
-        let mut q = match execute("SELECT id FROM t", &mut test.catalog).unwrap() {
+        execute("CREATE TABLE t (id INTEGER)", &mut test.btree).unwrap();
+        execute("EXPLAIN INSERT INTO t VALUES (1)", &mut test.btree).unwrap();
+        let mut q = match execute("SELECT id FROM t", &mut test.btree).unwrap() {
             ExecuteResult::Query(q) => q,
             other => panic!("Expected Query, got {:?}", other),
         };
@@ -436,7 +436,7 @@ mod tests {
         let mut test = TestDb::default();
         let result = execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
         match result {
@@ -452,14 +452,14 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
         // Try to create the same table again
         let result = execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         );
         match result {
             Err(ExecuteError::TableAlreadyExists(name)) => {
@@ -474,15 +474,11 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
-        let result = execute(
-            "INSERT INTO users VALUES (1, 'alice', 30)",
-            &mut test.catalog,
-        )
-        .unwrap();
+        let result = execute("INSERT INTO users VALUES (1, 'alice', 30)", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(mut q) => {
                 // INSERT yields a count row
@@ -499,31 +495,27 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
         // Insert two rows
-        let mut q = match execute(
-            "INSERT INTO users VALUES (1, 'alice', 30)",
-            &mut test.catalog,
-        )
-        .unwrap()
-        {
-            ExecuteResult::Query(q) => q,
-            _ => panic!(),
-        };
+        let mut q =
+            match execute("INSERT INTO users VALUES (1, 'alice', 30)", &mut test.btree).unwrap() {
+                ExecuteResult::Query(q) => q,
+                _ => panic!(),
+            };
         while q.next().is_some() {}
 
         let mut q =
-            match execute("INSERT INTO users VALUES (2, 'bob', 25)", &mut test.catalog).unwrap() {
+            match execute("INSERT INTO users VALUES (2, 'bob', 25)", &mut test.btree).unwrap() {
                 ExecuteResult::Query(q) => q,
                 _ => panic!(),
             };
         while q.next().is_some() {}
 
         // Select column subset (name, age) from 3-column table
-        let result = execute("SELECT name, age FROM users", &mut test.catalog).unwrap();
+        let result = execute("SELECT name, age FROM users", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(mut q) => {
                 let row1 = q.next().expect("Expected row 1");
@@ -545,7 +537,7 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
@@ -555,7 +547,7 @@ mod tests {
             "INSERT INTO users VALUES (2, 'bob', 25)",
             "INSERT INTO users VALUES (3, 'charlie', 35)",
         ] {
-            let mut q = match execute(sql, &mut test.catalog).unwrap() {
+            let mut q = match execute(sql, &mut test.btree).unwrap() {
                 ExecuteResult::Query(q) => q,
                 _ => panic!(),
             };
@@ -563,11 +555,7 @@ mod tests {
         }
 
         // Select with filter (include id so scan covers columns from 0)
-        let result = execute(
-            "SELECT id, name FROM users WHERE age > 26",
-            &mut test.catalog,
-        )
-        .unwrap();
+        let result = execute("SELECT id, name FROM users WHERE age > 26", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(mut q) => {
                 let row1 = q.next().expect("Expected row 1");
@@ -589,7 +577,7 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
@@ -597,7 +585,7 @@ mod tests {
         // Should reorder values to match table's actual column order: id, name, age
         let mut q = match execute(
             "INSERT INTO users (age, id, name) VALUES (70, 1, 'oldie')",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap()
         {
@@ -607,7 +595,7 @@ mod tests {
         while q.next().is_some() {}
 
         // Verify the values were inserted in correct positions
-        let result = execute("SELECT id, name, age FROM users", &mut test.catalog).unwrap();
+        let result = execute("SELECT id, name, age FROM users", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(mut q) => {
                 let row = q.next().expect("Expected row");
@@ -634,7 +622,7 @@ mod tests {
 
         // First session: create table and insert data
         {
-            let mut catalog = Catalog::create(&path);
+            let mut catalog = BTree::new(&path);
             execute(
                 "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
                 &mut catalog,
@@ -648,7 +636,7 @@ mod tests {
 
         // Second session: reopen database and verify data
         {
-            let mut catalog = Catalog::open(&path);
+            let mut catalog = BTree::new(&path);
             let result = execute("SELECT id, name, age FROM users", &mut catalog).unwrap();
             match result {
                 ExecuteResult::Query(mut q) => {
@@ -676,33 +664,33 @@ mod tests {
         // Create two tables
         execute(
             "CREATE TABLE users (id INTEGER, name TEXT)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
         execute(
             "CREATE TABLE products (id INTEGER, title TEXT, price INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
         // Insert into first table
-        execute("INSERT INTO users VALUES (1, 'alice')", &mut test.catalog).unwrap();
-        execute("INSERT INTO users VALUES (2, 'bob')", &mut test.catalog).unwrap();
+        execute("INSERT INTO users VALUES (1, 'alice')", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (2, 'bob')", &mut test.btree).unwrap();
 
         // Insert into second table
         execute(
             "INSERT INTO products VALUES (10, 'laptop', 999)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
         execute(
             "INSERT INTO products VALUES (11, 'mouse', 25)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
         // Query first table
-        let result = execute("SELECT id, name FROM users", &mut test.catalog).unwrap();
+        let result = execute("SELECT id, name FROM users", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(mut q) => {
                 let row1 = q.next().expect("Expected row 1");
@@ -719,7 +707,7 @@ mod tests {
         }
 
         // Query second table
-        let result = execute("SELECT title, price FROM products", &mut test.catalog).unwrap();
+        let result = execute("SELECT title, price FROM products", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(mut q) => {
                 let row1 = q.next().expect("Expected row 1");
@@ -741,14 +729,14 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE numbers (id INTEGER, value INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
         // Insert 50 rows
         for i in 0..50 {
             let sql = format!("INSERT INTO numbers VALUES ({}, {})", i, i * 10);
-            let mut q = match execute(&sql, &mut test.catalog).unwrap() {
+            let mut q = match execute(&sql, &mut test.btree).unwrap() {
                 ExecuteResult::Query(q) => q,
                 _ => panic!(),
             };
@@ -758,7 +746,7 @@ mod tests {
         // Select with WHERE filter: value > 200 should give us rows with id >= 21
         let result = execute(
             "SELECT id, value FROM numbers WHERE value > 200",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
@@ -793,13 +781,13 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE sales (dept TEXT, amount INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
         for (dept, amount) in &[("eng", 100), ("eng", 200), ("hr", 50)] {
             let mut q = match execute(
                 &format!("INSERT INTO sales VALUES ('{}', {})", dept, amount),
-                &mut test.catalog,
+                &mut test.btree,
             )
             .unwrap()
             {
@@ -811,7 +799,7 @@ mod tests {
 
         let rows = collect_rows(
             "SELECT dept, SUM(amount) FROM sales GROUP BY dept HAVING SUM(amount) > 100",
-            &mut test.catalog,
+            &mut test.btree,
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][0], ScalarValue::String("eng".to_string()));
@@ -821,11 +809,11 @@ mod tests {
     #[test]
     fn test_having_count_star() {
         let mut test = TestDb::default();
-        execute("CREATE TABLE t (cat TEXT)", &mut test.catalog).unwrap();
+        execute("CREATE TABLE t (cat TEXT)", &mut test.btree).unwrap();
         for cat in &["a", "a", "a", "b"] {
             let mut q = match execute(
                 &format!("INSERT INTO t VALUES ('{}')", cat),
-                &mut test.catalog,
+                &mut test.btree,
             )
             .unwrap()
             {
@@ -837,7 +825,7 @@ mod tests {
 
         let rows = collect_rows(
             "SELECT cat, COUNT(*) FROM t GROUP BY cat HAVING COUNT(*) >= 3",
-            &mut test.catalog,
+            &mut test.btree,
         );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][0], ScalarValue::String("a".to_string()));
@@ -847,7 +835,7 @@ mod tests {
     #[test]
     fn test_select_nonexistent_table() {
         let mut test = TestDb::default();
-        let result = execute("SELECT id FROM nonexistent", &mut test.catalog);
+        let result = execute("SELECT id FROM nonexistent", &mut test.btree);
 
         match result {
             Err(ExecuteError::Plan(PlanError::TableNotFound(name))) => {
@@ -862,12 +850,12 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, name TEXT, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
 
         // Too few values
-        let result = execute("INSERT INTO users VALUES (1, 'alice')", &mut test.catalog);
+        let result = execute("INSERT INTO users VALUES (1, 'alice')", &mut test.btree);
         match result {
             Err(ExecuteError::Plan(PlanError::ColumnCountMismatch { .. })) => {
                 // Expected error
@@ -881,7 +869,7 @@ mod tests {
         // Too many values
         let result = execute(
             "INSERT INTO users VALUES (1, 'alice', 30, 'extra')",
-            &mut test.catalog,
+            &mut test.btree,
         );
         match result {
             Err(ExecuteError::Plan(PlanError::ColumnCountMismatch { .. })) => {
@@ -897,8 +885,8 @@ mod tests {
     #[test]
     fn test_query_execution_exposes_column_names() {
         let mut test = TestDb::default();
-        execute("CREATE TABLE t (id INTEGER, val TEXT)", &mut test.catalog).unwrap();
-        let result = execute("SELECT id, val FROM t", &mut test.catalog).unwrap();
+        execute("CREATE TABLE t (id INTEGER, val TEXT)", &mut test.btree).unwrap();
+        let result = execute("SELECT id, val FROM t", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(q) => {
                 assert_eq!(q.column_names, vec!["id", "val"]);
@@ -910,8 +898,8 @@ mod tests {
     #[test]
     fn test_insert_has_no_column_names() {
         let mut test = TestDb::default();
-        execute("CREATE TABLE t (id INTEGER, val TEXT)", &mut test.catalog).unwrap();
-        let result = execute("INSERT INTO t VALUES (1, 'a')", &mut test.catalog).unwrap();
+        execute("CREATE TABLE t (id INTEGER, val TEXT)", &mut test.btree).unwrap();
+        let result = execute("INSERT INTO t VALUES (1, 'a')", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(q) => {
                 assert!(q.column_names.is_empty());
@@ -925,19 +913,19 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
-        execute("CREATE INDEX idx_age ON users(age)", &mut test.catalog).unwrap();
-        execute("INSERT INTO users VALUES (1, 25)", &mut test.catalog).unwrap();
-        execute("INSERT INTO users VALUES (2, 30)", &mut test.catalog).unwrap();
-        execute("INSERT INTO users VALUES (3, 25)", &mut test.catalog).unwrap();
+        execute("CREATE INDEX idx_age ON users(age)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (1, 25)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (2, 30)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (3, 25)", &mut test.btree).unwrap();
 
         // Delete one of the age=25 rows
-        execute("DELETE FROM users WHERE id = 1", &mut test.catalog).unwrap();
+        execute("DELETE FROM users WHERE id = 1", &mut test.btree).unwrap();
 
         // Query via index — must not see the deleted row
-        let result = execute("SELECT id FROM users WHERE age = 25", &mut test.catalog).unwrap();
+        let result = execute("SELECT id FROM users WHERE age = 25", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(q) => {
                 assert_eq!(q.rows.len(), 1);
@@ -947,7 +935,7 @@ mod tests {
         }
 
         // Full scan must also agree
-        let result = execute("SELECT id FROM users", &mut test.catalog).unwrap();
+        let result = execute("SELECT id FROM users", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(q) => {
                 assert_eq!(q.rows.len(), 2);
@@ -961,18 +949,18 @@ mod tests {
         let mut test = TestDb::default();
         execute(
             "CREATE TABLE users (id INTEGER, age INTEGER)",
-            &mut test.catalog,
+            &mut test.btree,
         )
         .unwrap();
-        execute("CREATE INDEX idx_age ON users(age)", &mut test.catalog).unwrap();
-        execute("INSERT INTO users VALUES (1, 25)", &mut test.catalog).unwrap();
-        execute("INSERT INTO users VALUES (2, 30)", &mut test.catalog).unwrap();
+        execute("CREATE INDEX idx_age ON users(age)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (1, 25)", &mut test.btree).unwrap();
+        execute("INSERT INTO users VALUES (2, 30)", &mut test.btree).unwrap();
 
         // Change age of row 1 from 25 to 40
-        execute("UPDATE users SET age = 40 WHERE id = 1", &mut test.catalog).unwrap();
+        execute("UPDATE users SET age = 40 WHERE id = 1", &mut test.btree).unwrap();
 
         // Old value must not be findable via index
-        let result = execute("SELECT id FROM users WHERE age = 25", &mut test.catalog).unwrap();
+        let result = execute("SELECT id FROM users WHERE age = 25", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(q) => {
                 assert!(
@@ -984,7 +972,7 @@ mod tests {
         }
 
         // New value must be findable via index
-        let result = execute("SELECT id FROM users WHERE age = 40", &mut test.catalog).unwrap();
+        let result = execute("SELECT id FROM users WHERE age = 40", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(q) => {
                 assert_eq!(q.rows.len(), 1);
@@ -994,7 +982,7 @@ mod tests {
         }
 
         // Full scan must agree
-        let result = execute("SELECT id FROM users", &mut test.catalog).unwrap();
+        let result = execute("SELECT id FROM users", &mut test.btree).unwrap();
         match result {
             ExecuteResult::Query(q) => {
                 assert_eq!(q.rows.len(), 2);

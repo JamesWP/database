@@ -156,8 +156,7 @@ impl Pager {
 
                 if let Some(page_id) = free_list_page.page_ids.pop() {
                     // Update the partially-drained free list page.
-                    let updated =
-                        cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                    let updated = cbor_encode(&free_list_page).expect("FreeListPage encode failed");
                     self.write_bytes(head_page_no, &updated);
                     return PageId(page_id);
                 } else {
@@ -189,8 +188,7 @@ impl Pager {
 
             if free_list_page.page_ids.len() < 1000 {
                 free_list_page.page_ids.push(idx);
-                let updated =
-                    cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                let updated = cbor_encode(&free_list_page).expect("FreeListPage encode failed");
                 self.write_bytes(head_page_no, &updated);
                 return;
             }

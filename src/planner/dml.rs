@@ -1,7 +1,7 @@
 //! DML planning: INSERT, UPDATE, DELETE.
 
-use crate::catalog::Catalog;
 use crate::frontend::ast::{self, DataType};
+use crate::storage::BTree;
 
 use schema::resolve_table;
 
@@ -11,7 +11,7 @@ use super::{schema, IndexMaintenanceInfo, Literal, LogicalPlan, PlanError, PlanE
 
 pub(super) fn plan_insert(
     insert: ast::InsertStatement,
-    catalog: &Catalog,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     let table = resolve_table(&insert.table_name, catalog)?;
     let num_table_columns = table.columns.len();
@@ -107,7 +107,7 @@ pub(super) fn plan_insert(
 
 pub(super) fn plan_update(
     update: ast::UpdateStatement,
-    catalog: &Catalog,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     let table = resolve_table(&update.table_name, catalog)?;
 
@@ -173,7 +173,7 @@ pub(super) fn plan_update(
 
 pub(super) fn plan_delete(
     delete: ast::DeleteStatement,
-    catalog: &Catalog,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     let table = resolve_table(&delete.table_name, catalog)?;
 
@@ -296,8 +296,8 @@ mod tests {
 
     fn make_users_db() -> (TestDb, u32) {
         let mut test = TestDb::default();
-        let users_root = test.catalog.btree_mut().create_tree();
-        test.catalog.insert_entry(
+        let users_root = test.btree.create_tree();
+        test.btree.insert_entry(
             "table",
             "users",
             "users",
@@ -320,7 +320,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("INSERT INTO users VALUES (1, 'alice', 30)");
 
-        let result = plan(stmt, &test.catalog).expect("Planning failed");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Insert {
             rootpage: users_root,
@@ -343,7 +343,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("INSERT INTO users (age, name) VALUES (30, 'alice')");
 
-        let result = plan(stmt, &test.catalog).expect("Planning failed");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
 
         // After item 114: omitted columns are filled with NULL; table_columns is always full-width.
         let expected = LogicalPlan::Insert {
@@ -367,7 +367,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("INSERT INTO users VALUES (1, 'alice')");
 
-        let result = plan(stmt, &test.catalog);
+        let result = plan(stmt, &test.btree);
 
         assert_eq!(
             result,
@@ -383,7 +383,7 @@ mod tests {
         let (test, users_root) = make_users_db();
         let stmt = parse_sql("INSERT INTO users VALUES (1+1, 'alice', 10*3)");
 
-        let result = plan(stmt, &test.catalog).expect("Planning failed");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
 
         let expected = LogicalPlan::Insert {
             rootpage: users_root,
@@ -406,7 +406,7 @@ mod tests {
         let (test, _) = make_users_db();
         let stmt = parse_sql("INSERT INTO nonexistent VALUES (1)");
 
-        let result = plan(stmt, &test.catalog);
+        let result = plan(stmt, &test.btree);
 
         assert_eq!(
             result,
@@ -423,17 +423,17 @@ mod tests {
         let mut test = TestDb::default();
 
         let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
-        let users_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let users_root = test.btree.create_tree();
+        test.btree
             .insert_entry("table", "users", "users", users_root, sql_table);
 
         let sql_index = "CREATE INDEX idx_age ON users(age)";
-        let index_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let index_root = test.btree.create_tree();
+        test.btree
             .insert_entry("index", "idx_age", "users", index_root, sql_index);
 
         let stmt = parse_sql("DELETE FROM users WHERE id = 1");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         if let LogicalPlan::Delete { indexes, .. } = plan {
             assert_eq!(indexes.len(), 1);
@@ -453,17 +453,17 @@ mod tests {
         let mut test = TestDb::default();
 
         let sql_table = "CREATE TABLE users (id INTEGER, age INTEGER)";
-        let users_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let users_root = test.btree.create_tree();
+        test.btree
             .insert_entry("table", "users", "users", users_root, sql_table);
 
         let sql_index = "CREATE INDEX idx_age ON users(age)";
-        let index_root = test.catalog.btree_mut().create_tree();
-        test.catalog
+        let index_root = test.btree.create_tree();
+        test.btree
             .insert_entry("index", "idx_age", "users", index_root, sql_index);
 
         let stmt = parse_sql("UPDATE users SET age = 30 WHERE id = 1");
-        let plan = plan(stmt, &test.catalog).expect("Planning failed");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
 
         if let LogicalPlan::Update { indexes, .. } = plan {
             assert_eq!(indexes.len(), 1);

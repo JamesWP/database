@@ -3,8 +3,8 @@
 //! Converts AST to a tree of logical operators (LogicalPlan).
 //! The compiler (future) will convert LogicalPlan to bytecode.
 
-use crate::catalog::Catalog;
 use crate::frontend::ast::{self, Statement};
+use crate::storage::BTree;
 use schema::resolve_table;
 
 pub mod ddl;
@@ -319,10 +319,7 @@ pub mod schema;
 ///
 /// Returns the names in SELECT column order. Wildcards are expanded using the
 /// catalog to look up the table's column names.
-pub fn extract_select_column_names(
-    select: &ast::SelectStatement,
-    catalog: &Catalog,
-) -> Vec<String> {
+pub fn extract_select_column_names(select: &ast::SelectStatement, catalog: &BTree) -> Vec<String> {
     let mut names = Vec::new();
     for col_expr in &select.columns {
         match col_expr {
@@ -362,7 +359,7 @@ pub fn extract_select_column_names(
 }
 
 /// Convert an AST Statement to a LogicalPlan by querying the db_schema catalog.
-pub fn plan(statement: Statement, catalog: &Catalog) -> Result<LogicalPlan, PlanError> {
+pub fn plan(statement: Statement, catalog: &BTree) -> Result<LogicalPlan, PlanError> {
     let naive = match statement {
         Statement::Select(select) => plan_select(select, catalog)?,
         Statement::CreateTable(_) | Statement::CreateIndex(_) | Statement::Drop(_) => {

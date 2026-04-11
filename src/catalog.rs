@@ -1,67 +1,9 @@
-use std::ops::{Deref, DerefMut};
-
-use crate::storage::BTree;
-
-pub use crate::storage::IndexInfo;
-
-/// Schema catalog layer: a thin wrapper around `BTree` that provides a
-/// stable public API surface.  All catalog lookup and mutation logic now
-/// lives inside `BTree` itself; this type exists for backward compatibility
-/// and as the public entry point for opening a database.
-pub struct Catalog(pub BTree);
-
-impl Catalog {
-    /// Create a brand-new database at `path` and bootstrap the catalog.
-    pub fn create(path: &str) -> Self {
-        Catalog(BTree::new(path))
-    }
-
-    /// Open an existing database at `path`.
-    pub fn open(path: &str) -> Self {
-        Catalog(BTree::new(path))
-    }
-
-    /// Access the underlying `BTree`.
-    pub fn btree(&self) -> &BTree {
-        &self.0
-    }
-
-    /// Mutably access the underlying `BTree`.
-    pub fn btree_mut(&mut self) -> &mut BTree {
-        &mut self.0
-    }
-}
-
-impl Deref for Catalog {
-    type Target = BTree;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Catalog {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl From<BTree> for Catalog {
-    fn from(btree: BTree) -> Self {
-        Catalog(btree)
-    }
-}
-
-impl From<Catalog> for BTree {
-    fn from(catalog: Catalog) -> Self {
-        catalog.0
-    }
-}
-
-// ── tests ─────────────────────────────────────────────────────────────────────
+// Catalog integration tests.
+// All catalog state lives inside BTree; this module verifies that API.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::storage::BTree;
     use crate::test::{temp_db_path, TempCatalog};
 
     const CATALOG_ROOT: u32 = 1;
@@ -82,9 +24,9 @@ mod tests {
     fn test_open_does_not_re_bootstrap() {
         let path = temp_db_path();
         {
-            let _ = Catalog::create(&path);
+            let _ = BTree::new(&path);
         }
-        let cat = Catalog::open(&path);
+        let cat = BTree::new(&path);
         let entries = cat.scan_entries();
         assert_eq!(entries.len(), 1);
     }
@@ -440,9 +382,7 @@ mod tests {
         let mut cat = TempCatalog::new();
         let rp = cat.create_tree();
         cat.insert_entry("table", "t", "t", rp, "CREATE TABLE t (id INTEGER)");
-        // Cache is None after insert (invalidated)
         assert!(!cat.catalog_cache_populated());
-        // First lookup populates the cache
         let _ = cat.lookup_table("t");
         assert!(cat.catalog_cache_populated());
     }
@@ -452,14 +392,11 @@ mod tests {
         let mut cat = TempCatalog::new();
         let rp = cat.create_tree();
         cat.insert_entry("table", "a", "a", rp, "CREATE TABLE a (x INTEGER)");
-        // Warm the cache
         let _ = cat.lookup_table("a");
         assert!(cat.catalog_cache_populated());
-        // Another insert must clear the cache
         let rp2 = cat.create_tree();
         cat.insert_entry("table", "b", "b", rp2, "CREATE TABLE b (x INTEGER)");
         assert!(!cat.catalog_cache_populated());
-        // After re-warming, both tables visible
         assert!(cat.lookup_table("a").is_some());
         assert!(cat.lookup_table("b").is_some());
     }
@@ -475,13 +412,10 @@ mod tests {
             rp,
             "CREATE TABLE drop_me (x INTEGER)",
         );
-        // Warm the cache
         let _ = cat.lookup_table("drop_me");
         assert!(cat.catalog_cache_populated());
-        // Delete must clear the cache
         cat.delete_entries_for_table("drop_me");
         assert!(!cat.catalog_cache_populated());
-        // After re-warming, table is gone
         assert!(cat.lookup_table("drop_me").is_none());
     }
 
@@ -514,10 +448,8 @@ mod tests {
             rp,
             "CREATE TABLE things (x TEXT)",
         );
-        // Warm via a different method to confirm all maps built in one scan
         let _ = cat.lookup_table("things");
         assert_eq!(cat.lookup_table_by_rootpage(rp), Some("things".to_string()));
-        // Cache still valid (no write happened)
         assert!(cat.catalog_cache_populated());
     }
 
@@ -527,9 +459,9 @@ mod tests {
     fn test_entries_persist_across_reopen() {
         let path = temp_db_path();
         {
-            let mut cat = Catalog::create(&path);
-            let rp = cat.create_tree();
-            cat.insert_entry(
+            let mut btree = BTree::new(&path);
+            let rp = btree.create_tree();
+            btree.insert_entry(
                 "table",
                 "persisted",
                 "persisted",
@@ -537,7 +469,7 @@ mod tests {
                 "CREATE TABLE persisted (id INTEGER)",
             );
         }
-        let cat = Catalog::open(&path);
-        assert!(cat.lookup_table("persisted").is_some());
+        let btree = BTree::new(&path);
+        assert!(btree.lookup_table("persisted").is_some());
     }
 }

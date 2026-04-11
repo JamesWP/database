@@ -2,10 +2,10 @@ use std::ops::{Deref, DerefMut};
 
 use tempfile::NamedTempFile;
 
-use crate::catalog::Catalog;
+use crate::storage::BTree;
 
 pub struct TestDb {
-    pub catalog: Catalog,
+    pub btree: BTree,
     _file: NamedTempFile,
 }
 
@@ -14,15 +14,15 @@ impl Default for TestDb {
         let file = NamedTempFile::new().unwrap();
         let path = file.path().to_str().unwrap();
         Self {
-            catalog: Catalog::create(path),
+            btree: BTree::new(path),
             _file: file,
         }
     }
 }
 
-/// A temporary Catalog backed by a temp file that is deleted on drop.
+/// A temporary BTree backed by a temp file that is deleted on drop.
 pub struct TempCatalog {
-    pub catalog: Catalog,
+    pub btree: BTree,
     _file: NamedTempFile,
 }
 
@@ -31,29 +31,29 @@ impl TempCatalog {
         let file = NamedTempFile::new().unwrap();
         let path = file.path().to_str().unwrap();
         Self {
-            catalog: Catalog::create(path),
+            btree: BTree::new(path),
             _file: file,
         }
     }
 }
 
 impl Deref for TempCatalog {
-    type Target = Catalog;
+    type Target = BTree;
     fn deref(&self) -> &Self::Target {
-        &self.catalog
+        &self.btree
     }
 }
 
 impl DerefMut for TempCatalog {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.catalog
+        &mut self.btree
     }
 }
 
 /// Return a path string for a new temporary database file.
 /// The file is created but left empty; it persists until the caller drops it
 /// (or until the OS cleans it up). Use this when you need to test
-/// `Catalog::open` after a `Catalog::create` in the same test.
+/// `BTree::new` after creation in the same test.
 pub fn temp_db_path() -> String {
     let file = NamedTempFile::new().unwrap();
     let path = file.path().to_str().unwrap().to_string();

@@ -14,7 +14,6 @@ use ratatui::{
     Terminal,
 };
 
-use database::catalog::Catalog;
 use database::compiler::CompiledProgram;
 use database::db::build_explain_schema;
 use database::engine::registers::RegisterValue;
@@ -63,7 +62,7 @@ impl TuiDebugger {
             .collect();
 
         let plan_strs: Vec<String> = if let Some(plan) = &logical_plan {
-            let schema = build_explain_schema(&Catalog::from(btree.clone()));
+            let schema = build_explain_schema(&btree.clone());
             format_plan(plan, &schema)
                 .into_iter()
                 .map(|(id, text)| format!("{id:>3}  {text}"))
