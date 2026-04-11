@@ -1,6 +1,7 @@
 mod cell;
 mod cell_reader;
 mod node;
+mod node_page_store;
 mod page_id;
 mod pager;
 
@@ -21,4 +22,5 @@ pub use btree::encode_u64_key;
 pub use btree::BTree;
 pub use btree::CursorHandle;
 pub use cell_reader::CellReader;
+pub use node_page_store::NodePageStore;
 pub use page_id::{Error as StorageError, PageId};

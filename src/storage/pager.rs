@@ -50,7 +50,7 @@ pub struct ZeroPage {
 
     /// Format version: 0 = JSON (deprecated), 1 = CBOR with schema_root_page
     /// (deprecated), 2 = CBOR without schema_root_page (catalog always at page 1)
-    format_version: u16,
+    pub(crate) format_version: u16,
 
     /// First page of the free list linked list (None if no free pages)
     free_list_head: Option<u32>,
@@ -367,6 +367,11 @@ impl Pager {
                 ),
             }
         }
+    }
+
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        use std::io::Write;
+        self.file.borrow_mut().flush()
     }
 
     #[allow(dead_code)]
