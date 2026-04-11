@@ -4,6 +4,8 @@ use std::fmt::Write;
 use super::btree::{decode_integer_key, decode_u64_key, BTree};
 use super::cell_reader::CellReader;
 use super::node::NodePage;
+use super::node_page_store::NodePageStore;
+use super::page_id::PageId;
 use crate::catalog::Catalog;
 use crate::engine::scalarvalue::ScalarValue;
 
@@ -103,20 +105,19 @@ fn format_index_key(bytes: &[u8], col_names: &[String]) -> String {
 
 fn write_leaf_node<W: Write>(
     output: &mut W,
-    btree: &BTree,
+    store: &mut NodePageStore,
     page_idx: u32,
     kind: &TreeKind<'_>,
 ) -> Result {
-    // First pass: collect keys and overflow flags (while pager is borrowed)
+    // First pass: collect key strings and overflow flags from the leaf page.
     struct CellInfo {
         key_display: String,
         overflow_page: Option<u32>,
     }
 
     let cell_infos: Vec<CellInfo> = {
-        let pager = btree.pager.borrow();
-        let page = pager.get_and_decode_node(page_idx);
-        let NodePage::Leaf(leaf) = page else {
+        let page = store.read(PageId(page_idx)).expect("read leaf page");
+        let NodePage::Leaf(ref leaf) = *page else {
             return Ok(());
         };
         (0..leaf.num_items())
@@ -133,9 +134,9 @@ fn write_leaf_node<W: Write>(
                 })
             })
             .collect()
-    };
+    }; // page borrow ends here
 
-    // Second pass: decode values via CellReader (re-borrows pager each time)
+    // Second pass: decode cell values (CellReader eagerly loads everything).
     let mut cells: Vec<String> = Vec::new();
     let mut overflow_stubs: Vec<(usize, u32)> = Vec::new();
 
@@ -143,18 +144,15 @@ fn write_leaf_node<W: Write>(
         let val_display = if info.overflow_page.is_some() {
             overflow_stubs.push((i, info.overflow_page.unwrap()));
             "(overflow)".to_string()
+        } else if let Some(mut reader) = CellReader::new(store, page_idx, i) {
+            let values = reader.decode_as_array();
+            values
+                .iter()
+                .map(|v| escape_label(&format_scalar(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
         } else {
-            let pager = btree.pager.borrow();
-            if let Some(mut reader) = CellReader::new(&pager, page_idx, i) {
-                let values = reader.decode_as_array();
-                values
-                    .iter()
-                    .map(|v| escape_label(&format_scalar(v)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            } else {
-                String::new()
-            }
+            String::new()
         };
 
         cells.push(format!(
@@ -167,7 +165,7 @@ fn write_leaf_node<W: Write>(
     let label = cells.join("|");
     writeln!(output, "\t{} [label=\"{label}\"];", node_name_str(page_idx))?;
 
-    // Overflow chains: follow continuation pointers until the end
+    // Overflow chains: follow continuation pointers until the end.
     for (i, first_overflow_page) in overflow_stubs {
         let mut prev_name = format!("{}:c{i}", node_name_str(page_idx));
         let mut cur_page = first_overflow_page;
@@ -175,13 +173,13 @@ fn write_leaf_node<W: Write>(
 
         loop {
             let overflow_name = format!("node_{page_idx}_c{i}_overflow{hop}");
-            let pager = btree.pager.borrow();
-            let page: NodePage = pager.get_and_decode_node(cur_page);
-            let NodePage::OverflowPage(overflow) = page else {
-                break;
-            };
-            let continuation = overflow.continuation();
-            let bytes = overflow.value().len();
+            let (continuation, bytes) = {
+                let page = store.read(PageId(cur_page)).expect("read overflow page");
+                let NodePage::OverflowPage(ref overflow) = *page else {
+                    break;
+                };
+                (overflow.continuation(), overflow.value().len())
+            }; // page borrow ends here
             writeln!(
                 output,
                 "\t{overflow_name} [label=\"overflow\\n(page {cur_page}, {bytes}B)\" shape=ellipse style=dashed];"
@@ -202,25 +200,34 @@ fn write_leaf_node<W: Write>(
     Ok(())
 }
 
-fn write_interior_node<W: Write>(output: &mut W, btree: &BTree, page_idx: u32) -> Result {
-    let pager = btree.pager.borrow();
-    let page = pager.get_and_decode_node(page_idx);
-    let NodePage::Interior(interior) = page else {
-        return Ok(());
-    };
+fn write_interior_node<W: Write>(
+    output: &mut W,
+    store: &mut NodePageStore,
+    page_idx: u32,
+) -> Result {
+    let (label, edges): (String, Vec<(usize, u32)>) = {
+        let page = store.read(PageId(page_idx)).expect("read interior page");
+        let NodePage::Interior(ref interior) = *page else {
+            return Ok(());
+        };
 
-    let mut label_parts: Vec<String> = vec!["<e_0>.".to_string()];
-    for edge_idx in 1..interior.num_edges() {
-        let key = interior.get_key_by_index(edge_idx - 1);
-        let key_display = escape_label(&format!("{key:?}"));
-        label_parts.push(format!("{key_display}|<e_{edge_idx}>."));
-    }
+        let mut label_parts: Vec<String> = vec!["<e_0>.".to_string()];
+        for edge_idx in 1..interior.num_edges() {
+            let key = interior.get_key_by_index(edge_idx - 1);
+            let key_display = escape_label(&format!("{key:?}"));
+            label_parts.push(format!("{key_display}|<e_{edge_idx}>."));
+        }
 
-    let label = label_parts.join("|");
+        let edges: Vec<(usize, u32)> = (0..interior.num_edges())
+            .map(|i| (i, interior.get_child_page_by_index(i)))
+            .collect();
+
+        (label_parts.join("|"), edges)
+    }; // page borrow ends here
+
     writeln!(output, "\t{} [label=\"{label}\"];", node_name_str(page_idx))?;
 
-    for edge_idx in 0..interior.num_edges() {
-        let child = interior.get_child_page_by_index(edge_idx);
+    for (edge_idx, child) in edges {
         writeln!(
             output,
             "\t{}:e_{edge_idx} -> {};",
@@ -242,6 +249,8 @@ fn write_subgraph<W: Write>(
     writeln!(output, "\tsubgraph cluster_{root} {{")?;
     writeln!(output, "\t\tlabel=\"{}\";", escape_label(label))?;
 
+    let mut store = btree.store.borrow_mut();
+
     // DFS walk from root
     let mut stack = vec![root];
     let mut visited = std::collections::HashSet::new();
@@ -251,28 +260,40 @@ fn write_subgraph<W: Write>(
             continue;
         }
 
-        let pager = btree.pager.borrow();
-        let page = pager.get_and_decode_node(page_idx);
-
-        match page {
-            NodePage::Leaf(_) => {
-                drop(pager);
-                write_leaf_node(output, btree, page_idx, &kind)?;
-            }
-            NodePage::Interior(interior) => {
-                let num_edges = interior.num_edges();
-                let mut children = Vec::new();
-                for i in 0..num_edges {
-                    children.push(interior.get_child_page_by_index(i));
+        // Peek at page type and extract child list if interior.
+        // Inner block ensures the read borrow is dropped before write_leaf_node
+        // or write_interior_node re-borrows via the same store reference.
+        enum PageKind {
+            Leaf,
+            Interior(Vec<u32>),
+            Overflow,
+        }
+        let kind_hint: PageKind = {
+            let page = store.read(PageId(page_idx)).expect("read page in DFS");
+            match page {
+                NodePage::Leaf(_) => PageKind::Leaf,
+                NodePage::Interior(ref interior) => {
+                    let children: Vec<u32> = (0..interior.num_edges())
+                        .map(|i| interior.get_child_page_by_index(i))
+                        .collect();
+                    PageKind::Interior(children)
                 }
-                drop(pager);
-                write_interior_node(output, btree, page_idx)?;
+                NodePage::OverflowPage(_) => PageKind::Overflow,
+            }
+        }; // page borrow ends here
+
+        match kind_hint {
+            PageKind::Leaf => {
+                write_leaf_node(output, &mut *store, page_idx, &kind)?;
+            }
+            PageKind::Interior(children) => {
+                write_interior_node(output, &mut *store, page_idx)?;
                 for child in children {
                     stack.push(child);
                 }
             }
-            NodePage::OverflowPage(_) => {
-                // overflow pages linked from leaf stubs; skip in DFS
+            PageKind::Overflow => {
+                // overflow pages are linked from leaf stubs; skip in DFS
             }
         }
     }

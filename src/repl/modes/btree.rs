@@ -385,7 +385,7 @@ impl BTreeMode {
     }
 }
 
-fn print_value(entry: Option<CellReader<'_>>) -> ControlFlow<()> {
+fn print_value(entry: Option<CellReader>) -> ControlFlow<()> {
     match entry {
         None => {
             println!("Cursor is complete");
