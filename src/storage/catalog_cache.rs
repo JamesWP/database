@@ -3,6 +3,13 @@ use std::collections::HashMap;
 use crate::frontend::ast::Statement;
 use crate::frontend::parse;
 
+use super::cell_reader::CellReader;
+use super::node_page_store::NodePageStore;
+use super::page_id::PageId;
+
+/// The fixed root page of the catalog B-tree (always page 1).
+pub(super) const CATALOG_ROOT: PageId = PageId(1);
+
 /// Index metadata extracted from the catalog B-tree.
 #[derive(Debug, Clone)]
 pub struct IndexInfo {
@@ -27,6 +34,50 @@ pub struct CatalogSnapshot {
 }
 
 impl CatalogSnapshot {
+    /// Scan the catalog B-tree and build a snapshot.
+    ///
+    /// Uses `NodePageStore::scan_leaf_cells` for traversal and `CellReader`
+    /// for transparent overflow handling — no dependency on `BTree` or `Cursor`.
+    pub(super) fn build(store: &mut NodePageStore) -> Self {
+        let mut snapshot = CatalogSnapshot::default();
+        store.scan_leaf_cells(CATALOG_ROOT, &mut |store, page_idx, cell_idx| {
+            let mut reader = match CellReader::new(store, page_idx, cell_idx) {
+                Some(r) => r,
+                None => return,
+            };
+            let values = reader.decode_as_array();
+            if values.len() < 5 {
+                return;
+            }
+            let obj_type = values[0].as_str().unwrap_or("");
+            let name = values[1].as_str().unwrap_or("").to_string();
+            let tbl_name = values[2].as_str().unwrap_or("").to_string();
+            let rootpage = values[3].as_u64().unwrap_or(0) as u32;
+            let sql = values[4].as_str().unwrap_or("").to_string();
+            match obj_type {
+                "table" => {
+                    snapshot.by_rootpage.insert(rootpage, name.clone());
+                    snapshot.tables.insert(name, (rootpage, sql));
+                }
+                "index" => {
+                    let column_names = extract_columns_from_index_sql(&sql);
+                    snapshot
+                        .indexes
+                        .entry(tbl_name)
+                        .or_default()
+                        .push(IndexInfo {
+                            index_name: name,
+                            column_names,
+                            rootpage,
+                            sql,
+                        });
+                }
+                _ => {}
+            }
+        });
+        snapshot
+    }
+
     /// Look up a table by name. Returns `(rootpage, sql)` if found.
     pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> {
         self.tables.get(table_name).cloned()
