@@ -316,33 +316,24 @@ pub fn dump<W: Write>(output: &mut W, btree: &BTree) -> Result {
     )?;
 
     // User tables and indexes (skip root pages already rendered)
-    for (kind, name, tbl_name, rootpage, _sql) in btree.scan_entries() {
-        if rootpage == CATALOG_ROOT {
+    let cache = btree.cache();
+    for (name, (rootpage, _sql)) in &cache.tables {
+        if *rootpage == CATALOG_ROOT {
             continue;
         }
-        match kind.as_str() {
-            "table" => {
-                write_subgraph(output, btree, rootpage, &name, TreeKind::Table)?;
-            }
-            "index" => {
-                let col_names: Vec<String> = btree
-                    .cache()
-                    .lookup_indexes_for_table(&tbl_name)
-                    .into_iter()
-                    .find(|i| i.index_name == name)
-                    .map(|i| i.column_names)
-                    .unwrap_or_default();
-                write_subgraph(
-                    output,
-                    btree,
-                    rootpage,
-                    &format!("idx: {name}"),
-                    TreeKind::Index {
-                        col_names: &col_names,
-                    },
-                )?;
-            }
-            _ => {}
+        write_subgraph(output, btree, *rootpage, name, TreeKind::Table)?;
+    }
+    for (_tbl_name, indexes) in &cache.indexes {
+        for idx in indexes {
+            write_subgraph(
+                output,
+                btree,
+                idx.rootpage,
+                &format!("idx: {}", idx.index_name),
+                TreeKind::Index {
+                    col_names: &idx.column_names,
+                },
+            )?;
         }
     }
 

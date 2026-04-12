@@ -26,11 +26,11 @@ pub struct IndexInfo {
 #[derive(Clone, Default)]
 pub struct CatalogSnapshot {
     /// table name → (rootpage, DDL sql)
-    pub(super) tables: HashMap<String, (u32, String)>,
+    pub tables: HashMap<String, (u32, String)>,
     /// rootpage → table name (reverse lookup)
     pub(super) by_rootpage: HashMap<u32, String>,
     /// table name → all indexes for that table
-    pub(super) indexes: HashMap<String, Vec<IndexInfo>>,
+    pub indexes: HashMap<String, Vec<IndexInfo>>,
 }
 
 impl CatalogSnapshot {
