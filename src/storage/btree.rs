@@ -1,4 +1,4 @@
-use std::cell::{RefCell, RefMut};
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Write;
@@ -841,44 +841,13 @@ impl BTree {
         *self.catalog_cache.borrow_mut() = None;
     }
 
-    /// Look up a table by name. Returns `(rootpage, sql)` if found.
-    pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> {
-        probe!(database, catalog_lookup_table);
+    /// Return a read-only snapshot of the catalog, building it on first call
+    /// and after any catalog write.  All lookup methods live on the returned
+    /// `CatalogSnapshot` so callers use `btree.cache().lookup_table(name)`.
+    pub fn cache(&self) -> Ref<CatalogSnapshot> {
+        probe!(database, catalog_cache_access);
         self.ensure_catalog_cache();
-        self.catalog_cache
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .tables
-            .get(table_name)
-            .cloned()
-    }
-
-    /// Reverse lookup: find the table name for a given root page.
-    pub fn lookup_table_by_rootpage(&self, rootpage: u32) -> Option<String> {
-        probe!(database, catalog_lookup_by_rootpage);
-        self.ensure_catalog_cache();
-        self.catalog_cache
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .by_rootpage
-            .get(&rootpage)
-            .cloned()
-    }
-
-    /// Return all index metadata for a given table.
-    pub fn lookup_indexes_for_table(&self, table_name: &str) -> Vec<IndexInfo> {
-        probe!(database, catalog_lookup_indexes);
-        self.ensure_catalog_cache();
-        self.catalog_cache
-            .borrow()
-            .as_ref()
-            .unwrap()
-            .indexes
-            .get(table_name)
-            .cloned()
-            .unwrap_or_default()
+        Ref::map(self.catalog_cache.borrow(), |o| o.as_ref().unwrap())
     }
 
     /// Return all catalog entries as raw `(type, name, tbl_name, rootpage, sql)` tuples.

@@ -326,6 +326,7 @@ pub fn dump<W: Write>(output: &mut W, btree: &BTree) -> Result {
             }
             "index" => {
                 let col_names: Vec<String> = btree
+                    .cache()
                     .lookup_indexes_for_table(&tbl_name)
                     .into_iter()
                     .find(|i| i.index_name == name)

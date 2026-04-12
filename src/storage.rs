@@ -22,6 +22,7 @@ pub use btree::encode_integer_key;
 pub use btree::encode_u64_key;
 pub use btree::BTree;
 pub use btree::CursorHandle;
+pub use catalog_cache::CatalogSnapshot;
 pub use catalog_cache::IndexInfo;
 pub use cell_reader::CellReader;
 pub use error::Error as StorageError;

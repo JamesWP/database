@@ -74,7 +74,7 @@ pub(super) fn plan_insert(
     };
 
     // Look up indexes for this table
-    let index_infos = catalog.lookup_indexes_for_table(&insert.table_name);
+    let index_infos = catalog.cache().lookup_indexes_for_table(&insert.table_name);
     let mut indexes = Vec::new();
     for index_info in index_infos {
         // Find column indexes
@@ -147,7 +147,7 @@ pub(super) fn plan_update(
     let table_columns: Vec<usize> = (0..table.columns.len()).collect();
 
     // Gather secondary index maintenance info (mirrors plan_delete)
-    let index_infos = catalog.lookup_indexes_for_table(&update.table_name);
+    let index_infos = catalog.cache().lookup_indexes_for_table(&update.table_name);
     let mut indexes = Vec::new();
     for index_info in index_infos {
         let column_idxs = index_info
@@ -196,7 +196,7 @@ pub(super) fn plan_delete(
     let table_columns: Vec<usize> = (0..table.columns.len()).collect();
 
     // Gather secondary index maintenance info (mirrors plan_insert)
-    let index_infos = catalog.lookup_indexes_for_table(&delete.table_name);
+    let index_infos = catalog.cache().lookup_indexes_for_table(&delete.table_name);
     let mut indexes = Vec::new();
     for index_info in index_infos {
         let column_idxs = index_info
