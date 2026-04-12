@@ -33,13 +33,13 @@ usdt:./target/release/database:database:cbor_row_decode      { @cbor_row_decode+
 
 // ─── USDT: storage / pager ───────────────────────────────────────────────────
 
-usdt:./target/release/database:database:page_read_cache_hit  { @page_read_cache_hit++; @page_read++; }
-usdt:./target/release/database:database:page_read_cache_miss { @page_read_cache_miss++; @page_read++; }
+usdt:./target/release/database:database:page_read            { @page_read++;            }
+usdt:./target/release/database:database:page_read_cache_hit  { @page_read_cache_hit++; }
+usdt:./target/release/database:database:page_read_cache_miss { @page_read_cache_miss++; }
 usdt:./target/release/database:database:page_write           { @page_write++;           }
 usdt:./target/release/database:database:page_read_zero       { @page_read_zero++;       }
 usdt:./target/release/database:database:page_read_freelist   { @page_read_freelist++;   }
 usdt:./target/release/database:database:page_allocate        { @page_allocate++;        }
-usdt:./target/release/database:database:page_deallocate      { @page_deallocate++;      }
 
 // ─── USDT: B-tree cursor ─────────────────────────────────────────────────────
 
@@ -57,16 +57,21 @@ usdt:./target/release/database:database:page_read_overflow   { @page_read_overfl
 
 usdt:./target/release/database:database:page_write_leaf      { @page_write_leaf++;      }
 usdt:./target/release/database:database:page_write_interior  { @page_write_interior++;  }
+usdt:./target/release/database:database:page_write_overflow  { @page_write_overflow++;  }
 usdt:./target/release/database:database:page_write_zero      { @page_write_zero++;      }
+usdt:./target/release/database:database:page_write_freelist  { @page_write_freelist++;  }
 
 // ─── USDT: B-tree structure ──────────────────────────────────────────────────
 
 usdt:./target/release/database:database:row_insert           { @row_insert++;           }
+usdt:./target/release/database:database:row_delete           { @row_delete++;           }
 usdt:./target/release/database:database:page_split           { @page_split++;           }
 usdt:./target/release/database:database:overflow_write       { @overflow_write++;       }
+usdt:./target/release/database:database:overflow_read        { @overflow_read++;        }
 
 // ─── USDT: catalog access ────────────────────────────────────────────────────
 
+usdt:./target/release/database:database:catalog_cache_access       { @catalog_cache_access++;       }
 usdt:./target/release/database:database:catalog_lookup_table       { @catalog_lookup_table++;       }
 usdt:./target/release/database:database:catalog_lookup_by_rootpage { @catalog_lookup_by_rootpage++; }
 usdt:./target/release/database:database:catalog_lookup_indexes     { @catalog_lookup_indexes++;     }
@@ -79,20 +84,24 @@ tracepoint:syscalls:sys_enter_read  /comm == "database"/ {
     @read_start[tid] = nsecs;
     @syscall_reads++;
 }
-tracepoint:syscalls:sys_exit_read   /comm == "database" && @read_start[tid] && args->ret > 0/ {
-    @read_lat_us  = hist((nsecs - @read_start[tid]) / 1000);
-    @read_bytes  += (uint64)args->ret;
-    delete(@read_start[tid]);
+tracepoint:syscalls:sys_exit_read   /comm == "database"/ {
+    if (@read_start[tid] && (int64)args->ret > 0) {
+        @read_lat_us  = hist((nsecs - @read_start[tid]) / 1000);
+        @read_bytes  += (uint64)args->ret;
+        delete(@read_start[tid]);
+    }
 }
 
 tracepoint:syscalls:sys_enter_write /comm == "database"/ {
     @write_start[tid] = nsecs;
     @syscall_writes++;
 }
-tracepoint:syscalls:sys_exit_write  /comm == "database" && @write_start[tid] && args->ret > 0/ {
-    @write_lat_us  = hist((nsecs - @write_start[tid]) / 1000);
-    @write_bytes  += (uint64)args->ret;
-    delete(@write_start[tid]);
+tracepoint:syscalls:sys_exit_write  /comm == "database"/ {
+    if (@write_start[tid] && (int64)args->ret > 0) {
+        @write_lat_us  = hist((nsecs - @write_start[tid]) / 1000);
+        @write_bytes  += (uint64)args->ret;
+        delete(@write_start[tid]);
+    }
 }
 
 tracepoint:syscalls:sys_enter_lseek /comm == "database"/ { @syscall_seeks++;  }
@@ -116,7 +125,8 @@ interval:s:1 {
     printf("  page_decode:    %lld\n", @cbor_page_decode);
     printf("  row_encode:     %lld\n", @cbor_row_encode);
     printf("  row_decode:     %lld\n", @cbor_row_decode);
-    printf("  -- pager cache --\n");
+    printf("  -- pager --\n");
+    printf("  page_read:      %lld\n", @page_read);
     printf("  cache_hit:      %lld\n", @page_read_cache_hit);
     printf("  cache_miss:     %lld\n", @page_read_cache_miss);
     printf("  page_allocate   %lld\n", @page_allocate);
@@ -125,8 +135,10 @@ interval:s:1 {
     printf("  cursor_next:      %lld\n", @cursor_next);
     printf("  cursor_prev:      %lld\n", @cursor_prev);
     printf("  row_insert:       %lld\n", @row_insert);
+    printf("  row_delete:       %lld\n", @row_delete);
     printf("  page_split:       %lld\n", @page_split);
     printf("  overflow_write:   %lld\n", @overflow_write);
+    printf("  overflow_read:    %lld\n", @overflow_read);
     printf("  -- page reads by type --\n");
     printf("  page_read:        %lld\n", @page_read);
     printf("  leaf:             %lld\n", @page_read_leaf);
@@ -138,8 +150,11 @@ interval:s:1 {
     printf("  page_write:       %lld\n", @page_write);
     printf("  leaf:             %lld\n", @page_write_leaf);
     printf("  interior:         %lld\n", @page_write_interior);
+    printf("  overflow:         %lld\n", @page_write_overflow);
     printf("  zero_page:        %lld\n", @page_write_zero);
+    printf("  freelist:         %lld\n", @page_write_freelist);
     printf("  -- catalog --\n");
+    printf("  cache_access:     %lld\n", @catalog_cache_access);
     printf("  lookup_table:     %lld\n", @catalog_lookup_table);
     printf("  lookup_rootpage:  %lld\n", @catalog_lookup_by_rootpage);
     printf("  lookup_indexes:   %lld\n", @catalog_lookup_indexes);
@@ -173,19 +188,21 @@ END {
     printf("  row_decode:     %lld\n", @cbor_row_decode);
 
     printf("\n  [pager]\n");
+    printf("  page_read:      %lld\n", @page_read);
     printf("  cache_hit:      %lld\n", @page_read_cache_hit);
     printf("  cache_miss:     %lld\n", @page_read_cache_miss);
     printf("  page_write:     %lld\n", @page_write);
     printf("  page_allocate   %lld\n", @page_allocate);
-    printf("  page_deallocate %lld\n", @page_deallocate);
 
     printf("\n  [btree]\n");
     printf("  cursor_find:    %lld\n", @cursor_find);
     printf("  cursor_next:    %lld\n", @cursor_next);
     printf("  cursor_prev:    %lld\n", @cursor_prev);
     printf("  row_insert:     %lld\n", @row_insert);
+    printf("  row_delete:     %lld\n", @row_delete);
     printf("  page_split:     %lld\n", @page_split);
     printf("  overflow_write: %lld\n", @overflow_write);
+    printf("  overflow_read:  %lld\n", @overflow_read);
 
     printf("\n  [page reads by type]\n");
     printf("  page_read:      %lld\n", @page_read);
@@ -199,9 +216,12 @@ END {
     printf("  page_write:     %lld\n", @page_write);
     printf("  leaf:           %lld\n", @page_write_leaf);
     printf("  interior:       %lld\n", @page_write_interior);
+    printf("  overflow:       %lld\n", @page_write_overflow);
     printf("  zero_page:      %lld\n", @page_write_zero);
+    printf("  freelist:       %lld\n", @page_write_freelist);
 
     printf("\n  [catalog]\n");
+    printf("  cache_access:    %lld\n", @catalog_cache_access);
     printf("  lookup_table:    %lld\n", @catalog_lookup_table);
     printf("  lookup_rootpage: %lld\n", @catalog_lookup_by_rootpage);
     printf("  lookup_indexes:  %lld\n", @catalog_lookup_indexes);

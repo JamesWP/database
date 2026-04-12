@@ -71,8 +71,18 @@ usdt:./target/debug/database:database:page_write_interior {
     printf("%s\n", ustack());
 }
 
+usdt:./target/debug/database:database:page_write_overflow {
+    printf("    [page_write: overflow  page=%d]\n", arg0);
+    printf("%s\n", ustack());
+}
+
 usdt:./target/debug/database:database:page_write_zero {
     printf("    [page_write: zero-page  page=%d]\n", arg0);
+    printf("%s\n", ustack());
+}
+
+usdt:./target/debug/database:database:page_write_freelist {
+    printf("    [page_write: freelist  page=%d]\n", arg0);
     printf("%s\n", ustack());
 }
 
@@ -84,4 +94,21 @@ usdt:./target/debug/database:database:page_read_cache_hit {
 
 usdt:./target/debug/database:database:page_read_cache_miss {
     printf("    [cache: MISS]\n");
+}
+
+// ─── Row mutations ────────────────────────────────────────────────────────────
+
+usdt:./target/debug/database:database:row_insert {
+    printf("    [row_insert]\n");
+}
+
+usdt:./target/debug/database:database:row_delete {
+    printf("    [row_delete]\n");
+}
+
+// ─── Overflow chain reads ─────────────────────────────────────────────────────
+
+usdt:./target/debug/database:database:overflow_read {
+    printf("    [overflow_read: page=%d]\n", arg0);
+    printf("%s\n", ustack());
 }

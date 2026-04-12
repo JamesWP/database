@@ -53,6 +53,7 @@ impl CellReader {
 
         // Eagerly follow the overflow chain.
         while let Some(cont_page) = continuation {
+            probe!(database, overflow_read, cont_page);
             let (content, next) = {
                 let node = store.read(PageId(cont_page)).ok()?;
                 let overflow = match node {
