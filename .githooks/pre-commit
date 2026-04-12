@@ -4,10 +4,12 @@ set -e
 echo "Running fmt before commit..."
 cargo fmt --check
 
+echo "Checking for warnings..."
+cargo build 2>&1 | grep -q "^warning:" \
+    && echo "THERE ARE WARNINGS! Go fix!" && exit 1
+
 echo "Running tests before commit..."
 output=$(cargo test --quiet 2>&1)
-echo "$output" | grep warning: >/dev/null \
-    && echo THERE ARE WARNINGS! Go fix! && exit 1
 echo "$output" | grep error: >/dev/null \
     && echo THERE ARE ERRORS! Go fix! && exit 1
 echo "$output" | awk '
