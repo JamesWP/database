@@ -13,11 +13,11 @@ mod tests {
     #[test]
     fn test_create_bootstraps_self_referencing_entry() {
         let cat = TempCatalog::new();
-        let entries = cat.scan_entries();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, "table");
-        assert_eq!(entries[0].1, "db_schema");
-        assert_eq!(entries[0].3, CATALOG_ROOT);
+        let (rootpage, _sql) = cat
+            .cache()
+            .lookup_table("db_schema")
+            .expect("bootstrap entry missing");
+        assert_eq!(rootpage, CATALOG_ROOT);
     }
 
     #[test]
@@ -27,8 +27,7 @@ mod tests {
             let _ = BTree::new(&path);
         }
         let cat = BTree::new(&path);
-        let entries = cat.scan_entries();
-        assert_eq!(entries.len(), 1);
+        assert_eq!(cat.cache().tables.len(), 1);
     }
 
     // ---- insert_entry / lookup_table ----
@@ -205,16 +204,15 @@ mod tests {
         assert_eq!(indexes[0].index_name, "idx_a");
     }
 
-    // ---- scan_entries ----
+    // ---- entry count ----
 
     #[test]
-    fn test_scan_entries_returns_all() {
+    fn test_cache_reflects_all_inserted_entries() {
         let mut cat = TempCatalog::new();
         let rp = cat.create_tree();
         cat.insert_entry("table", "t1", "t1", rp, "CREATE TABLE t1 (x INTEGER)");
-        let entries = cat.scan_entries();
         // 1 bootstrap entry (db_schema) + 1 inserted
-        assert_eq!(entries.len(), 2);
+        assert_eq!(cat.cache().tables.len(), 2);
     }
 
     // ---- delete_entries_for_table ----

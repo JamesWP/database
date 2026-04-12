@@ -854,33 +854,6 @@ impl BTree {
         Ref::map(self.catalog_cache.borrow(), |o| o.as_ref().unwrap())
     }
 
-    /// Return all catalog entries as raw `(type, name, tbl_name, rootpage, sql)` tuples.
-    pub fn scan_entries(&self) -> Vec<(String, String, String, u32, String)> {
-        probe!(database, catalog_scan);
-        let mut entries = Vec::new();
-        let mut cursor = self.open(CATALOG_ROOT);
-        let mut c = cursor.open_cursor();
-        c.first();
-        loop {
-            match c.get_entry() {
-                None => break,
-                Some(mut reader) => {
-                    let values = reader.decode_as_array();
-                    if values.len() >= 5 {
-                        let obj_type = values[0].as_str().unwrap_or("").to_string();
-                        let name = values[1].as_str().unwrap_or("").to_string();
-                        let tbl_name = values[2].as_str().unwrap_or("").to_string();
-                        let rootpage = values[3].as_u64().unwrap_or(0) as u32;
-                        let sql = values[4].as_str().unwrap_or("").to_string();
-                        entries.push((obj_type, name, tbl_name, rootpage, sql));
-                    }
-                }
-            }
-            c.next();
-        }
-        entries
-    }
-
     /// Delete the catalog entry for a table and all its associated indexes.
     /// Returns `true` if the table entry was found and deleted.
     pub fn delete_entries_for_table(&mut self, table_name: &str) -> bool {

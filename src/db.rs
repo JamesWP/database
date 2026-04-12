@@ -304,31 +304,33 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
 }
 
 pub fn build_explain_schema(catalog: &BTree) -> ExplainSchema {
+    // TODO: CatalogSnapshot already holds parsed column names (IndexInfo.column_names)
+    // and the table DDL. Re-parsing SQL here is redundant; a follow-up can build
+    // ExplainSchema directly from the snapshot without calling parse() again.
     let mut schema = ExplainSchema::default();
-    for (obj_type, name, tbl_name, rootpage, sql) in catalog.scan_entries() {
-        match obj_type.as_str() {
-            "table" => {
-                if let Ok(Statement::CreateTable(ct)) = parse(&sql) {
-                    let columns = ct.columns.iter().map(|c| c.name.clone()).collect();
-                    schema.tables.insert(rootpage, TableMeta { name, columns });
-                }
-            }
-            "index" => {
-                let column_names = if let Ok(Statement::CreateIndex(ci)) = parse(&sql) {
-                    ci.column_names
-                } else {
-                    vec![]
-                };
-                schema.indexes.insert(
-                    rootpage,
-                    IndexMeta {
-                        name,
-                        table_name: tbl_name,
-                        column_names,
-                    },
-                );
-            }
-            _ => {}
+    let cache = catalog.cache();
+    for (name, (rootpage, sql)) in &cache.tables {
+        if let Ok(Statement::CreateTable(ct)) = parse(sql) {
+            let columns = ct.columns.iter().map(|c| c.name.clone()).collect();
+            schema.tables.insert(
+                *rootpage,
+                TableMeta {
+                    name: name.clone(),
+                    columns,
+                },
+            );
+        }
+    }
+    for (tbl_name, indexes) in &cache.indexes {
+        for idx in indexes {
+            schema.indexes.insert(
+                idx.rootpage,
+                IndexMeta {
+                    name: idx.index_name.clone(),
+                    table_name: tbl_name.clone(),
+                    column_names: idx.column_names.clone(),
+                },
+            );
         }
     }
     schema
