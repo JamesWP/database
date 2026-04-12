@@ -19,3 +19,4 @@ sakila.db
 perf.data
 .gitignore
 perf-stats.txt
+todo.md
