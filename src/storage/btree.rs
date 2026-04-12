@@ -13,7 +13,7 @@ use crate::storage::cell::Cell;
 use crate::storage::node::{NodePage, OverflowPage, SearchResult};
 
 use super::btree_verify::VerifyError;
-use super::catalog_cache::{extract_columns_from_index_sql, CatalogSnapshot, IndexInfo};
+use super::catalog_cache::CatalogSnapshot;
 use super::cell::Value;
 use super::error::Error as StorageError;
 use super::node::{self, InteriorNodePage};
@@ -912,55 +912,8 @@ impl BTree {
 
     fn ensure_catalog_cache(&self) {
         if self.catalog_cache.borrow().is_none() {
-            let snapshot = self.build_catalog_snapshot();
+            let snapshot = CatalogSnapshot::build(&mut self.store.borrow_mut());
             *self.catalog_cache.borrow_mut() = Some(snapshot);
-        }
-    }
-
-    fn build_catalog_snapshot(&self) -> CatalogSnapshot {
-        let mut tables: HashMap<String, (u32, String)> = HashMap::new();
-        let mut by_rootpage: HashMap<u32, String> = HashMap::new();
-        let mut indexes: HashMap<String, Vec<IndexInfo>> = HashMap::new();
-
-        let mut cursor = self.open(CATALOG_ROOT);
-        let mut c = cursor.open_cursor();
-        c.first();
-        loop {
-            match c.get_entry() {
-                None => break,
-                Some(mut reader) => {
-                    let values = reader.decode_as_array();
-                    if values.len() >= 5 {
-                        let obj_type = values[0].as_str().unwrap_or("");
-                        let name = values[1].as_str().unwrap_or("").to_string();
-                        let tbl_name = values[2].as_str().unwrap_or("").to_string();
-                        let rootpage = values[3].as_u64().unwrap_or(0) as u32;
-                        let sql = values[4].as_str().unwrap_or("").to_string();
-                        match obj_type {
-                            "table" => {
-                                by_rootpage.insert(rootpage, name.clone());
-                                tables.insert(name, (rootpage, sql));
-                            }
-                            "index" => {
-                                let column_names = extract_columns_from_index_sql(&sql);
-                                indexes.entry(tbl_name).or_default().push(IndexInfo {
-                                    index_name: name,
-                                    column_names,
-                                    rootpage,
-                                    sql,
-                                });
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            c.next();
-        }
-        CatalogSnapshot {
-            tables,
-            by_rootpage,
-            indexes,
         }
     }
 
