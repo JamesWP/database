@@ -100,8 +100,7 @@ impl NodePageStore {
         }
         // Cache miss: decode directly from disk.
         let bytes = self.pager.read_raw(id);
-        probe!(database, cbor_page_decode);
-        ciborium::de::from_reader(&bytes[..]).map_err(|e| Error::Decode(e.to_string()))
+        decode_page(&bytes)
     }
 
     /// Encode `node` and write it to disk, inserting it into the cache.
@@ -110,23 +109,10 @@ impl NodePageStore {
     /// exceeds `PAGE_SIZE` — the node is returned to the caller so a split
     /// can be performed without a re-fetch or clone.
     pub fn write(&mut self, id: PageId, node: NodePage) -> Result<(), Error> {
-        let mut bytes = [0u8; PAGE_SIZE as usize];
-        probe!(database, cbor_page_encode);
-        match ciborium::ser::into_writer(&node, &mut &mut bytes[..]) {
-            Ok(()) => {
-                self.pager.write_raw(id, &bytes);
-                self.cache.insert(id, node);
-                Ok(())
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("failed to write whole buffer") || msg.contains("write zero") {
-                    Err(Error::PageFull(node))
-                } else {
-                    Err(Error::Decode(format!("CBOR encoding failed: {}", msg)))
-                }
-            }
-        }
+        let (bytes, node) = encode_page(node)?;
+        self.pager.write_raw(id, &bytes);
+        self.cache.insert(id, node);
+        Ok(())
     }
 
     /// Flush the underlying file handle.
@@ -155,9 +141,7 @@ impl NodePageStore {
             return Ok(());
         }
         let bytes = self.pager.read_raw(id);
-        probe!(database, cbor_page_decode);
-        let node: NodePage =
-            ciborium::de::from_reader(&bytes[..]).map_err(|e| Error::Decode(e.to_string()))?;
+        let node = decode_page(&bytes)?;
         match &node {
             NodePage::Leaf(_) => probe!(database, page_read_leaf, id.as_u32()),
             NodePage::Interior(_) => probe!(database, page_read_interior, id.as_u32()),
@@ -165,6 +149,34 @@ impl NodePageStore {
         }
         self.cache.insert(id, node);
         Ok(())
+    }
+}
+
+// ── CBOR page helpers ─────────────────────────────────────────────────────────
+
+fn decode_page(bytes: &[u8]) -> Result<NodePage, Error> {
+    probe!(database, cbor_page_decode);
+    ciborium::de::from_reader(bytes).map_err(|e| Error::Decode(e.to_string()))
+}
+
+/// Encode `node` into a fixed-size page buffer.
+///
+/// Returns `Err(Error::PageFull(node))` when the encoded size exceeds
+/// `PAGE_SIZE` — the node is returned to the caller so a split can be
+/// performed without a re-fetch or clone.
+fn encode_page(node: NodePage) -> Result<([u8; PAGE_SIZE as usize], NodePage), Error> {
+    let mut bytes = [0u8; PAGE_SIZE as usize];
+    probe!(database, cbor_page_encode);
+    match ciborium::ser::into_writer(&node, &mut &mut bytes[..]) {
+        Ok(()) => Ok((bytes, node)),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("failed to write whole buffer") || msg.contains("write zero") {
+                Err(Error::PageFull(node))
+            } else {
+                Err(Error::Decode(format!("CBOR encoding failed: {}", msg)))
+            }
+        }
     }
 }
 
