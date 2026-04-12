@@ -22,13 +22,13 @@ struct FreeListPage {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ZeroPage {
+pub(super) struct ZeroPage {
     /// Magic number to identify database files: 0x53514C69 ("SQLi")
     magic: u32,
 
     /// Format version: 0 = JSON (deprecated), 1 = CBOR with schema_root_page
     /// (deprecated), 2 = CBOR without schema_root_page (catalog always at page 1)
-    pub(crate) format_version: u16,
+    pub(super) format_version: u16,
 
     /// First page of the free list linked list (None if no free pages)
     free_list_head: Option<u32>,
