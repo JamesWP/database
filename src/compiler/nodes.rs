@@ -2107,7 +2107,7 @@ mod tests {
 
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(1), ScalarValue::Integer(100)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
@@ -2179,7 +2179,7 @@ mod tests {
 
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(10), ScalarValue::Integer(20)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
@@ -3243,7 +3243,7 @@ mod tests {
     /// Insert CBOR-encoded rows into a btree table.
     fn insert_rows2(btree: &mut crate::storage::BTree, root: u32, rows: &[(i64, i64)]) {
         let mut cursor = btree.open(root);
-        let mut c = cursor.open_readwrite();
+        let mut c = cursor.open_cursor();
         for (i, (a, b)) in rows.iter().enumerate() {
             let values = vec![ScalarValue::Integer(*a), ScalarValue::Integer(*b)];
             let mut buf = Vec::new();
@@ -3446,7 +3446,7 @@ mod tests {
         use crate::engine::scalarvalue::ScalarValue;
         use crate::storage::encode_index_value;
         let mut cursor = btree.open(index_root);
-        let mut c = cursor.open_readwrite();
+        let mut c = cursor.open_cursor();
         for (i, (user_id, rowid)) in rows.iter().enumerate() {
             let col_bytes = encode_index_value(&ScalarValue::Integer(*user_id));
             let rowid_bytes = rowid.to_be_bytes();
@@ -3489,7 +3489,7 @@ mod tests {
                 ),
             ];
             let mut cursor = btree.open(right_root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             for (row, rowid) in &values {
                 let mut buf = Vec::new();
                 ciborium::ser::into_writer(row, &mut buf).unwrap();
@@ -3502,7 +3502,7 @@ mod tests {
             use crate::storage::{encode_index_value, encode_u64_key};
             let entries: &[(i64, u64)] = &[(1, 0), (1, 1), (2, 2)];
             let mut cursor = btree.open(idx_root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             for (user_id, rowid) in entries.iter() {
                 let col_bytes = encode_index_value(&ScalarValue::Integer(*user_id));
                 let mut composite_key = col_bytes;

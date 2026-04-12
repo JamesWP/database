@@ -624,7 +624,7 @@ impl Engine {
                 };
 
                 let cursor = self.registers.get_mut(reg).cursor_mut().unwrap();
-                let mut cursor = cursor.open_readwrite();
+                let mut cursor = cursor.open_cursor();
                 match operation {
                     program::MoveOperation::First => cursor.first(),
                     program::MoveOperation::Next => cursor.next(),
@@ -636,7 +636,7 @@ impl Engine {
             }
             CanReadCursor(dest, reg) => {
                 let cursor = self.registers.get_mut(reg).cursor_mut().unwrap();
-                let mut cursor = cursor.open_readonly();
+                let mut cursor = cursor.open_cursor();
                 let value = cursor.get_entry().is_some();
                 // we must drop cursror before we can mutate registers
                 drop(cursor);
@@ -651,7 +651,7 @@ impl Engine {
             }
             ReadCurrentKey(dest, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut cursor = cursor.open_readonly();
+                let mut cursor = cursor.open_cursor();
                 let entry = cursor.get_entry().unwrap();
                 let key = entry.key().to_vec();
                 drop(cursor);
@@ -789,7 +789,7 @@ impl Engine {
             ReadCursor(regs, cursor_reg) => {
                 probe!(database, engine_read_cursor);
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut cursor = cursor.open_readwrite();
+                let mut cursor = cursor.open_cursor();
                 let mut value = cursor.get_entry().unwrap();
                 let values = value.decode_as_array();
                 // we must drop cursror before we can mutate registers
@@ -801,7 +801,7 @@ impl Engine {
             }
             ReadKey(dest, cursor_reg) => {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut cursor = cursor.open_readonly();
+                let mut cursor = cursor.open_cursor();
                 let entry = cursor.get_entry().unwrap();
                 let key = storage::decode_u64_key(entry.key());
                 drop(cursor);
@@ -829,7 +829,7 @@ impl Engine {
                 // Write to btree
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let rootpage = cursor.root_page();
-                let mut c = cursor.open_readwrite();
+                let mut c = cursor.open_cursor();
                 c.insert_u64(key, bytes);
                 drop(c);
 
@@ -858,7 +858,7 @@ impl Engine {
                     Some(v) => v,
                     None => {
                         // Cold path: seek to last entry to find max rowid.
-                        let mut c = cursor.open_readonly();
+                        let mut c = cursor.open_cursor();
                         c.last();
                         let result = match c.get_entry() {
                             None => 1,
@@ -881,7 +881,7 @@ impl Engine {
                 }
                 // Position cursor at or near the prefix
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut c = cursor.open_readwrite();
+                let mut c = cursor.open_cursor();
                 c.find(&prefix);
                 // Check if current key starts with the prefix
                 if let Some(entry) = c.get_entry() {
@@ -910,7 +910,7 @@ impl Engine {
                 index_key.extend_from_slice(&storage::encode_u64_key(pk));
 
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut c = cursor.open_readwrite();
+                let mut c = cursor.open_cursor();
 
                 if unique {
                     // Position at the prefix to check for a conflicting entry before inserting.
@@ -950,7 +950,7 @@ impl Engine {
 
                 // Find and delete the entry from the index B-tree
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut c = cursor.open_readwrite();
+                let mut c = cursor.open_cursor();
                 if c.find(&index_key) {
                     c.delete_current();
                 }
@@ -959,7 +959,7 @@ impl Engine {
                 probe!(database, engine_delete_cursor);
                 // Delete at current cursor position
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
-                let mut cursor = cursor.open_readwrite();
+                let mut cursor = cursor.open_cursor();
                 cursor.delete_current();
             }
         };
@@ -1489,7 +1489,7 @@ mod test {
         let root = btree.create_tree();
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(12345), ScalarValue::Integer(6789)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
@@ -1537,7 +1537,7 @@ mod test {
 
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(12345), ScalarValue::Integer(6789)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
@@ -1589,7 +1589,7 @@ mod test {
 
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v0 = Vec::new();
             let values0 = vec![
                 ScalarValue::Integer(1),
@@ -1676,7 +1676,7 @@ mod test {
         // Insert test data
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v0 = Vec::new();
             let values = vec![ScalarValue::Integer(100), ScalarValue::Integer(200)];
             ciborium::ser::into_writer(&values, &mut v0).unwrap();
@@ -1796,7 +1796,7 @@ mod test {
         // Pre-populate with some data
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v1 = Vec::new();
             let values = vec![ScalarValue::Integer(10)];
             ciborium::ser::into_writer(&values, &mut v1).unwrap();
@@ -1899,7 +1899,7 @@ mod test {
         // Insert some test data
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v10 = Vec::new();
             let values = vec![ScalarValue::Integer(100)];
             ciborium::ser::into_writer(&values, &mut v10).unwrap();
@@ -2060,7 +2060,7 @@ mod test {
         // Insert test data: keys 10, 20, 30 with values [30], [10], [20]
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v10 = Vec::new();
             let values = vec![ScalarValue::Integer(30)];
             ciborium::ser::into_writer(&values, &mut v10).unwrap();
@@ -2143,7 +2143,7 @@ mod test {
         // Insert test data
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let mut v1 = Vec::new();
             let values1 = vec![
                 ScalarValue::Integer(1),
@@ -2231,7 +2231,7 @@ mod test {
 
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let key20 = storage::encode_integer_key(20);
             let key30 = storage::encode_integer_key(30);
             c.insert(&key20, vec![2]);
@@ -2274,7 +2274,7 @@ mod test {
 
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let key20 = storage::encode_integer_key(20);
             let key30 = storage::encode_integer_key(30);
             c.insert(&key20, vec![2]);
@@ -2319,7 +2319,7 @@ mod test {
 
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             let key20 = storage::encode_integer_key(20);
             c.insert(&key20, vec![2]);
         }
@@ -2361,7 +2361,7 @@ mod test {
         let rowid: u64 = 42;
         {
             let mut cursor = btree.open(root);
-            let mut c = cursor.open_readwrite();
+            let mut c = cursor.open_cursor();
             // Composite key: [col_encoded 8 bytes][rowid 8 bytes]
             let mut key = storage::encode_integer_key(100);
             key.extend_from_slice(&storage::encode_u64_key(rowid));
