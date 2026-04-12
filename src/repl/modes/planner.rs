@@ -25,7 +25,7 @@ impl Mode for PlannerMode {
             // Schema management
             ["schema"] => {
                 // List all tables in the catalog
-                match shared.btree.lookup_table("db_schema") {
+                match shared.btree.cache().lookup_table("db_schema") {
                     Some((_, sql)) => CommandResult::Message(format!("Catalog DDL: {}", sql)),
                     None => CommandResult::Message("No catalog found".to_string()),
                 }

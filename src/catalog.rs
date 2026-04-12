@@ -44,7 +44,7 @@ mod tests {
             rootpage,
             "CREATE TABLE users (id INTEGER)",
         );
-        let result = cat.lookup_table("users");
+        let result = cat.cache().lookup_table("users");
         assert!(result.is_some());
         let (rp, sql) = result.unwrap();
         assert_eq!(rp, rootpage);
@@ -54,7 +54,7 @@ mod tests {
     #[test]
     fn test_lookup_table_not_found_returns_none() {
         let cat = TempCatalog::new();
-        assert!(cat.lookup_table("nonexistent").is_none());
+        assert!(cat.cache().lookup_table("nonexistent").is_none());
     }
 
     #[test]
@@ -68,7 +68,7 @@ mod tests {
             rp,
             "CREATE INDEX idx_users_id ON users(id)",
         );
-        assert!(cat.lookup_table("idx_users_id").is_none());
+        assert!(cat.cache().lookup_table("idx_users_id").is_none());
     }
 
     #[test]
@@ -84,9 +84,9 @@ mod tests {
                 &format!("CREATE TABLE {} (id INTEGER)", name),
             );
         }
-        assert!(cat.lookup_table("alpha").is_some());
-        assert!(cat.lookup_table("beta").is_some());
-        assert!(cat.lookup_table("gamma").is_some());
+        assert!(cat.cache().lookup_table("alpha").is_some());
+        assert!(cat.cache().lookup_table("beta").is_some());
+        assert!(cat.cache().lookup_table("gamma").is_some());
     }
 
     // ---- lookup_table_by_rootpage ----
@@ -102,13 +102,16 @@ mod tests {
             rp,
             "CREATE TABLE things (x TEXT)",
         );
-        assert_eq!(cat.lookup_table_by_rootpage(rp), Some("things".to_string()));
+        assert_eq!(
+            cat.cache().lookup_table_by_rootpage(rp),
+            Some("things".to_string())
+        );
     }
 
     #[test]
     fn test_lookup_table_by_rootpage_not_found() {
         let cat = TempCatalog::new();
-        assert!(cat.lookup_table_by_rootpage(999).is_none());
+        assert!(cat.cache().lookup_table_by_rootpage(999).is_none());
     }
 
     // ---- lookup_indexes_for_table ----
@@ -124,7 +127,7 @@ mod tests {
             rp,
             "CREATE TABLE users (id INTEGER)",
         );
-        assert!(cat.lookup_indexes_for_table("users").is_empty());
+        assert!(cat.cache().lookup_indexes_for_table("users").is_empty());
     }
 
     #[test]
@@ -146,7 +149,7 @@ mod tests {
             idx_rp,
             "CREATE INDEX idx_users_name ON users(name)",
         );
-        let indexes = cat.lookup_indexes_for_table("users");
+        let indexes = cat.cache().lookup_indexes_for_table("users");
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].index_name, "idx_users_name");
         assert_eq!(indexes[0].column_names, vec!["name"]);
@@ -172,7 +175,7 @@ mod tests {
             idx_rp,
             "CREATE INDEX idx_rental_uq ON rental(date,inv)",
         );
-        let indexes = cat.lookup_indexes_for_table("rental");
+        let indexes = cat.cache().lookup_indexes_for_table("rental");
         assert_eq!(indexes[0].column_names, vec!["date", "inv"]);
     }
 
@@ -197,7 +200,7 @@ mod tests {
                 &format!("CREATE INDEX idx_{} ON {}(id)", tbl, tbl),
             );
         }
-        let indexes = cat.lookup_indexes_for_table("a");
+        let indexes = cat.cache().lookup_indexes_for_table("a");
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].index_name, "idx_a");
     }
@@ -236,8 +239,8 @@ mod tests {
             "CREATE INDEX _pk_users_id ON users(id)",
         );
         assert!(cat.delete_entries_for_table("users"));
-        assert!(cat.lookup_table("users").is_none());
-        assert!(cat.lookup_indexes_for_table("users").is_empty());
+        assert!(cat.cache().lookup_table("users").is_none());
+        assert!(cat.cache().lookup_indexes_for_table("users").is_empty());
     }
 
     #[test]
@@ -260,8 +263,8 @@ mod tests {
             );
         }
         cat.delete_entries_for_table("drop");
-        assert!(cat.lookup_table("keep").is_some());
-        assert!(cat.lookup_table("drop").is_none());
+        assert!(cat.cache().lookup_table("keep").is_some());
+        assert!(cat.cache().lookup_table("drop").is_none());
     }
 
     // ---- unique flag ----
@@ -279,7 +282,7 @@ mod tests {
             idx_rp,
             "CREATE UNIQUE INDEX _pk_t_id ON t(id)",
         );
-        let indexes = cat.lookup_indexes_for_table("t");
+        let indexes = cat.cache().lookup_indexes_for_table("t");
         assert!(indexes[0].sql.to_uppercase().contains("UNIQUE"));
     }
 
@@ -296,7 +299,7 @@ mod tests {
             idx_rp,
             "CREATE UNIQUE INDEX _uq_t_email ON t(email)",
         );
-        let indexes = cat.lookup_indexes_for_table("t");
+        let indexes = cat.cache().lookup_indexes_for_table("t");
         assert!(indexes[0].sql.to_uppercase().contains("UNIQUE"));
     }
 
@@ -313,7 +316,7 @@ mod tests {
             idx_rp,
             "CREATE INDEX idx_t_age ON t(age)",
         );
-        let indexes = cat.lookup_indexes_for_table("t");
+        let indexes = cat.cache().lookup_indexes_for_table("t");
         assert!(!indexes[0].sql.to_uppercase().contains("UNIQUE"));
     }
 
@@ -338,7 +341,7 @@ mod tests {
             idx_rp,
             "CREATE UNIQUE INDEX _pk_t_id ON t(id)",
         );
-        let indexes = cat.lookup_indexes_for_table("t");
+        let indexes = cat.cache().lookup_indexes_for_table("t");
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].column_names, vec!["id"]);
         assert!(
@@ -366,7 +369,7 @@ mod tests {
             idx_rp,
             "CREATE UNIQUE INDEX _uq_t_name ON t(name)",
         );
-        let indexes = cat.lookup_indexes_for_table("t");
+        let indexes = cat.cache().lookup_indexes_for_table("t");
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].column_names, vec!["name"]);
         assert!(
@@ -383,7 +386,7 @@ mod tests {
         let rp = cat.create_tree();
         cat.insert_entry("table", "t", "t", rp, "CREATE TABLE t (id INTEGER)");
         assert!(!cat.catalog_cache_populated());
-        let _ = cat.lookup_table("t");
+        let _ = cat.cache().lookup_table("t");
         assert!(cat.catalog_cache_populated());
     }
 
@@ -392,13 +395,13 @@ mod tests {
         let mut cat = TempCatalog::new();
         let rp = cat.create_tree();
         cat.insert_entry("table", "a", "a", rp, "CREATE TABLE a (x INTEGER)");
-        let _ = cat.lookup_table("a");
+        let _ = cat.cache().lookup_table("a");
         assert!(cat.catalog_cache_populated());
         let rp2 = cat.create_tree();
         cat.insert_entry("table", "b", "b", rp2, "CREATE TABLE b (x INTEGER)");
         assert!(!cat.catalog_cache_populated());
-        assert!(cat.lookup_table("a").is_some());
-        assert!(cat.lookup_table("b").is_some());
+        assert!(cat.cache().lookup_table("a").is_some());
+        assert!(cat.cache().lookup_table("b").is_some());
     }
 
     #[test]
@@ -412,11 +415,11 @@ mod tests {
             rp,
             "CREATE TABLE drop_me (x INTEGER)",
         );
-        let _ = cat.lookup_table("drop_me");
+        let _ = cat.cache().lookup_table("drop_me");
         assert!(cat.catalog_cache_populated());
         cat.delete_entries_for_table("drop_me");
         assert!(!cat.catalog_cache_populated());
-        assert!(cat.lookup_table("drop_me").is_none());
+        assert!(cat.cache().lookup_table("drop_me").is_none());
     }
 
     #[test]
@@ -432,7 +435,7 @@ mod tests {
             idx_rp,
             "CREATE INDEX idx_t_id ON t(id)",
         );
-        let indexes = cat.lookup_indexes_for_table("t");
+        let indexes = cat.cache().lookup_indexes_for_table("t");
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].index_name, "idx_t_id");
     }
@@ -448,8 +451,11 @@ mod tests {
             rp,
             "CREATE TABLE things (x TEXT)",
         );
-        let _ = cat.lookup_table("things");
-        assert_eq!(cat.lookup_table_by_rootpage(rp), Some("things".to_string()));
+        let _ = cat.cache().lookup_table("things");
+        assert_eq!(
+            cat.cache().lookup_table_by_rootpage(rp),
+            Some("things".to_string())
+        );
         assert!(cat.catalog_cache_populated());
     }
 
@@ -470,6 +476,6 @@ mod tests {
             );
         }
         let btree = BTree::new(&path);
-        assert!(btree.lookup_table("persisted").is_some());
+        assert!(btree.cache().lookup_table("persisted").is_some());
     }
 }

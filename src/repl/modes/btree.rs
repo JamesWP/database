@@ -52,7 +52,7 @@ impl Mode for BTreeMode {
                     Err(e) => return CommandResult::Error(format!("Parse error: {:?}", e)),
                 };
                 let name = &stmt.table_name;
-                if shared.btree.lookup_table(name).is_some() {
+                if shared.btree.cache().lookup_table(name).is_some() {
                     return CommandResult::Error(format!("Table '{}' already exists", name));
                 }
                 let root_page = shared.btree.create_tree();
@@ -108,7 +108,7 @@ impl Mode for BTreeMode {
                     );
                 }
 
-                match shared.btree.lookup_table(&name) {
+                match shared.btree.cache().lookup_table(&name) {
                     Some((root_page, _)) => {
                         let handle = shared.btree.open(root_page);
                         self.cursor = Some(CursorState {
@@ -241,7 +241,7 @@ impl Mode for BTreeMode {
 
             ["verify", "all"] => {
                 // Open db_schema like any other table via lookup_table
-                let (schema_root, _) = match shared.btree.lookup_table("db_schema") {
+                let (schema_root, _) = match shared.btree.cache().lookup_table("db_schema") {
                     Some(r) => r,
                     None => return CommandResult::Error("No schema table found".to_string()),
                 };
