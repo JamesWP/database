@@ -716,7 +716,7 @@ fn split_and_store(store: &mut NodePageStore, mut rest: &[u8]) -> u32 {
 
 #[derive(Clone)]
 pub struct BTree {
-    pub(super) store: Arc<RefCell<NodePageStore>>,
+    store: Arc<RefCell<NodePageStore>>,
     /// Maps a table's rootpage to the next rowid to assign for an INSERT.
     /// Shared across `BTree` clones via `Arc` so the catalog instance and the
     /// engine instance (which clones the catalog's `BTree`) see the same values.
@@ -779,6 +779,10 @@ impl BTree {
     /// Store the next rowid for a rootpage in the cache.
     pub fn set_cached_next_rowid(&self, rootpage: u32, next_rowid: u64) {
         self.rowid_cache.borrow_mut().insert(rootpage, next_rowid);
+    }
+
+    pub(super) fn store_mut(&self) -> RefMut<NodePageStore> {
+        self.store.borrow_mut()
     }
 
     pub fn open(&self, root_page: u32) -> CursorHandle {

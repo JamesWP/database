@@ -248,7 +248,7 @@ fn write_subgraph<W: Write>(
     writeln!(output, "\tsubgraph cluster_{root} {{")?;
     writeln!(output, "\t\tlabel=\"{}\";", escape_label(label))?;
 
-    let mut store = btree.store.borrow_mut();
+    let mut store = btree.store_mut();
 
     // DFS walk from root
     let mut stack = vec![root];
