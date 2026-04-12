@@ -316,7 +316,7 @@ pub fn dump<W: Write>(output: &mut W, btree: &BTree) -> Result {
     )?;
 
     // User tables and indexes (skip root pages already rendered)
-    let cache = btree.cache();
+    let cache = btree.catalog();
     for (name, (rootpage, _sql)) in &cache.tables {
         if *rootpage == CATALOG_ROOT {
             continue;

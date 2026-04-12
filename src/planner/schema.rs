@@ -116,7 +116,7 @@ mod tests {
 
 pub fn resolve_table(table_name: &str, catalog: &BTree) -> Result<Table, PlanError> {
     let (rootpage, sql) = catalog
-        .cache()
+        .catalog()
         .lookup_table(table_name)
         .ok_or_else(|| PlanError::TableNotFound(table_name.to_string()))?;
 

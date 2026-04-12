@@ -120,7 +120,7 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
             let name = &ct.table_name;
 
             // Check if table already exists
-            if catalog.cache().lookup_table(name).is_some() {
+            if catalog.catalog().lookup_table(name).is_some() {
                 return Err(ExecuteError::TableAlreadyExists(name.clone()));
             }
 
@@ -156,13 +156,13 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
             let name = &drop.table_name;
 
             // Check if table exists
-            if catalog.cache().lookup_table(name).is_none() {
+            if catalog.catalog().lookup_table(name).is_none() {
                 return Err(ExecuteError::TableNotFound(name.clone()));
             }
 
             // Invalidate the rowid cache before deleting so a subsequent CREATE
             // TABLE + INSERT on the same rootpage starts rowids from 1.
-            if let Some((rootpage, _)) = catalog.cache().lookup_table(name) {
+            if let Some((rootpage, _)) = catalog.catalog().lookup_table(name) {
                 catalog.invalidate_rowid_cache(rootpage);
             }
 
@@ -181,12 +181,12 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
 
             // 1. Resolve table and validate it exists
             let (table_rootpage, ddl) = catalog
-                .cache()
+                .catalog()
                 .lookup_table(&ci.table_name)
                 .ok_or_else(|| ExecuteError::TableNotFound(ci.table_name.clone()))?;
 
             // 2. Check if index already exists
-            let existing = catalog.cache().lookup_indexes_for_table(&ci.table_name);
+            let existing = catalog.catalog().lookup_indexes_for_table(&ci.table_name);
             for index in &existing {
                 if index.index_name == ci.index_name {
                     return Err(ExecuteError::IndexAlreadyExists(ci.index_name.clone()));
@@ -308,7 +308,7 @@ pub fn build_explain_schema(catalog: &BTree) -> ExplainSchema {
     // and the table DDL. Re-parsing SQL here is redundant; a follow-up can build
     // ExplainSchema directly from the snapshot without calling parse() again.
     let mut schema = ExplainSchema::default();
-    let cache = catalog.cache();
+    let cache = catalog.catalog();
     for (name, (rootpage, sql)) in &cache.tables {
         if let Ok(Statement::CreateTable(ct)) = parse(sql) {
             let columns = ct.columns.iter().map(|c| c.name.clone()).collect();
