@@ -66,7 +66,7 @@ impl Mode for BTreeMode {
                 let schema_root: u32 = 1;
 
                 let mut cursor = shared.btree.open(schema_root);
-                let mut c = cursor.open_readonly();
+                let mut c = cursor.open_cursor();
 
                 println!("Tables:");
                 c.first();
@@ -130,17 +130,17 @@ impl Mode for BTreeMode {
 
             // Navigation
             ["first"] => self.with_cursor(|cursor| {
-                cursor.handle.open_readonly().first();
+                cursor.handle.open_cursor().first();
                 CommandResult::Ok
             }),
 
             ["next"] => self.with_cursor(|cursor| {
-                cursor.handle.open_readonly().next();
+                cursor.handle.open_cursor().next();
                 CommandResult::Ok
             }),
 
             ["prev"] => self.with_cursor(|cursor| {
-                cursor.handle.open_readonly().prev();
+                cursor.handle.open_cursor().prev();
                 CommandResult::Ok
             }),
 
@@ -150,21 +150,21 @@ impl Mode for BTreeMode {
                     Err(_) => return CommandResult::Error("Invalid key (must be u64)".to_string()),
                 };
                 self.with_cursor(|cursor| {
-                    cursor.handle.open_readonly().find_u64(key);
+                    cursor.handle.open_cursor().find_u64(key);
                     CommandResult::Ok
                 })
             }
 
             // Read operations
             ["print"] => self.with_cursor(|cursor| {
-                let mut c = cursor.handle.open_readonly();
+                let mut c = cursor.handle.open_cursor();
                 let entry = c.get_entry();
                 let _ = print_value(entry);
                 CommandResult::Ok
             }),
 
             ["print", "data"] | ["scan"] => self.with_cursor(|cursor| {
-                let mut c = cursor.handle.open_readonly();
+                let mut c = cursor.handle.open_cursor();
                 c.first();
                 loop {
                     let entry = c.get_entry();
@@ -186,7 +186,7 @@ impl Mode for BTreeMode {
                 self.with_cursor(|cursor| {
                     cursor
                         .handle
-                        .open_readwrite()
+                        .open_cursor()
                         .insert_u64(key, value.into_bytes());
                     CommandResult::Message(format!("Inserted key {}", key))
                 })
@@ -219,7 +219,7 @@ impl Mode for BTreeMode {
                         let key =
                             rng.sample(rand::distributions::Uniform::new(1 << 10, 1u64 << 32));
 
-                        cursor.handle.open_readwrite().insert_u64(key, bytes);
+                        cursor.handle.open_cursor().insert_u64(key, bytes);
                     }
                     CommandResult::Message(format!(
                         "Inserted {} items with random size up to {}",
@@ -233,7 +233,7 @@ impl Mode for BTreeMode {
                 None => {
                     CommandResult::Error("No cursor open. Use 'open <table>' first.".to_string())
                 }
-                Some(cursor) => match cursor.handle.open_readonly().verify() {
+                Some(cursor) => match cursor.handle.open_cursor().verify() {
                     Ok(_) => CommandResult::Message("Verify success!".to_string()),
                     Err(e) => CommandResult::Error(format!("Verify failed: {:?}", e)),
                 },
@@ -250,7 +250,7 @@ impl Mode for BTreeMode {
                 // db_schema is included because it has a self-referencing row.
                 let entries = {
                     let mut cursor = shared.btree.open(schema_root);
-                    let mut c = cursor.open_readonly();
+                    let mut c = cursor.open_cursor();
                     c.first();
                     let mut entries = Vec::new();
                     loop {
@@ -281,7 +281,7 @@ impl Mode for BTreeMode {
                 let mut failures = Vec::new();
                 for (name, kind, rootpage) in &entries {
                     let mut handle = shared.btree.open(*rootpage);
-                    let result = handle.open_readonly().verify();
+                    let result = handle.open_cursor().verify();
                     if let Err(e) = result {
                         failures.push(format!("  {} ({}): {:?}", name, kind, e));
                     }
