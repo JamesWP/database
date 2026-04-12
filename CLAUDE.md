@@ -79,6 +79,8 @@ make install-hooks
 
 ## Git & Commits
 
+**Primary Branch:** The default branch is `main` (not `master`). PRs target `main`.
+
 **Merge Strategy:** PRs are merged with **rebase** (not merge commits). Keep branches clean — avoid revert commits. If a commit needs undoing before merge, drop it with `git reset` + `git push --force-with-lease` rather than adding a revert on top.
 
 **Commit Strategy:**
