@@ -847,8 +847,8 @@ impl BTree {
 
     /// Return a read-only snapshot of the catalog, building it on first call
     /// and after any catalog write.  All lookup methods live on the returned
-    /// `CatalogSnapshot` so callers use `btree.cache().lookup_table(name)`.
-    pub fn cache(&self) -> Ref<CatalogSnapshot> {
+    /// `CatalogSnapshot` so callers use `btree.catalog().lookup_table(name)`.
+    pub fn catalog(&self) -> Ref<CatalogSnapshot> {
         probe!(database, catalog_cache_access);
         self.ensure_catalog_cache();
         Ref::map(self.catalog_cache.borrow(), |o| o.as_ref().unwrap())

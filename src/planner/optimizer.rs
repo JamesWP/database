@@ -279,8 +279,8 @@ fn try_index_scan_plan(
     scan_columns: &[usize],
     catalog: &BTree,
 ) -> Option<LogicalPlan> {
-    let table_name = catalog.cache().lookup_table_by_rootpage(table_rootpage)?;
-    let indexes = catalog.cache().lookup_indexes_for_table(&table_name);
+    let table_name = catalog.catalog().lookup_table_by_rootpage(table_rootpage)?;
+    let indexes = catalog.catalog().lookup_indexes_for_table(&table_name);
     if indexes.is_empty() {
         return None;
     }
@@ -297,7 +297,7 @@ fn try_index_scan_plan(
             .and_then(|col_name| {
                 // Resolve the column name to a table column index.
                 catalog
-                    .cache()
+                    .catalog()
                     .lookup_table(&table_name)
                     .and_then(|(_, sql)| {
                         parse(&sql).ok().and_then(|stmt| match stmt {
@@ -362,8 +362,8 @@ fn try_index_probe_plan(
         _ => return None,
     };
 
-    let table_name = catalog.cache().lookup_table_by_rootpage(right_rootpage)?;
-    let indexes = catalog.cache().lookup_indexes_for_table(&table_name);
+    let table_name = catalog.catalog().lookup_table_by_rootpage(right_rootpage)?;
+    let indexes = catalog.catalog().lookup_indexes_for_table(&table_name);
     if indexes.is_empty() {
         return None;
     }
@@ -379,7 +379,7 @@ fn try_index_probe_plan(
                 .first()
                 .and_then(|col_name| {
                     catalog
-                        .cache()
+                        .catalog()
                         .lookup_table(&table_name)
                         .and_then(|(_, sql)| {
                             parse(&sql).ok().and_then(|stmt| match stmt {
@@ -679,15 +679,15 @@ fn try_covering_index_scan(
     };
 
     // Look up the table's column names to map table-col-idx → name.
-    let table_name = catalog.cache().lookup_table_by_rootpage(table_rootpage)?;
-    let (_, table_sql) = catalog.cache().lookup_table(&table_name)?;
+    let table_name = catalog.catalog().lookup_table_by_rootpage(table_rootpage)?;
+    let (_, table_sql) = catalog.catalog().lookup_table(&table_name)?;
     let table_cols: Vec<String> = match parse(&table_sql).ok()? {
         Statement::CreateTable(ct) => ct.columns.into_iter().map(|c| c.name).collect(),
         _ => return None,
     };
 
     // Look up the index's column names.
-    let indexes = catalog.cache().lookup_indexes_for_table(&table_name);
+    let indexes = catalog.catalog().lookup_indexes_for_table(&table_name);
     let index = indexes.iter().find(|idx| idx.rootpage == index_rootpage)?;
     let index_cols = &index.column_names;
 
@@ -838,7 +838,7 @@ mod tests {
     fn optimizer_elides_sort_over_index_scan() {
         // Build Sort(age ASC, Project(RowidLookup(IndexScan(age)))) and assert Sort is absent.
         let (db, root) = make_users_db_with_age_index();
-        let idx_root = db.btree.cache().lookup_indexes_for_table("users")[0].rootpage;
+        let idx_root = db.btree.catalog().lookup_indexes_for_table("users")[0].rootpage;
 
         let index_plan = make_index_scan(root, idx_root, 2); // age is col 2
 
