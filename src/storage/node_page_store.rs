@@ -133,6 +133,40 @@ impl NodePageStore {
         self.pager.get_zero_page().map(|z| format!("{:#?}", z))
     }
 
+    /// Visit every `(leaf_page_idx, cell_idx)` pair in the tree rooted at
+    /// `root` in key order, calling `f` for each.
+    ///
+    /// Interior nodes are traversed recursively; overflow pages are skipped
+    /// (they are read transparently by [`CellReader`]).  Read errors on any
+    /// page silently stop traversal of that subtree — the caller should run
+    /// `verify` separately if it needs to detect corruption.
+    ///
+    /// [`CellReader`]: super::cell_reader::CellReader
+    pub fn scan_leaf_cells(&mut self, root: PageId, f: &mut impl FnMut(&mut Self, u32, usize)) {
+        // Clone the page so we release the borrow before recursing or calling f.
+        let page = match self.read(root) {
+            Ok(p) => p.clone(),
+            Err(_) => return,
+        };
+        match page {
+            NodePage::Leaf(ref leaf) => {
+                let n = leaf.num_items();
+                for i in 0..n {
+                    f(self, root.as_u32(), i);
+                }
+            }
+            NodePage::Interior(interior) => {
+                let edges: Vec<u32> = (0..interior.num_edges())
+                    .map(|i| interior.get_child_page_by_index(i))
+                    .collect();
+                for child in edges {
+                    self.scan_leaf_cells(PageId(child), f);
+                }
+            }
+            NodePage::OverflowPage(_) => {}
+        }
+    }
+
     // ── private helpers ──────────────────────────────────────────────────────
 
     fn ensure_cached(&mut self, id: PageId) -> Result<(), Error> {
