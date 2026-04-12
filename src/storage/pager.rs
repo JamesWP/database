@@ -90,15 +90,18 @@ impl Pager {
         file.set_len(PAGE_SIZE * num_pages as u64).unwrap();
     }
 
+    #[inline(never)]
     pub(super) fn get_zero_page(&self) -> Option<ZeroPage> {
         if self.get_file_size_pages() < 1 {
             return None;
         }
         let bytes = self.read_bytes(0);
         probe!(database, page_read_zero, 0u32);
+        probe!(database, page_read, 0u32);
         Some(cbor_decode(&bytes))
     }
 
+    #[inline(never)]
     fn set_zero_page(&mut self, zero: ZeroPage) {
         let bytes = cbor_encode(&zero).expect("ZeroPage serialization failed");
         self.write_bytes(0, &bytes);
@@ -106,9 +109,11 @@ impl Pager {
     }
 
     /// Read a raw page from disk (no cache).
+    #[inline(never)]
     pub(super) fn read_raw(&self, id: PageId) -> [u8; PAGE_SIZE as usize] {
         let page_no = id.as_u32();
         probe!(database, page_read_cache_miss, page_no);
+        probe!(database, page_read, page_no);
         self.read_bytes(page_no)
     }
 
@@ -122,6 +127,7 @@ impl Pager {
     }
 
     /// Write raw page bytes to disk.
+    #[inline(never)]
     pub(super) fn write_raw(&mut self, id: PageId, bytes: &[u8; PAGE_SIZE as usize]) {
         probe!(database, page_write, id.as_u32());
         self.write_bytes(id.as_u32(), bytes);
@@ -136,6 +142,7 @@ impl Pager {
 
     // ── page lifecycle ────────────────────────────────────────────────────────
 
+    #[inline(never)]
     pub(super) fn allocate(&mut self) -> PageId {
         let num_pages = self.get_file_size_pages();
 
@@ -153,11 +160,13 @@ impl Pager {
                 let bytes = self.read_bytes(head_page_no);
                 let mut free_list_page: FreeListPage = cbor_decode(&bytes);
                 probe!(database, page_read_freelist, head_page_no);
+                probe!(database, page_read, head_page_no);
 
                 if let Some(page_id) = free_list_page.page_ids.pop() {
                     // Update the partially-drained free list page.
                     let updated = cbor_encode(&free_list_page).expect("FreeListPage encode failed");
                     self.write_bytes(head_page_no, &updated);
+                    probe!(database, page_write_freelist, head_page_no);
                     return PageId(page_id);
                 } else {
                     // Free list page is now empty; reclaim it as the returned page.
@@ -174,11 +183,15 @@ impl Pager {
         }
     }
 
+    #[inline(never)]
     pub(super) fn free(&mut self, id: PageId) {
         let idx = id.as_u32();
         if idx == 0 {
             panic!("Cannot free page zero");
         }
+
+        // Note: probes omitted here — free() is dead code in insert-only workloads
+        // and LTO eliminates it, causing invalid ELF USDT note addresses.
 
         let mut zero = self.get_zero_page().unwrap();
 

@@ -369,6 +369,7 @@ impl<'a> Cursor<'a> {
 
     /// Delete the row at the current cursor position.
     pub fn delete_current(&mut self) {
+        probe!(database, row_delete);
         let (leaf_page_idx, cell_index) = match &self.cursor_state.position {
             CursorPosition::Valid { leaf, .. } => *leaf,
             _ => panic!("Cursor must be positioned before delete_current"),
@@ -699,6 +700,7 @@ fn split_and_store(store: &mut NodePageStore, mut rest: &[u8]) -> u32 {
             first.to_owned(),
             Some(next_page_id.as_u32()),
         ));
+        probe!(database, page_write_overflow, page_id.as_u32());
         store
             .write(page_id, overflow_page)
             .expect("write overflow page");
@@ -707,6 +709,7 @@ fn split_and_store(store: &mut NodePageStore, mut rest: &[u8]) -> u32 {
     }
 
     let overflow_page = NodePage::OverflowPage(OverflowPage::new(rest.to_owned(), None));
+    probe!(database, page_write_overflow, page_id.as_u32());
     store
         .write(page_id, overflow_page)
         .expect("write last overflow page");
@@ -938,7 +941,7 @@ impl BTree {
         println!("{}", "=====================================".bright_black());
 
         if page_num == 0 {
-            probe!(database, page_read_zero, 0u32);
+            // page_read_zero fires inside get_zero_page(); no duplicate probe here
             println!("{}: {}", "Type".yellow(), "ZeroPage".green());
             if let Some(desc) = store.zero_page_debug() {
                 println!("{}", desc);

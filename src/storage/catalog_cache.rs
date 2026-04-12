@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use probe::probe;
+
 use crate::frontend::ast::Statement;
 use crate::frontend::parse;
 
@@ -38,7 +40,9 @@ impl CatalogSnapshot {
     ///
     /// Uses `NodePageStore::scan_leaf_cells` for traversal and `CellReader`
     /// for transparent overflow handling — no dependency on `BTree` or `Cursor`.
+    #[inline(never)]
     pub(super) fn build(store: &mut NodePageStore) -> Self {
+        probe!(database, catalog_scan);
         let mut snapshot = CatalogSnapshot::default();
         store.scan_leaf_cells(CATALOG_ROOT, &mut |store, page_idx, cell_idx| {
             let mut reader = match CellReader::new(store, page_idx, cell_idx) {
@@ -79,17 +83,23 @@ impl CatalogSnapshot {
     }
 
     /// Look up a table by name. Returns `(rootpage, sql)` if found.
+    #[inline(never)]
     pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> {
+        probe!(database, catalog_lookup_table);
         self.tables.get(table_name).cloned()
     }
 
     /// Reverse lookup: find the table name for a given root page.
+    #[inline(never)]
     pub fn lookup_table_by_rootpage(&self, rootpage: u32) -> Option<String> {
+        probe!(database, catalog_lookup_by_rootpage);
         self.by_rootpage.get(&rootpage).cloned()
     }
 
     /// Return all index metadata for a given table.
+    #[inline(never)]
     pub fn lookup_indexes_for_table(&self, table_name: &str) -> Vec<IndexInfo> {
+        probe!(database, catalog_lookup_indexes);
         self.indexes.get(table_name).cloned().unwrap_or_default()
     }
 }
