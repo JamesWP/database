@@ -269,7 +269,7 @@ Each secondary index is a separate B-tree with its own root page.
 
 ## Perf Profiling
 
-`[profile.release]` has `force-frame-pointers = true` and `debug = 1` baked in — no special build flags needed.
+`[profile.release]` has `debug = 1` baked in. Frame pointers must be enabled explicitly via `RUSTFLAGS` (the `frame-pointers` Cargo profile key requires Cargo 1.96+):
 
 **Working method (LBR call graphs):**
 
@@ -278,6 +278,7 @@ Each secondary index is a separate B-tree with its own root page.
 rm -f sakila.db && ./target/release/database sakila.db file sakila-schema-stripped.sql
 
 # Record with LBR — produces clean full stacks, small output, no lost chunks
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release
 perf record --call-graph lbr -F 2000 -o perf.data -- ./target/release/database sakila.db file ../sakila/sqlite-sakila-db/sqlite-sakila-insert-data.sql
 
 perf report

@@ -23,4 +23,3 @@ probe = "0.5"
 
 [profile.release]
 debug = 1
-force-frame-pointers = true
