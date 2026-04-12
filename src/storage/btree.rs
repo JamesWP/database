@@ -781,7 +781,7 @@ impl BTree {
         self.rowid_cache.borrow_mut().insert(rootpage, next_rowid);
     }
 
-    pub(super) fn store_mut(&self) -> RefMut<NodePageStore> {
+    pub(super) fn store_mut<'a>(&'a self) -> RefMut<'a, NodePageStore> {
         self.store.borrow_mut()
     }
 
@@ -848,7 +848,7 @@ impl BTree {
     /// Return a read-only snapshot of the catalog, building it on first call
     /// and after any catalog write.  All lookup methods live on the returned
     /// `CatalogSnapshot` so callers use `btree.catalog().lookup_table(name)`.
-    pub fn catalog(&self) -> Ref<CatalogSnapshot> {
+    pub fn catalog<'a>(&'a self) -> Ref<'a, CatalogSnapshot> {
         probe!(database, catalog_cache_access);
         self.ensure_catalog_cache();
         Ref::map(self.catalog_cache.borrow(), |o| o.as_ref().unwrap())
