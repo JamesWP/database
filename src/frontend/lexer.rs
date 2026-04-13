@@ -477,116 +477,122 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
 
-        let ident: String = self.scanner.current_slice().to_lowercase();
-        let ident = ident.as_str();
-
-        let tipe = match ident.chars().next().unwrap() {
-            's' => match ident.chars().nth(1) {
-                Some('e') => match ident.chars().nth(2) {
-                    Some('l') => match_reserved(ident, "select", Type::Select),
-                    Some('t') => match_reserved(ident, "set", Type::Set),
-                    _ => Type::Identifier(ident.to_owned()),
+        // O(1) trie dispatch via token_byte_at — no to_lowercase() allocation,
+        // no chars().nth(n) re-iteration.
+        let tipe = match self.scanner.token_byte_at(0) {
+            b's' => match self.scanner.token_byte_at(1) {
+                b'e' => match self.scanner.token_byte_at(2) {
+                    b'l' => self.match_keyword("select", Type::Select),
+                    b't' => self.match_keyword("set", Type::Set),
+                    _ => self.make_identifier(),
                 },
-                _ => Type::Identifier(ident.to_owned()),
+                _ => self.make_identifier(),
             },
-            'a' => match ident.chars().nth(1) {
-                Some('s') => match ident.chars().nth(2) {
-                    Some('c') => match_reserved(ident, "asc", Type::Asc),
-                    _ => match_reserved(ident, "as", Type::As),
+            b'a' => match self.scanner.token_byte_at(1) {
+                b's' => match self.scanner.token_byte_at(2) {
+                    b'c' => self.match_keyword("asc", Type::Asc),
+                    _ => self.match_keyword("as", Type::As),
                 },
-                Some('n') => match_reserved(ident, "and", Type::And),
-                _ => Type::Identifier(ident.to_owned()),
+                b'n' => self.match_keyword("and", Type::And),
+                _ => self.make_identifier(),
             },
-            'b' => match ident.chars().nth(1) {
-                Some('l') => match_reserved(ident, "blob", Type::Blob),
-                Some('y') => match_reserved(ident, "by", Type::By),
-                _ => Type::Identifier(ident.to_owned()),
+            b'b' => match self.scanner.token_byte_at(1) {
+                b'l' => self.match_keyword("blob", Type::Blob),
+                b'y' => self.match_keyword("by", Type::By),
+                _ => self.make_identifier(),
             },
-            'c' => match_reserved(ident, "create", Type::Create),
-            'd' => match ident.chars().nth(1) {
-                Some('e') => match ident.chars().nth(2) {
-                    Some('l') => match_reserved(ident, "delete", Type::Delete),
-                    Some('s') => match_reserved(ident, "desc", Type::Desc),
-                    Some('f') => match_reserved(ident, "default", Type::Default),
-                    _ => Type::Identifier(ident.to_owned()),
+            b'c' => self.match_keyword("create", Type::Create),
+            b'd' => match self.scanner.token_byte_at(1) {
+                b'e' => match self.scanner.token_byte_at(2) {
+                    b'l' => self.match_keyword("delete", Type::Delete),
+                    b's' => self.match_keyword("desc", Type::Desc),
+                    b'f' => self.match_keyword("default", Type::Default),
+                    _ => self.make_identifier(),
                 },
-                Some('i') => match_reserved(ident, "distinct", Type::Distinct),
-                Some('r') => match_reserved(ident, "drop", Type::Drop),
-                _ => Type::Identifier(ident.to_owned()),
+                b'i' => self.match_keyword("distinct", Type::Distinct),
+                b'r' => self.match_keyword("drop", Type::Drop),
+                _ => self.make_identifier(),
             },
-            'e' => match_reserved(ident, "explain", Type::Explain),
-            'f' => match ident.chars().nth(1) {
-                Some('r') => match_reserved(ident, "from", Type::From),
-                Some('a') => match_reserved(ident, "false", Type::False),
-                _ => Type::Identifier(ident.to_owned()),
+            b'e' => self.match_keyword("explain", Type::Explain),
+            b'f' => match self.scanner.token_byte_at(1) {
+                b'r' => self.match_keyword("from", Type::From),
+                b'a' => self.match_keyword("false", Type::False),
+                _ => self.make_identifier(),
             },
-            'g' => match_reserved(ident, "group", Type::Group),
-            'h' => match_reserved(ident, "having", Type::Having),
-            'j' => match_reserved(ident, "join", Type::Join),
-            'k' => match_reserved(ident, "key", Type::Key),
-            'i' => match ident.chars().nth(1) {
-                Some('n') => match ident.chars().nth(2) {
-                    Some('s') => match_reserved(ident, "insert", Type::Insert),
-                    Some('t') => match ident.chars().nth(3) {
-                        Some('e') => match_reserved(ident, "integer", Type::Integer),
-                        Some('o') => match_reserved(ident, "into", Type::Into),
-                        _ => Type::Identifier(ident.to_owned()),
+            b'g' => self.match_keyword("group", Type::Group),
+            b'h' => self.match_keyword("having", Type::Having),
+            b'j' => self.match_keyword("join", Type::Join),
+            b'k' => self.match_keyword("key", Type::Key),
+            b'i' => match self.scanner.token_byte_at(1) {
+                b'n' => match self.scanner.token_byte_at(2) {
+                    b's' => self.match_keyword("insert", Type::Insert),
+                    b't' => match self.scanner.token_byte_at(3) {
+                        b'e' => self.match_keyword("integer", Type::Integer),
+                        b'o' => self.match_keyword("into", Type::Into),
+                        _ => self.make_identifier(),
                     },
-                    Some('n') => match_reserved(ident, "inner", Type::Inner),
-                    Some('d') => match_reserved(ident, "index", Type::Index),
-                    _ => Type::Identifier(ident.to_owned()),
+                    b'n' => self.match_keyword("inner", Type::Inner),
+                    b'd' => self.match_keyword("index", Type::Index),
+                    _ => self.make_identifier(),
                 },
-                Some('s') => match_reserved(ident, "is", Type::Is),
-                _ => Type::Identifier(ident.to_owned()),
+                b's' => self.match_keyword("is", Type::Is),
+                _ => self.make_identifier(),
             },
-            'l' => match ident.chars().nth(1) {
-                Some('i') => match ident.chars().nth(2) {
-                    Some('m') => match_reserved(ident, "limit", Type::Limit),
-                    Some('k') => match_reserved(ident, "like", Type::Like),
-                    _ => Type::Identifier(ident.to_owned()),
+            b'l' => match self.scanner.token_byte_at(1) {
+                b'i' => match self.scanner.token_byte_at(2) {
+                    b'm' => self.match_keyword("limit", Type::Limit),
+                    b'k' => self.match_keyword("like", Type::Like),
+                    _ => self.make_identifier(),
                 },
-                _ => Type::Identifier(ident.to_owned()),
+                _ => self.make_identifier(),
             },
-            'n' => match ident.chars().nth(1) {
-                Some('u') => match_reserved(ident, "null", Type::Null),
-                Some('o') => match_reserved(ident, "not", Type::Not),
-                _ => Type::Identifier(ident.to_owned()),
+            b'n' => match self.scanner.token_byte_at(1) {
+                b'u' => self.match_keyword("null", Type::Null),
+                b'o' => self.match_keyword("not", Type::Not),
+                _ => self.make_identifier(),
             },
-            'o' => match ident.chars().nth(1) {
-                Some('r') => match ident.chars().nth(2) {
-                    Some('d') => match_reserved(ident, "order", Type::Order),
-                    _ => match_reserved(ident, "or", Type::Or),
+            b'o' => match self.scanner.token_byte_at(1) {
+                b'r' => match self.scanner.token_byte_at(2) {
+                    b'd' => self.match_keyword("order", Type::Order),
+                    _ => self.match_keyword("or", Type::Or),
                 },
-                Some('n') => match_reserved(ident, "on", Type::On),
-                _ => Type::Identifier(ident.to_owned()),
+                b'n' => self.match_keyword("on", Type::On),
+                _ => self.make_identifier(),
             },
-            'p' => match_reserved(ident, "primary", Type::Primary),
-            'r' => match_reserved(ident, "real", Type::Real),
-            't' => match ident.chars().nth(1) {
-                Some('r') => match_reserved(ident, "true", Type::True),
-                Some('a') => match_reserved(ident, "table", Type::Table),
-                Some('e') => match_reserved(ident, "text", Type::Text),
-                _ => Type::Identifier(ident.to_owned()),
+            b'p' => self.match_keyword("primary", Type::Primary),
+            b'r' => self.match_keyword("real", Type::Real),
+            b't' => match self.scanner.token_byte_at(1) {
+                b'r' => self.match_keyword("true", Type::True),
+                b'a' => self.match_keyword("table", Type::Table),
+                b'e' => self.match_keyword("text", Type::Text),
+                _ => self.make_identifier(),
             },
-            'u' => match ident.chars().nth(1) {
-                Some('p') => match_reserved(ident, "update", Type::Update),
-                Some('n') => match_reserved(ident, "unique", Type::Unique),
-                _ => Type::Identifier(ident.to_owned()),
+            b'u' => match self.scanner.token_byte_at(1) {
+                b'p' => self.match_keyword("update", Type::Update),
+                b'n' => self.match_keyword("unique", Type::Unique),
+                _ => self.make_identifier(),
             },
-            'v' => match_reserved(ident, "values", Type::Values),
-            'w' => match_reserved(ident, "where", Type::Where),
-            _ => Type::Identifier(ident.to_owned()),
+            b'v' => self.match_keyword("values", Type::Values),
+            b'w' => self.match_keyword("where", Type::Where),
+            _ => self.make_identifier(),
         };
 
         self.make_token(tipe)
     }
-}
 
-fn match_reserved(ident: &str, possible_keyword: &str, tipe: Type) -> Type {
-    if ident == possible_keyword {
-        tipe
-    } else {
-        Type::Identifier(ident.to_owned())
+    /// Confirm the current token matches `keyword` case-insensitively and return
+    /// the keyword type, or fall back to an Identifier token.
+    fn match_keyword(&self, keyword: &str, tipe: Type) -> Type {
+        if self.scanner.token_eq_keyword(keyword) {
+            tipe
+        } else {
+            self.make_identifier()
+        }
+    }
+
+    /// Build an Identifier type for the current token: one allocation.
+    fn make_identifier(&self) -> Type {
+        Type::Identifier(self.scanner.current_slice().to_ascii_lowercase())
     }
 }
 
