@@ -90,7 +90,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AZ** | INSERT Performance: Rowid Cache & Fused Unique Write | 2 | [phase-az-insert-perf.md](completed/phase-az-insert-perf.md) | Completed |
 | **BA** | Eliminate Page Clones | 3 | [phase-ba-arc-page-cache.md](completed/phase-ba-arc-page-cache.md) | Superseded by BB |
 | **BB** | Storage Layer Redesign: NodePageStore | 5 | [phase-bb-node-page-store.md](completed/phase-bb-node-page-store.md) | Completed |
-| **BC** | Lexer Performance | 2 | [phase-bc-lexer-perf.md](phase-bc-lexer-perf.md) | Planned |
+| **BC** | Lexer Performance | 2 | [phase-bc-lexer-perf.md](completed/phase-bc-lexer-perf.md) | Completed |
 ## Sakila Compatibility
 
 Phases AJ–AV are ordered to progressively support the [sqlite-sakila-db](https://github.com/jOOQ/sakila/tree/main/sqlite-sakila-db) benchmark schema. Each phase unlocks more of the schema/data/views:
