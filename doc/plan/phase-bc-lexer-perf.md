@@ -363,16 +363,42 @@ the normal `cargo test` suite since `scanner.rs` is a module in the library crat
 
 ### What Changes
 
-**`identifier()` keyword matching — before:**
+#### New methods on `Scanner`
+
+Two methods added to `Scanner` so `identifier()` works entirely through the scanner
+without extracting a slice:
+
+```rust
+impl<'a> Scanner<'a> {
+    /// The nth byte of the current token (0-indexed from `token_start`),
+    /// lowercased for ASCII. Returns `0` if `n` is out of range.
+    /// Used for O(1) keyword trie dispatch.
+    pub(super) fn token_byte_at(&self, n: usize) -> u8 {
+        self.input
+            .get(self.token_start + n)
+            .map(|b| b.to_ascii_lowercase())
+            .unwrap_or(0)
+    }
+
+    /// True if the current token equals `keyword` case-insensitively (ASCII).
+    /// Used for the final keyword confirmation step.
+    pub(super) fn token_eq_keyword(&self, keyword: &str) -> bool {
+        let slice = &self.input[self.token_start..self.pos];
+        slice.eq_ignore_ascii_case(keyword.as_bytes())
+    }
+}
+```
+
+#### `identifier()` — before:
 
 ```rust
 fn identifier(&mut self) -> Token {
     // ... consume loop ...
-    let ident: String = self.curent_lexeme.clone().to_lowercase();  // 2 allocations (item 133 leaves to_lowercase in place)
+    let ident: String = self.curent_lexeme.clone().to_lowercase();  // 2 allocations
     let ident = ident.as_str();
 
-    let tipe = match ident.chars().next().unwrap() {      // re-iterates each time
-        's' => match ident.chars().nth(1) {               // O(n) for each nth()
+    let tipe = match ident.chars().next().unwrap() {   // re-iterates each time
+        's' => match ident.chars().nth(1) {            // O(n) for each nth()
             Some('e') => match ident.chars().nth(2) { ... }
             ...
         }
@@ -380,49 +406,49 @@ fn identifier(&mut self) -> Token {
     };
 ```
 
-**`identifier()` keyword matching — after:**
+#### `identifier()` — after:
 
 ```rust
 fn identifier(&mut self) -> Token {
-    // ... consume loop ...
-    let raw = self.scanner.current_slice();  // &str, zero-copy, no allocation
+    // ... consume loop — unchanged ...
 
-    let tipe = match raw.as_bytes()[0].to_ascii_lowercase() {   // O(1) byte index
-        b's' => match raw.as_bytes().get(1).map(|b| b.to_ascii_lowercase()) {
-            Some(b'e') => match raw.as_bytes().get(2).map(|b| b.to_ascii_lowercase()) {
-                Some(b'l') => match_keyword(raw, "select", Type::Select),
-                Some(b't') => match_keyword(raw, "set",    Type::Set),
-                _ => make_identifier(raw),
+    let tipe = match self.scanner.token_byte_at(0) {       // O(1), no allocation
+        b's' => match self.scanner.token_byte_at(1) {
+            b'e' => match self.scanner.token_byte_at(2) {
+                b'l' => self.match_keyword("select", Type::Select),
+                b't' => self.match_keyword("set",    Type::Set),
+                _    => self.make_identifier(),
             },
-            _ => make_identifier(raw),
+            _ => self.make_identifier(),
         },
-        // ... all arms converted to byte index dispatch ...
+        // ... all arms use token_byte_at(n) and match_keyword / make_identifier ...
     };
 
     self.make_token(tipe)
 }
 ```
 
-**New helpers:**
+`identifier()` no longer extracts a slice at all — it reads the token purely through
+`Scanner`'s methods.
+
+#### New helpers on `Lexer`:
 
 ```rust
-/// Case-insensitive match of a scanned identifier against a keyword.
-/// Returns Type::Identifier if they don't match.
-fn match_keyword(raw: &str, keyword: &str, tipe: Type) -> Type {
-    if raw.eq_ignore_ascii_case(keyword) { tipe }
-    else { make_identifier(raw) }
+/// Confirm the current token matches `keyword` and return the keyword type,
+/// or fall back to an Identifier token.
+fn match_keyword(&self, keyword: &str, tipe: Type) -> Type {
+    if self.scanner.token_eq_keyword(keyword) { tipe }
+    else { self.make_identifier() }
 }
 
-/// Build an Identifier token value: one to_ascii_lowercase allocation.
-fn make_identifier(raw: &str) -> Type {
-    Type::Identifier(raw.to_ascii_lowercase())
+/// Build an Identifier type for the current token: one allocation.
+fn make_identifier(&self) -> Type {
+    Type::Identifier(self.scanner.current_slice().to_ascii_lowercase())
 }
 ```
 
-`match_reserved` is deleted and replaced by `match_keyword` + `make_identifier`.
-The dispatch trie switches its branch condition from `chars().nth(n)` to
-`raw.as_bytes().get(n)` — O(1) index, no re-iteration — but the surrounding `&str` API
-is preserved throughout.
+`match_reserved` is deleted. `match_keyword` and `make_identifier` take no `raw` argument
+— they read from `self.scanner` directly.
 
 **Summary of allocation count per identifier token:**
 
@@ -433,44 +459,51 @@ is preserved throughout.
 
 ### Background
 
-SQL INSERT workloads produce many keyword tokens (`INSERT`, `INTO`, `VALUES`, column names)
-and many identifier tokens (table and column names). The `to_lowercase()` + `clone()` pair
-was the dominant allocation site inside `identifier()`.
+`token_byte_at(n)` is the key addition: it gives the trie O(1) access to the nth byte of
+the current token without the lexer ever needing to name or hold the slice. Each call is a
+single bounds-checked index + `to_ascii_lowercase()`.
 
-`eq_ignore_ascii_case` on `&[u8]` is a direct constant-time comparison with no allocation.
-Direct byte indexing `raw[n].to_ascii_lowercase()` replaces `chars().nth(n)` which re-walks
-the string from the start each time.
+`token_eq_keyword` wraps `eq_ignore_ascii_case` on the raw byte slice — a single pass with
+no allocation — replacing the `String::clone` + `to_lowercase` that previously preceded the
+`match_reserved` comparison.
 
-`to_ascii_lowercase()` (used for the final `Identifier(String)`) is preferred over
-`to_lowercase()` because SQL identifiers are always ASCII and `to_ascii_lowercase` is faster
-(no Unicode case mapping).
+`to_ascii_lowercase()` (used in `make_identifier`) is preferred over `to_lowercase()`
+because SQL identifiers are always ASCII and the ASCII variant skips Unicode case mapping.
 
 ### Key Files
 
-- `src/frontend/lexer.rs` — `identifier()`, `match_reserved` → `match_keyword` + `make_identifier`
+- `src/frontend/scanner.rs` — add `token_byte_at`, `token_eq_keyword`; add tests
+- `src/frontend/lexer.rs` — rewrite `identifier()`; add `match_keyword`, `make_identifier`; delete `match_reserved`
 
 ### Tests
 
-All existing lexer and SQL integration tests must pass. The only observable difference is that
-`identifier_from_bytes` uses `to_ascii_lowercase` instead of `to_lowercase`; for ASCII input
-these are identical.
+All existing lexer and SQL integration tests must pass.
+
+Add to the `#[cfg(test)]` module in `scanner.rs`:
+
+**`token_byte_at`**
+- `token_byte_at_returns_correct_byte` — mark, advance "SELECT", `token_byte_at(0) == b's'`
+- `token_byte_at_lowercases` — uppercase input, `token_byte_at(0) == b's'` (not `b'S'`)
+- `token_byte_at_out_of_range_returns_zero` — n beyond token length returns `0`
+
+**`token_eq_keyword`**
+- `token_eq_keyword_matches_exact` — token `"select"` matches `"select"`
+- `token_eq_keyword_matches_case_insensitive` — token `"SELECT"` matches `"select"`
+- `token_eq_keyword_rejects_wrong_keyword` — token `"select"` does not match `"set"`
+- `token_eq_keyword_rejects_prefix` — token `"sel"` does not match `"select"`
 
 ### Implementation Steps (1 commit)
 
-#### Step 134.1 — Byte keyword trie, eliminate `to_lowercase()` allocation
+#### Step 134.1 — Scanner keyword methods; rewrite `identifier()`
 
-1. Add `match_keyword(raw: &[u8], keyword: &[u8], tipe: Type) -> Type` helper.
-2. Add `identifier_from_bytes(raw: &[u8]) -> Type` helper.
-3. Delete `match_reserved`.
-4. Rewrite `identifier()`:
-   - Remove `let ident: String = raw.to_lowercase()`.
-   - Change the trie `match` to operate on `raw[0].to_ascii_lowercase()` and
-     `raw.get(n).map(|b| b.to_ascii_lowercase())`.
-   - Replace every `match_reserved(ident, "...", Type::...)` call with
-     `match_keyword(raw, "...", Type::...)`.
-   - Replace every `Type::Identifier(ident.to_owned())` fall-through with
-     `identifier_from_bytes(raw)`.
-5. `cargo fmt && cargo build && cargo test`.
+1. Add `token_byte_at(n: usize) -> u8` to `Scanner` with tests.
+2. Add `token_eq_keyword(keyword: &str) -> bool` to `Scanner` with tests.
+3. Add `match_keyword(&self, keyword: &str, tipe: Type) -> Type` to `Lexer`.
+4. Add `make_identifier(&self) -> Type` to `Lexer`.
+5. Delete `match_reserved`.
+6. Rewrite `identifier()`: remove `to_lowercase()` string; replace trie dispatch with
+   `self.scanner.token_byte_at(n)` and `self.match_keyword` / `self.make_identifier`.
+7. `cargo fmt && cargo build && cargo test`.
 
 **Commit:** `lexer: eliminate to_lowercase() allocation and chars().nth(n) in keyword matching`
 
@@ -481,7 +514,7 @@ these are identical.
 - [ ] `cargo test` — all tests pass after each commit independently
 - [ ] `cargo fmt && cargo build 2>&1 | grep -i warning` — zero warnings
 - [ ] `peekmore` removed from `Cargo.toml` and `Cargo.lock`
-- [ ] `Scanner` unit tests pass; `current_slice()` invariant covered
+- [ ] `Scanner` unit tests pass: `current_slice()`, `token_byte_at`, `token_eq_keyword`
 - [ ] `Lexer` struct has no `curent_lexeme` field and no `peekmore` import
 - [ ] No `to_lowercase()` call remaining in `identifier()`
 - [ ] No `chars().nth` call remaining in `identifier()`
