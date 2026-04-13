@@ -204,17 +204,18 @@ for the final implementation; in this commit use a `todo!()` placeholder or a si
 // Transitional overflow check in item 135 — refined in item 136:
 let mut probe_buf = Vec::new();
 ciborium::ser::into_writer(&values, &mut probe_buf).unwrap();
-let (first_chunk, continuation) = if probe_buf.len() > CHUNK_THRESHOLD { ... overflow ... }
-else { (probe_buf, None) };
-// Store the serialised bytes as the first_chunk; Cell.values decoded from them:
-let cell_values: Vec<ScalarValue> = ciborium::de::from_reader(&first_chunk[..]).unwrap_or_default();
+let (cell_values, continuation) = if probe_buf.len() > CHUNK_THRESHOLD {
+    let cont_page = split_and_store(&mut *self.store, &probe_buf);
+    (vec![], Some(cont_page))
+} else {
+    (values, None)
+};
 let cell = Cell::new(key.to_vec(), cell_values, continuation);
 ```
 
-> **Note:** This "encode then immediately decode" round-trip in item 135 is intentional — it
-> preserves the existing overflow chunking logic without changing the overflow path in this
-> commit. Item 136 eliminates this round-trip by storing `values` directly and using
-> `cbor_size_estimate` for the inline/overflow decision.
+> **Note:** This pre-serialises in all cases to determine overflow. Item 136 removes this
+> unnecessary allocation for the common inline case by using `cbor_size_estimate` to skip
+> serialisation entirely when the row clearly fits.
 
 #### `src/engine.rs` — `WriteCursor`
 
@@ -442,12 +443,10 @@ pub fn insert(&mut self, key: &[u8], values: Vec<ScalarValue>) {
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&values, &mut buf).unwrap();
         if buf.len() > CHUNK_THRESHOLD {
-            let (first, rest) = buf.split_at(CHUNK_THRESHOLD);
-            let cont_page = split_and_store(&mut *self.store, rest);
-            // Overflow cell: reconstruct the inline portion as ScalarValues
-            let inline: Vec<ScalarValue> =
-                ciborium::de::from_reader(&first[..]).unwrap_or_default();
-            (inline, Some(cont_page))
+            // Full serialised bytes go into the overflow chain unchanged.
+            // The inline cell carries only the key and continuation pointer.
+            let cont_page = split_and_store(&mut *self.store, &buf);
+            (vec![], Some(cont_page))
         } else {
             // Estimate was pessimistic; row fits inline after all.
             (values, None)
@@ -461,10 +460,9 @@ pub fn insert(&mut self, key: &[u8], values: Vec<ScalarValue>) {
 }
 ```
 
-> The decode from the first overflow chunk is required because CBOR arrays can't be
-> cleanly truncated mid-stream — the on-disk overflow cell stores whatever ScalarValues
-> fit completely in CHUNK_THRESHOLD bytes of CBOR. For the vast majority of rows (no
-> overflow) this branch is never entered, so the allocation cost is zero.
+> For the vast majority of rows (no overflow) the serialisation branch is never entered,
+> so the allocation cost is zero. Overflow cells always carry `values = vec![]`; the read
+> path follows the continuation chain, assembles all bytes, then decodes once.
 
 #### Update `CELL_FRAMING_BYTES`
 
