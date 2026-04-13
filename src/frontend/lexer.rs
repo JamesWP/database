@@ -1,5 +1,5 @@
-use peekmore::{PeekMore, PeekMoreIterator};
-use std::{fmt::Debug, str::Chars};
+use super::scanner::Scanner;
+use std::fmt::Debug;
 
 pub struct Pos {
     line: usize,
@@ -122,7 +122,6 @@ pub enum Error {
 impl Debug for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         core::fmt::Debug::fmt(&self.lexeme, f)
-        // self.tipe.fmt(f)
     }
 }
 
@@ -132,16 +131,14 @@ pub fn lex(input: &str) -> Vec<Token> {
 }
 
 pub(crate) struct Lexer<'a> {
-    input: PeekMoreIterator<Chars<'a>>,
+    scanner: Scanner<'a>, // replaces input + curent_lexeme
 
     // Current position in the input
     line: usize,
     column: usize,
 
-    // Starting point of the curent token
+    // Starting point of the current token
     start: Pos,
-
-    curent_lexeme: String,
 
     tokens: Vec<Token>,
 }
@@ -158,12 +155,11 @@ impl<'a> Into<Vec<Token>> for Lexer<'a> {
 impl<'a> Lexer<'a> {
     pub fn new(input: &str) -> Lexer<'_> {
         Lexer {
-            input: input.chars().peekmore(),
+            scanner: Scanner::new(input),
             tokens: Default::default(),
             line: 1,
             column: 0,
             start: Pos { col: 0, line: 0 },
-            curent_lexeme: String::new(),
         }
     }
 
@@ -179,45 +175,30 @@ impl<'a> Lexer<'a> {
         self.into()
     }
 
-    fn peek(&mut self) -> char {
-        match self.input.peek() {
-            Some(c) => *c,
-            None => '\0',
-        }
+    fn peek(&self) -> char {
+        self.scanner.peek()
     }
 
-    fn peek_next(&mut self) -> char {
-        match self.input.peek_nth(1) {
-            Some(c) => *c,
-            None => '\0',
-        }
+    fn peek_next(&self) -> char {
+        self.scanner.peek_next()
     }
 
     fn advance(&mut self) -> char {
         self.column += 1;
-
-        let c = match self.input.next() {
-            Some(c) => c,
-            None => '\0',
-        };
-
-        self.curent_lexeme.push(c);
-
-        c
+        self.scanner.advance()
     }
 
-    fn is_at_end(&mut self) -> bool {
-        self.peek() == '\0'
+    fn is_at_end(&self) -> bool {
+        self.scanner.is_at_end()
     }
 
     fn scan_token(&mut self) -> Token {
         self.skip_whitespace();
-
+        self.scanner.mark_token_start(); // replaces curent_lexeme.clear()
         self.start = Pos {
             col: self.column,
             line: self.line,
         };
-        self.curent_lexeme.clear();
 
         let c = self.advance();
 
@@ -285,13 +266,11 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 ' ' | '\r' | '\t' => {
                     self.advance();
-                    // Continue consuming whitespace
                 }
                 '\n' => {
                     self.advance();
                     self.line += 1;
                     self.column = 0;
-                    // Continue consuming whitespace
                 }
                 '-' => {
                     if self.peek_next() == '-' {
@@ -300,12 +279,10 @@ impl<'a> Lexer<'a> {
                             if self.peek() != '\n' && self.peek() != '\0' {
                                 self.advance();
                             } else {
-                                // we leave the '/n' in the input for the next loop in skip_whitespace to handle
                                 break;
                             }
                         }
                     } else {
-                        // Single '-' is not whitespace, stop here
                         break;
                     }
                 }
@@ -333,7 +310,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn make_token(&mut self, tipe: Type) -> Token {
+    fn make_token(&self, tipe: Type) -> Token {
         let start = Pos {
             col: self.start.col,
             line: self.start.line,
@@ -345,7 +322,7 @@ impl<'a> Lexer<'a> {
 
         Token {
             tipe,
-            lexeme: self.curent_lexeme.clone(),
+            lexeme: self.scanner.current_slice().to_string(),
             start,
             end,
         }
@@ -368,7 +345,6 @@ impl<'a> Lexer<'a> {
                 break;
             }
 
-            // This is a single character escape sequence
             match self.peek() {
                 '\\' => {
                     self.advance();
@@ -395,8 +371,9 @@ impl<'a> Lexer<'a> {
         // The closing quote.
         self.advance();
 
-        let mut value = String::with_capacity(self.curent_lexeme.len());
-        let chars = self.curent_lexeme.chars();
+        let slice = self.scanner.current_slice();
+        let mut value = String::with_capacity(slice.len());
+        let chars = slice.chars();
 
         // Skip the opening quote
         let mut chars = chars.skip(1).peekable();
@@ -462,9 +439,8 @@ impl<'a> Lexer<'a> {
 
             // Exponent digits (required)
             if !is_digit(self.peek()) {
-                return self.make_token(Type::Error(Error::BadFloatingPointNumber(
-                    self.curent_lexeme.to_owned(),
-                )));
+                let s = self.scanner.current_slice().to_owned();
+                return self.make_token(Type::Error(Error::BadFloatingPointNumber(s)));
             }
 
             loop {
@@ -475,24 +451,18 @@ impl<'a> Lexer<'a> {
             }
         }
 
+        let s = self.scanner.current_slice();
         // If contains '.', 'e', or 'E', it's a float
-        if self.curent_lexeme.contains('.')
-            || self.curent_lexeme.contains('e')
-            || self.curent_lexeme.contains('E')
-        {
-            let n = self.curent_lexeme.parse();
-            match n {
-                Err(_e) => self.make_token(Type::Error(Error::BadFloatingPointNumber(
-                    self.curent_lexeme.to_owned(),
-                ))),
+        if s.contains('.') || s.contains('e') || s.contains('E') {
+            match s.parse() {
+                Err(_e) => {
+                    self.make_token(Type::Error(Error::BadFloatingPointNumber(s.to_owned())))
+                }
                 Ok(n) => self.make_token(Type::FloatingPointNumber(n)),
             }
         } else {
-            let n = self.curent_lexeme.parse();
-            match n {
-                Err(_e) => self.make_token(Type::Error(Error::BadIntegerNumber(
-                    self.curent_lexeme.to_owned(),
-                ))),
+            match s.parse() {
+                Err(_e) => self.make_token(Type::Error(Error::BadIntegerNumber(s.to_owned()))),
                 Ok(n) => self.make_token(Type::IntegerNumber(n)),
             }
         }
@@ -507,7 +477,7 @@ impl<'a> Lexer<'a> {
             self.advance();
         }
 
-        let ident: String = self.curent_lexeme.clone().to_lowercase();
+        let ident: String = self.scanner.current_slice().to_lowercase();
         let ident = ident.as_str();
 
         let tipe = match ident.chars().next().unwrap() {
