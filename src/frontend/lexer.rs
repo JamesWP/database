@@ -8,7 +8,6 @@ pub struct Pos {
 
 pub struct Token {
     tipe: Type,
-    lexeme: String,
     #[allow(dead_code)]
     start: Pos,
     #[allow(dead_code)]
@@ -121,7 +120,7 @@ pub enum Error {
 
 impl Debug for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        core::fmt::Debug::fmt(&self.lexeme, f)
+        self.tipe.fmt(f)
     }
 }
 
@@ -144,11 +143,14 @@ pub(crate) struct Lexer<'a> {
 }
 
 impl<'a> Into<Vec<Token>> for Lexer<'a> {
-    fn into(mut self) -> Vec<Token> {
-        let mut token = self.make_token(Type::Eof);
-        token.lexeme.clear();
-        self.tokens.push(token);
-        self.tokens
+    fn into(self) -> Vec<Token> {
+        let mut tokens = self.tokens;
+        tokens.push(Token {
+            tipe: Type::Eof,
+            start: Pos { col: 0, line: 0 },
+            end: Pos { col: 0, line: 0 },
+        });
+        tokens
     }
 }
 
@@ -320,12 +322,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
         };
 
-        Token {
-            tipe,
-            lexeme: self.scanner.current_slice().to_string(),
-            start,
-            end,
-        }
+        Token { tipe, start, end }
     }
 
     fn check_next(&mut self, arg: char) -> bool {
