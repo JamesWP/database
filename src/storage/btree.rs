@@ -253,6 +253,7 @@ impl<'a> Cursor<'a> {
                 Cell::new_overflow(key.to_vec(), inline, cont_page)
             } else {
                 // Estimate was pessimistic — row fits inline after all.
+                probe!(database, cbor_size_estimate_false_positive);
                 probe!(database, cell_write_inline);
                 Cell::new(key.to_vec(), values, None)
             }
