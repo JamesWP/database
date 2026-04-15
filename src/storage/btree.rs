@@ -2707,4 +2707,75 @@ mod test {
         let decoded = cursor.get_entry().unwrap().decode_as_array();
         assert_eq!(decoded, value);
     }
+
+    /// Verify that the prefix-inline split is actually happening.
+    ///
+    /// With old all-overflow: CBOR bytes = CHUNK_THRESHOLD + OVERFLOW_LIMIT → 2 overflow pages.
+    /// With new prefix-inline: first CHUNK_THRESHOLD bytes sit in the cell; only OVERFLOW_LIMIT
+    /// bytes go to the chain → exactly 1 overflow page.
+    ///
+    /// If this test fails with pages_added == 2, the inline prefix is not being stored.
+    #[test]
+    fn test_overflow_prefix_stored_inline() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // CBOR = CHUNK_THRESHOLD + OVERFLOW_LIMIT.
+        // overflow bytes = OVERFLOW_LIMIT → exactly 1 overflow page.
+        let value = vec![ScalarValue::String(
+            "x".repeat(CHUNK_THRESHOLD + OVERFLOW_LIMIT - 12),
+        )];
+        let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
+        assert_eq!(
+            pages_added, 1,
+            "prefix-inline: CBOR = CHUNK_THRESHOLD + OVERFLOW_LIMIT needs 1 overflow page (not 2), got {pages_added}"
+        );
+
+        let mut cursor_handle = btree.open(root);
+        let mut cursor = cursor_handle.open_cursor();
+        cursor.first();
+        let decoded = cursor.get_entry().unwrap().decode_as_array();
+        assert_eq!(decoded, value);
+    }
+
+    /// Verify that `Cell::inline_bytes` holds exactly CHUNK_THRESHOLD bytes for overflow cells.
+    ///
+    /// Accesses the raw leaf page via the store to inspect the serialized Cell directly,
+    /// without going through CellReader (which reassembles the full buffer).
+    #[test]
+    fn test_overflow_cell_inline_bytes_length() {
+        use crate::storage::node::NodePage;
+        use crate::storage::page_id::PageId;
+
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root = btree.create_tree();
+
+        // Any value with CBOR > CHUNK_THRESHOLD triggers the overflow path.
+        let value = vec![ScalarValue::String("x".repeat(CHUNK_THRESHOLD - 11))]; // CBOR = CHUNK_THRESHOLD + 1
+        {
+            let mut cursor_handle = btree.open(root);
+            let mut cursor = cursor_handle.open_cursor();
+            cursor.insert_u64(1, value);
+        }
+
+        // Read the cell directly from the leaf to inspect its inline_bytes.
+        let mut store = btree.store.borrow_mut();
+        let root_page = store.read(PageId(root)).unwrap().clone();
+        let leaf = match root_page {
+            NodePage::Leaf(ref l) => l,
+            _ => panic!("expected leaf at root"),
+        };
+        let cell = leaf.get_item_at_index(0).expect("cell 0");
+        assert!(
+            cell.continuation().is_some(),
+            "cell should have a continuation pointer"
+        );
+        assert_eq!(
+            cell.inline_bytes().len(),
+            CHUNK_THRESHOLD,
+            "inline_bytes must hold exactly CHUNK_THRESHOLD bytes"
+        );
+    }
 }
