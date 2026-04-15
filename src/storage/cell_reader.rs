@@ -55,13 +55,14 @@ impl CellReader {
         leaf_page_idx: u32,
         cell_idx: usize,
     ) -> Option<CellReader> {
-        let (key, values, continuation) = {
+        let (key, values, inline_bytes, continuation) = {
             let node = store.read(PageId(leaf_page_idx)).ok()?;
             let leaf = node.leaf()?;
             let cell = leaf.get_item_at_index(cell_idx)?;
             (
                 cell.key().to_vec(),
                 cell.values().to_vec(),
+                cell.inline_bytes().to_vec(),
                 cell.continuation(),
             )
         }; // node borrow ends here
@@ -70,8 +71,9 @@ impl CellReader {
             return Some(CellReader::Inline { key, values });
         }
 
-        // Overflow path: assemble all bytes from the chain.
-        let mut buf = Vec::new();
+        // Overflow path: assemble CBOR bytes starting with the inline prefix,
+        // then following the overflow chain.
+        let mut buf = inline_bytes;
         let mut next = continuation;
         while let Some(cont_page) = next {
             probe!(database, overflow_read, cont_page);
