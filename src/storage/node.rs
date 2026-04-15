@@ -2,6 +2,8 @@ use std::cmp::Ordering::{Equal, Greater, Less};
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::scalarvalue::ScalarValue;
+
 use super::cell::{Cell, Key};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -12,6 +14,23 @@ pub enum NodePage {
 }
 
 impl NodePage {
+    /// Conservative upper-bound estimate of the CBOR-encoded size of this page in bytes.
+    ///
+    /// Used in `NodePageStore::write` to decide whether to encode for a `PageFull` check
+    /// without paying for a full serialisation on every write.  Must never underestimate —
+    /// false positives (estimate > PAGE_SIZE but actual ≤ PAGE_SIZE) are safe; false
+    /// negatives would silently produce an oversized page at flush time.
+    ///
+    /// `OverflowPage` returns 0 because `split_and_store` always chunks data so each
+    /// overflow page fits by construction.
+    pub fn cbor_size_estimate(&self) -> usize {
+        match self {
+            NodePage::Leaf(l) => l.cbor_size_estimate(),
+            NodePage::Interior(i) => i.cbor_size_estimate(),
+            NodePage::OverflowPage(_) => 0,
+        }
+    }
+
     pub fn search(&self, k: &[u8]) -> SearchResult {
         match self {
             NodePage::Leaf(l) => l.search(k),
@@ -158,6 +177,18 @@ impl LeafNodePage {
             }
         }
         Ok(())
+    }
+
+    fn cbor_size_estimate(&self) -> usize {
+        // 15 = LEAF_PAGE_BASE_FRAMING_BYTES (measured for an empty leaf).
+        // +2 = slack for the `cells` CBOR array header growing from 1 byte (≤ 23 elements)
+        //      to 3 bytes (≥ 256 elements) as more cells are added.  Index leaf pages can
+        //      hold hundreds of small cells, so this growth is reachable.
+        let mut n: usize = 17;
+        for cell in &self.cells {
+            n += cell_cbor_size_estimate(cell);
+        }
+        n
     }
 
     fn split(&self) -> (LeafNodePage, LeafNodePage) {
@@ -317,6 +348,21 @@ impl InteriorNodePage {
         self.keys.push(edge_page_smallest_key);
     }
 
+    fn cbor_size_estimate(&self) -> usize {
+        // Conservative base for an empty interior page.
+        // +4 = slack for two CBOR array headers (`keys` and `edges`), each able to grow
+        //      from 1 byte (≤ 23 elements) to 3 bytes (≥ 256 elements) = +2 each.
+        let mut n: usize = 24;
+        for key in &self.keys {
+            // CBOR byte-string: 1-3 byte length header + key data.
+            let hdr = if key.len() <= 23 { 1 } else if key.len() <= 0xFF { 2 } else { 3 };
+            n += hdr + key.len();
+        }
+        // Each child page number is a u32: 1–5 CBOR bytes; assume worst-case 5.
+        n += 5 * self.edges.len();
+        n
+    }
+
     fn split(&self) -> (InteriorNodePage, InteriorNodePage) {
         /*
             W  E  R
@@ -376,6 +422,62 @@ impl OverflowPage {
     pub fn value(&self) -> &[u8] {
         &self.content
     }
+}
+
+// ── CBOR size estimation helpers ──────────────────────────────────────────────
+
+/// Conservative upper-bound estimate of the CBOR size of one `Cell`.
+///
+/// Mirrors the logic in `btree.rs::cbor_size_estimate` (for the values portion)
+/// plus the per-cell framing constants.  Must never underestimate.
+fn cell_cbor_size_estimate(cell: &Cell) -> usize {
+    if cell.continuation().is_some() {
+        // Overflow cell: [key_bytes, inline_bytes, u32_cont]
+        //   1 (outer array) + 1 (key hdr, 8-byte key ≤ 23) + 8 (key)
+        //   + 3 (bytes hdr, inline_bytes > 255) + inline_bytes.len()
+        //   + 5 (u32, worst-case 5 bytes)
+        1 + 1 + 8 + 3 + cell.inline_bytes().len() + 5
+    } else {
+        // Inline cell: [key_bytes, values_array]
+        //   10 = CELL_FRAMING_BYTES (outer array + key hdr + 8-byte key)
+        10 + scalar_values_cbor_size_estimate(cell.values())
+    }
+}
+
+/// Conservative upper-bound estimate of the CBOR size of `Vec<ScalarValue>`.
+///
+/// ScalarValue uses serde's externally-tagged enum representation:
+///   unit variant `Null`  → text "Null" (5 bytes)
+///   newtype variants     → `{variant_name: value}` CBOR map
+/// Kept in sync with `cbor_size_estimate` in `btree.rs`.
+fn scalar_values_cbor_size_estimate(values: &[ScalarValue]) -> usize {
+    let mut n: usize = 5; // conservative array header
+    for v in values {
+        n += match v {
+            ScalarValue::Null => 5,
+            ScalarValue::Boolean(_) => 10,
+            ScalarValue::Integer(i) => {
+                let abs = i.unsigned_abs();
+                let val = if abs <= 23 { 1 } else if abs <= 0xFF { 2 }
+                          else if abs <= 0xFFFF { 3 } else if abs <= 0xFFFF_FFFF { 5 } else { 9 };
+                9 + val
+            }
+            ScalarValue::Floating(_) => 19,
+            ScalarValue::String(s) => {
+                let len = s.len();
+                let hdr = if len <= 23 { 1 } else if len <= 0xFF { 2 }
+                          else if len <= 0xFFFF { 3 } else { 5 };
+                8 + hdr + len
+            }
+            ScalarValue::Blob(b) => {
+                let len = b.len();
+                let hdr = if len <= 23 { 1 } else if len <= 0xFF { 2 }
+                          else if len <= 0xFFFF { 3 } else { 5 };
+                6 + hdr + len
+            }
+        };
+    }
+    n
 }
 
 #[cfg(test)]
@@ -697,6 +799,77 @@ mod test {
             max_data_cell_overhead <= 10,
             "max data-cell overhead ({max_data_cell_overhead}) exceeds constant CELL_FRAMING_BYTES=10"
         );
+    }
+
+    /// Verify that `NodePage::cbor_size_estimate` is always ≥ the real CBOR size for
+    /// leaf pages across a range of value types, including large integers.
+    #[test]
+    fn test_leaf_cbor_size_estimate_is_upper_bound() {
+        fn real_cbor_size(page: &NodePage) -> usize {
+            let mut buf = vec![];
+            ciborium::ser::into_writer(page, &mut buf).unwrap();
+            buf.len()
+        }
+
+        let cases: Vec<Vec<ScalarValue>> = vec![
+            vec![],
+            vec![ScalarValue::Null],
+            vec![ScalarValue::Boolean(true)],
+            vec![ScalarValue::Integer(0)],
+            vec![ScalarValue::Integer(23)],
+            vec![ScalarValue::Integer(24)],        // 2-byte CBOR
+            vec![ScalarValue::Integer(255)],
+            vec![ScalarValue::Integer(256)],       // 3-byte CBOR
+            vec![ScalarValue::Integer(65535)],
+            vec![ScalarValue::Integer(65536)],     // 5-byte CBOR
+            vec![ScalarValue::Integer(i64::MAX)],  // 9-byte CBOR
+            vec![ScalarValue::Integer(i64::MIN)],  // 9-byte CBOR (negative large)
+            vec![ScalarValue::Integer(-1)],
+            vec![ScalarValue::Integer(-24)],
+            vec![ScalarValue::Integer(-256)],
+            vec![ScalarValue::Integer(-65536)],
+            vec![ScalarValue::Floating(3.14)],
+            vec![ScalarValue::String("x".repeat(23))],
+            vec![ScalarValue::String("x".repeat(24))],
+            vec![ScalarValue::String("x".repeat(255))],
+            vec![ScalarValue::String("x".repeat(256))],
+            vec![
+                ScalarValue::Integer(i64::MAX),
+                ScalarValue::String("hello".to_string()),
+                ScalarValue::Null,
+            ],
+        ];
+
+        for values in cases {
+            let mut leaf = LeafNodePage::default();
+            leaf.insert_item_at_index(0, Cell::new(vec![0u8; 8], values.clone(), None));
+            let page = NodePage::Leaf(leaf);
+            let estimate = page.cbor_size_estimate();
+            let actual = real_cbor_size(&page);
+            assert!(
+                estimate >= actual,
+                "estimate ({estimate}) < actual ({actual}) for values {values:?}"
+            );
+        }
+
+        // Many small cells: triggers CBOR array-header growth from 1 byte (≤ 23 elements)
+        // to 2 bytes (24–255) and 3 bytes (256+).  This is the index-page scenario.
+        for cell_count in [1usize, 23, 24, 100, 255, 256] {
+            let mut leaf = LeafNodePage::default();
+            for i in 0..cell_count {
+                leaf.insert_item_at_index(
+                    i,
+                    Cell::new(vec![0u8; 8], vec![ScalarValue::Integer(i as i64)], None),
+                );
+            }
+            let page = NodePage::Leaf(leaf);
+            let estimate = page.cbor_size_estimate();
+            let actual = real_cbor_size(&page);
+            assert!(
+                estimate >= actual,
+                "estimate ({estimate}) < actual ({actual}) for {cell_count} cells"
+            );
+        }
     }
 
     proptest! {
