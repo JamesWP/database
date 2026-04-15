@@ -2108,18 +2108,9 @@ mod tests {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v0 = Vec::new();
-            let values = vec![ScalarValue::Integer(1), ScalarValue::Integer(100)];
-            ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert_u64(0, v0);
-            let mut v1 = Vec::new();
-            let values = vec![ScalarValue::Integer(2), ScalarValue::Integer(200)];
-            ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert_u64(1, v1);
-            let mut v2 = Vec::new();
-            let values = vec![ScalarValue::Integer(3), ScalarValue::Integer(300)];
-            ciborium::ser::into_writer(&values, &mut v2).unwrap();
-            c.insert_u64(2, v2);
+            c.insert_u64(0, vec![ScalarValue::Integer(1), ScalarValue::Integer(100)]);
+            c.insert_u64(1, vec![ScalarValue::Integer(2), ScalarValue::Integer(200)]);
+            c.insert_u64(2, vec![ScalarValue::Integer(3), ScalarValue::Integer(300)]);
         }
 
         // Build plan: Count { Scan { rootpage, 2 columns } }
@@ -2180,14 +2171,8 @@ mod tests {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v0 = Vec::new();
-            let values = vec![ScalarValue::Integer(10), ScalarValue::Integer(20)];
-            ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert_u64(0, v0);
-            let mut v1 = Vec::new();
-            let values = vec![ScalarValue::Integer(30), ScalarValue::Integer(40)];
-            ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert_u64(1, v1);
+            c.insert_u64(0, vec![ScalarValue::Integer(10), ScalarValue::Integer(20)]);
+            c.insert_u64(1, vec![ScalarValue::Integer(30), ScalarValue::Integer(40)]);
         }
 
         let plan = LogicalPlan::Scan {
@@ -3240,15 +3225,15 @@ mod tests {
     // NestedLoop Join tests
     // ========================================================================
 
-    /// Insert CBOR-encoded rows into a btree table.
+    /// Insert rows into a btree table.
     fn insert_rows2(btree: &mut crate::storage::BTree, root: u32, rows: &[(i64, i64)]) {
         let mut cursor = btree.open(root);
         let mut c = cursor.open_cursor();
         for (i, (a, b)) in rows.iter().enumerate() {
-            let values = vec![ScalarValue::Integer(*a), ScalarValue::Integer(*b)];
-            let mut buf = Vec::new();
-            ciborium::ser::into_writer(&values, &mut buf).unwrap();
-            c.insert_u64(i as u64, buf);
+            c.insert_u64(
+                i as u64,
+                vec![ScalarValue::Integer(*a), ScalarValue::Integer(*b)],
+            );
         }
     }
 
@@ -3447,13 +3432,13 @@ mod tests {
         use crate::storage::encode_index_value;
         let mut cursor = btree.open(index_root);
         let mut c = cursor.open_cursor();
-        for (i, (user_id, rowid)) in rows.iter().enumerate() {
+        for (user_id, rowid) in rows.iter() {
             let col_bytes = encode_index_value(&ScalarValue::Integer(*user_id));
             let rowid_bytes = rowid.to_be_bytes();
             let mut key = col_bytes;
             key.extend_from_slice(&rowid_bytes);
-            // Index value is just the primary key (rowid)
-            c.insert_u64(i as u64, key);
+            // Index entries: composite key, empty values (rowid is encoded in the key)
+            c.insert(&key, vec![]);
         }
     }
 
@@ -3491,9 +3476,7 @@ mod tests {
             let mut cursor = btree.open(right_root);
             let mut c = cursor.open_cursor();
             for (row, rowid) in &values {
-                let mut buf = Vec::new();
-                ciborium::ser::into_writer(row, &mut buf).unwrap();
-                c.insert_u64(*rowid, buf);
+                c.insert_u64(*rowid, row.clone());
             }
         }
 

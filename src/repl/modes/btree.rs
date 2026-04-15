@@ -5,6 +5,7 @@ use std::ops::ControlFlow;
 use rand::Rng;
 
 use crate::repl::{CommandResult, Mode, ModeId, SharedState};
+use database::engine::scalarvalue::ScalarValue;
 use database::frontend::ast;
 use database::frontend::parse;
 use database::storage::{CellReader, CursorHandle};
@@ -187,7 +188,7 @@ impl Mode for BTreeMode {
                     cursor
                         .handle
                         .open_cursor()
-                        .insert_u64(key, value.into_bytes());
+                        .insert_u64(key, vec![ScalarValue::String(value)]);
                     CommandResult::Message(format!("Inserted key {}", key))
                 })
             }
@@ -219,7 +220,14 @@ impl Mode for BTreeMode {
                         let key =
                             rng.sample(rand::distributions::Uniform::new(1 << 10, 1u64 << 32));
 
-                        cursor.handle.open_cursor().insert_u64(key, bytes);
+                        let hex = bytes
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<String>();
+                        cursor
+                            .handle
+                            .open_cursor()
+                            .insert_u64(key, vec![ScalarValue::String(hex)]);
                     }
                     CommandResult::Message(format!(
                         "Inserted {} items with random size up to {}",

@@ -59,7 +59,12 @@ impl NodePageStore {
                  Please recreate your database."
                     .into(),
             )),
-            Some(2) => Ok(()),
+            Some(2) => Err(Error::FormatError(
+                "Database format version 2 is no longer supported. \
+                 Please recreate your database."
+                    .into(),
+            )),
+            Some(3) => Ok(()),
             Some(v) => Err(Error::FormatError(format!(
                 "Unknown database format version {}. \
                  This database may have been created by a newer version.",

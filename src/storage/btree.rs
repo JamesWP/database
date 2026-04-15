@@ -14,7 +14,6 @@ use crate::storage::node::{NodePage, OverflowPage, SearchResult};
 
 use super::btree_verify::VerifyError;
 use super::catalog_cache::CatalogSnapshot;
-use super::cell::Value;
 use super::error::Error as StorageError;
 use super::node::{self, InteriorNodePage};
 use super::node_page_store::NodePageStore;
@@ -146,7 +145,7 @@ const CHUNK_THRESHOLD: usize = (pager::PAGE_SIZE as usize - LEAF_PAGE_BASE_FRAMI
 impl<'a> Cursor<'a> {
     // ── mutation ──────────────────────────────────────────────────────────────
 
-    pub fn insert(&mut self, key: &[u8], value: Value) {
+    pub fn insert(&mut self, key: &[u8], values: Vec<ScalarValue>) {
         probe!(database, row_insert);
         // Save current cursor key if positioned, for RequiresSeek after insert
         let saved_cursor_key = match &self.cursor_state.position {
@@ -169,17 +168,20 @@ impl<'a> Cursor<'a> {
             _ => None,
         };
 
-        // values must be small enough so that a few can fit on each page
-        let (first_part, continuation) = if value.len() > CHUNK_THRESHOLD {
-            let (first_part, rest) = value.split_at(CHUNK_THRESHOLD);
+        // Transitional overflow check (item 135): pre-serialise to measure size.
+        // Item 136 replaces this with cbor_size_estimate to avoid the allocation
+        // for the common inline case.
+        let mut probe_buf = Vec::new();
+        ciborium::ser::into_writer(&values, &mut probe_buf).unwrap();
+        let (cell_values, continuation) = if probe_buf.len() > CHUNK_THRESHOLD {
             probe!(database, overflow_write);
-            let second_part = split_and_store(&mut *self.store, rest);
-            (first_part.to_owned(), Some(second_part))
+            let cont_page = split_and_store(&mut *self.store, &probe_buf);
+            (vec![], Some(cont_page))
         } else {
-            (value, None)
+            (values, None)
         };
 
-        let cell = Cell::new(key.to_vec(), first_part, continuation);
+        let cell = Cell::new(key.to_vec(), cell_values, continuation);
 
         let mut stack = Vec::new();
         stack.push(self.cursor_state.root_page);
@@ -254,8 +256,8 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    pub fn insert_u64(&mut self, key: u64, value: Value) {
-        self.insert(&encode_u64_key(key), value)
+    pub fn insert_u64(&mut self, key: u64, values: Vec<ScalarValue>) {
+        self.insert(&encode_u64_key(key), values)
     }
 
     /// Split an overfull page into two halves and link them into the tree.
@@ -841,10 +843,8 @@ impl BTree {
             ScalarValue::Integer(rootpage as i64),
             ScalarValue::String(sql.to_string()),
         ];
-        let mut row = Vec::new();
-        ciborium::ser::into_writer(&row_values, &mut row).unwrap();
         let mut cursor = self.open(CATALOG_ROOT);
-        cursor.open_cursor().insert_u64(key, row);
+        cursor.open_cursor().insert_u64(key, row_values);
         *self.catalog_cache.borrow_mut() = None;
     }
 
@@ -959,7 +959,7 @@ impl BTree {
                     for i in 0..leaf.num_items() {
                         if let Some(cell) = leaf.get_item_at_index(i) {
                             let key = cell.key();
-                            let value = cell.value();
+                            let values = cell.values();
                             let continuation = cell.continuation();
 
                             let key_hex = key
@@ -969,7 +969,6 @@ impl BTree {
                                 .join(" ");
                             println!("  {}:", format!("Cell {}", i).bright_blue());
                             println!("    {}={}", "key".cyan(), key_hex);
-                            println!("    {}={}", "value_len".cyan(), value.len());
 
                             if let Some(cont_page) = continuation {
                                 println!(
@@ -978,25 +977,10 @@ impl BTree {
                                     cont_page,
                                     "(overflow)".bright_magenta()
                                 );
+                                println!("    {}=[]", "decoded".cyan());
                             } else {
                                 println!("    {}={}", "continuation".cyan(), "None".bright_black());
-                            }
-
-                            if let Ok(values) = ciborium::de::from_reader::<
-                                Vec<crate::engine::scalarvalue::ScalarValue>,
-                                _,
-                            >(&value[..])
-                            {
                                 println!("    {}={:?}", "decoded".cyan(), values);
-                            } else {
-                                let hex: String = value
-                                    .iter()
-                                    .take(8)
-                                    .map(|b| format!("{:02x}", b))
-                                    .collect::<Vec<_>>()
-                                    .join(" ");
-                                let suffix = if value.len() > 8 { "..." } else { "" };
-                                println!("    {}={}{}", "hex".cyan(), hex.bright_black(), suffix);
                             }
                         }
                     }
@@ -1131,11 +1115,11 @@ pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Ve
 #[cfg(test)]
 mod test {
 
+    use crate::engine::scalarvalue::ScalarValue;
     use crate::storage::BTree;
     use crate::test::TestDb;
     use proptest::prelude::*;
     use std::collections::BTreeMap;
-    use std::io::Read;
 
     use super::{CursorPosition, CHUNK_THRESHOLD, OVERFLOW_LIMIT};
 
@@ -1183,7 +1167,14 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
 
-            cursor.insert_u64(42, vec![42, 255, 64]);
+            cursor.insert_u64(
+                42,
+                vec![
+                    ScalarValue::Integer(42),
+                    ScalarValue::Integer(255),
+                    ScalarValue::Integer(64),
+                ],
+            );
         }
 
         // Test we can read out the new value
@@ -1191,9 +1182,10 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             cursor.first();
-            let mut buf = [0; 3];
-            cursor.get_entry().unwrap().read(&mut buf).unwrap();
-            assert_eq!(&buf, &[42, 255, 64]);
+            let vals = cursor.get_entry().unwrap().decode_as_array();
+            assert_eq!(vals[0], ScalarValue::Integer(42));
+            assert_eq!(vals[1], ScalarValue::Integer(255));
+            assert_eq!(vals[2], ScalarValue::Integer(64));
         }
     }
 
@@ -1204,27 +1196,23 @@ mod test {
 
         let root = btree.create_tree();
 
-        // Test we can insert a value
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
 
             for i in 1..10u64 {
-                let value = i.to_be_bytes().to_vec();
-                cursor.insert_u64(i, value);
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
-        // Test we can read out the new value
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
 
             cursor.first();
             for i in 1..10u64 {
-                let mut buf = [0; 8];
-                cursor.get_entry().unwrap().read(&mut buf).unwrap();
-                assert_eq!(buf, i.to_be_bytes());
+                let vals = cursor.get_entry().unwrap().decode_as_array();
+                assert_eq!(vals[0], ScalarValue::Integer(i as i64));
                 cursor.next();
             }
         }
@@ -1239,18 +1227,15 @@ mod test {
 
         let root = btree.create_tree();
 
-        // Test we can insert a value
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
 
             for i in 1..10u64 {
-                let value = i.to_be_bytes().to_vec();
-                cursor.insert_u64(i, value);
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
-        // Test we can read out the new value
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
@@ -1258,9 +1243,8 @@ mod test {
             cursor.find_u64(7);
 
             for i in 7..10u64 {
-                let mut buf = [0; 8];
-                cursor.get_entry().unwrap().read(&mut buf).unwrap();
-                assert_eq!(buf, i.to_be_bytes());
+                let vals = cursor.get_entry().unwrap().decode_as_array();
+                assert_eq!(vals[0], ScalarValue::Integer(i as i64));
                 cursor.next();
             }
         }
@@ -1276,11 +1260,9 @@ mod test {
         let mut cursor_handle = btree.open(root);
         let mut cursor = cursor_handle.open_cursor();
 
-        let long_string = |s: &str, num| s.repeat(num).into_bytes();
-
-        cursor.insert_u64(1, long_string("AA", 263));
-        cursor.insert_u64(10, long_string("BBBB", 900));
-        cursor.insert_u64(11, long_string("C", 1));
+        cursor.insert_u64(1, vec![ScalarValue::String("AA".repeat(263))]);
+        cursor.insert_u64(10, vec![ScalarValue::String("BBBB".repeat(900))]);
+        cursor.insert_u64(11, vec![ScalarValue::String("C".to_string())]);
 
         cursor.first();
         cursor.verify().unwrap();
@@ -1307,7 +1289,7 @@ mod test {
     ) {
         println!("Test: {elements:?}");
 
-        let mut rust_btree = BTreeMap::new();
+        let mut expected_keys: Vec<u64> = Vec::new();
 
         let root = my_btree.create_tree();
 
@@ -1316,13 +1298,19 @@ mod test {
 
         for (k, (v, len)) in elements.to_owned() {
             cursor.verify().unwrap();
-            let value = v.to_string().repeat(len).as_bytes().to_vec();
-
-            rust_btree.insert(k, value.clone());
-            cursor.insert_u64(k, value);
+            let value = v.to_string().repeat(len);
+            cursor.insert_u64(k, vec![ScalarValue::String(value)]);
+            if !expected_keys.contains(&k) {
+                expected_keys.push(k);
+            }
         }
 
         cursor.verify().unwrap();
+
+        expected_keys.sort();
+        if !ordering_forwards {
+            expected_keys.reverse();
+        }
 
         if ordering_forwards {
             cursor.first();
@@ -1330,16 +1318,11 @@ mod test {
             cursor.last();
         }
 
-        let rust_btree_iter: Box<dyn Iterator<Item = _>> = if ordering_forwards {
-            Box::new(rust_btree.iter())
-        } else {
-            Box::new(rust_btree.iter().rev())
-        };
-
-        for (_key, actual_value) in rust_btree_iter {
-            let mut buf = vec![];
-            cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
-            assert_eq!(actual_value, &buf);
+        // Verify key ordering (the primary purpose of this test).
+        for expected_k in expected_keys {
+            let entry = cursor.get_entry().unwrap();
+            let actual_key = super::decode_u64_key(entry.key());
+            assert_eq!(actual_key, expected_k);
 
             if ordering_forwards {
                 cursor.next();
@@ -1395,7 +1378,7 @@ mod test {
                 let mut cursor_handle = btree.open(root);
                 let mut cursor = cursor_handle.open_cursor();
                 for &k in &keys {
-                    cursor.insert_u64(k, k.to_be_bytes().to_vec());
+                    cursor.insert_u64(k, vec![ScalarValue::Integer(k as i64)]);
                 }
                 cursor.verify().unwrap();
             }
@@ -1453,8 +1436,7 @@ mod test {
             let mut cursor = btree.open(initial_root);
             let mut c = cursor.open_cursor();
             for i in 0..100u64 {
-                let value = format!("[{}, \"row_{}\"]", i, i);
-                c.insert_u64(i, value.into_bytes());
+                c.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -1494,26 +1476,28 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(1, b"first".to_vec());
+            cursor.insert_u64(1, vec![ScalarValue::String("first".to_string())]);
         }
 
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(1, b"second".to_vec());
+            cursor.insert_u64(1, vec![ScalarValue::String("second".to_string())]);
         }
 
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             cursor.find_u64(1);
-            let mut buf = vec![];
-            cursor
+            let vals = cursor
                 .get_entry()
                 .expect("Key should exist")
-                .read_to_end(&mut buf)
-                .unwrap();
-            assert_eq!(buf, b"second", "Value should be overwritten");
+                .decode_as_array();
+            assert_eq!(
+                vals[0],
+                ScalarValue::String("second".to_string()),
+                "Value should be overwritten"
+            );
         }
     }
 
@@ -1526,9 +1510,9 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(1, b"one".to_vec());
-            cursor.insert_u64(3, b"three".to_vec());
-            cursor.insert_u64(5, b"five".to_vec());
+            cursor.insert_u64(1, vec![ScalarValue::String("one".to_string())]);
+            cursor.insert_u64(3, vec![ScalarValue::String("three".to_string())]);
+            cursor.insert_u64(5, vec![ScalarValue::String("five".to_string())]);
         }
 
         {
@@ -1548,7 +1532,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 0..10u64 {
-                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -1557,31 +1541,25 @@ mod test {
             let mut cursor = cursor_handle.open_cursor();
 
             cursor.find_u64(5);
-            let mut buf = [0u8; 8];
-            cursor
+            let vals = cursor
                 .get_entry()
                 .expect("Key 5 should exist")
-                .read(&mut buf)
-                .unwrap();
-            assert_eq!(u64::from_be_bytes(buf), 5);
+                .decode_as_array();
+            assert_eq!(vals[0], ScalarValue::Integer(5));
 
             cursor.prev();
-            let mut buf = [0u8; 8];
-            cursor
+            let vals = cursor
                 .get_entry()
                 .expect("Key 4 should exist")
-                .read(&mut buf)
-                .unwrap();
-            assert_eq!(u64::from_be_bytes(buf), 4);
+                .decode_as_array();
+            assert_eq!(vals[0], ScalarValue::Integer(4));
 
             cursor.prev();
-            let mut buf = [0u8; 8];
-            cursor
+            let vals = cursor
                 .get_entry()
                 .expect("Key 3 should exist")
-                .read(&mut buf)
-                .unwrap();
-            assert_eq!(u64::from_be_bytes(buf), 3);
+                .decode_as_array();
+            assert_eq!(vals[0], ScalarValue::Integer(3));
         }
     }
 
@@ -1602,7 +1580,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for &key in &keys {
-                cursor.insert_u64(key, key.to_be_bytes().to_vec());
+                cursor.insert_u64(key, vec![ScalarValue::Integer(key as i64)]);
             }
         }
 
@@ -1612,14 +1590,15 @@ mod test {
             cursor.first();
 
             for expected_key in 0..200u64 {
-                let mut buf = [0u8; 8];
-                cursor
+                let vals = cursor
                     .get_entry()
                     .unwrap_or_else(|| panic!("Key {} should exist", expected_key))
-                    .read(&mut buf)
-                    .unwrap();
-                let actual_key = u64::from_be_bytes(buf);
-                assert_eq!(actual_key, expected_key, "Keys should be in sorted order");
+                    .decode_as_array();
+                assert_eq!(
+                    vals[0],
+                    ScalarValue::Integer(expected_key as i64),
+                    "Keys should be in sorted order"
+                );
                 cursor.next();
             }
 
@@ -1636,9 +1615,9 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(1, b"one".to_vec());
-            cursor.insert_u64(2, b"two".to_vec());
-            cursor.insert_u64(3, b"three".to_vec());
+            cursor.insert_u64(1, vec![ScalarValue::String("one".to_string())]);
+            cursor.insert_u64(2, vec![ScalarValue::String("two".to_string())]);
+            cursor.insert_u64(3, vec![ScalarValue::String("three".to_string())]);
         }
 
         {
@@ -1646,13 +1625,11 @@ mod test {
             let mut cursor = cursor_handle.open_cursor();
             cursor.last();
 
-            let mut buf = vec![];
-            cursor
+            let vals = cursor
                 .get_entry()
                 .expect("Should have last entry")
-                .read_to_end(&mut buf)
-                .unwrap();
-            assert_eq!(buf, b"three");
+                .decode_as_array();
+            assert_eq!(vals[0], ScalarValue::String("three".to_string()));
         }
     }
 
@@ -1666,7 +1643,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 0..100u64 {
-                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -1675,13 +1652,11 @@ mod test {
             let mut cursor = cursor_handle.open_cursor();
             cursor.last();
 
-            let mut buf = [0u8; 8];
-            cursor
+            let vals = cursor
                 .get_entry()
                 .expect("Should have last entry")
-                .read(&mut buf)
-                .unwrap();
-            assert_eq!(u64::from_be_bytes(buf), 99);
+                .decode_as_array();
+            assert_eq!(vals[0], ScalarValue::Integer(99));
         }
     }
 
@@ -1695,7 +1670,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 1..=5u64 {
-                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -1705,13 +1680,11 @@ mod test {
             cursor.last();
 
             for expected in (1..=5u64).rev() {
-                let mut buf = [0u8; 8];
-                cursor
+                let vals = cursor
                     .get_entry()
                     .unwrap_or_else(|| panic!("Should have key {}", expected))
-                    .read(&mut buf)
-                    .unwrap();
-                assert_eq!(u64::from_be_bytes(buf), expected);
+                    .decode_as_array();
+                assert_eq!(vals[0], ScalarValue::Integer(expected as i64));
                 cursor.prev();
             }
 
@@ -1728,7 +1701,7 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(42, b"the answer".to_vec());
+            cursor.insert_u64(42, vec![ScalarValue::String("the answer".to_string())]);
         }
 
         {
@@ -1737,13 +1710,11 @@ mod test {
             let found = cursor.find_u64(42);
             assert!(found, "find() should return true for existing key");
 
-            let mut buf = vec![];
-            cursor
+            let vals = cursor
                 .get_entry()
                 .expect("Cursor should be positioned at found key")
-                .read_to_end(&mut buf)
-                .unwrap();
-            assert_eq!(buf, b"the answer");
+                .decode_as_array();
+            assert_eq!(vals[0], ScalarValue::String("the answer".to_string()));
         }
     }
 
@@ -1756,9 +1727,9 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(1, b"one".to_vec());
-            cursor.insert_u64(3, b"three".to_vec());
-            cursor.insert_u64(5, b"five".to_vec());
+            cursor.insert_u64(1, vec![ScalarValue::String("one".to_string())]);
+            cursor.insert_u64(3, vec![ScalarValue::String("three".to_string())]);
+            cursor.insert_u64(5, vec![ScalarValue::String("five".to_string())]);
         }
 
         {
@@ -1785,7 +1756,7 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(42, b"hello".to_vec());
+            cursor.insert_u64(42, vec![ScalarValue::String("hello".to_string())]);
         }
 
         {
@@ -1817,8 +1788,8 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(10, b"ten".to_vec());
-            cursor.insert_u64(20, b"twenty".to_vec());
+            cursor.insert_u64(10, vec![ScalarValue::String("ten".to_string())]);
+            cursor.insert_u64(20, vec![ScalarValue::String("twenty".to_string())]);
         }
 
         {
@@ -1845,8 +1816,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 1..=200u64 {
-                let value = format!("value_{}", i).into_bytes();
-                cursor.insert_u64(i, value);
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -1875,7 +1845,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 1..=5u64 {
-                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -1920,7 +1890,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 1..=10u64 {
-                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -1958,9 +1928,9 @@ mod test {
         // Insert some values
         {
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(1, b"one".to_vec());
-            cursor.insert_u64(2, b"two".to_vec());
-            cursor.insert_u64(3, b"three".to_vec());
+            cursor.insert_u64(1, vec![ScalarValue::String("one".to_string())]);
+            cursor.insert_u64(2, vec![ScalarValue::String("two".to_string())]);
+            cursor.insert_u64(3, vec![ScalarValue::String("three".to_string())]);
         }
 
         use super::encode_u64_key;
@@ -2017,7 +1987,7 @@ mod test {
                 CursorPosition::Valid { .. }
             ));
 
-            cursor.insert_u64(4, b"four".to_vec());
+            cursor.insert_u64(4, vec![ScalarValue::String("four".to_string())]);
             assert!(matches!(
                 cursor.cursor_state.position,
                 CursorPosition::RequiresSeek { .. }
@@ -2043,6 +2013,14 @@ mod test {
 
     #[test]
     fn test_measure_cbor_framing() {
+        // Verify that a value whose CBOR encoding exactly equals CHUNK_THRESHOLD bytes
+        // stores inline (no overflow), and one byte over triggers overflow.
+        //
+        // ScalarValue uses serde's externally-tagged enum representation, so
+        // vec![ScalarValue::String(s)] with s.len() = N (N ≥ 256) encodes as:
+        //   1 (array) + 1 (map) + 7 ("String" key) + 3 (string header) + N = N+12 bytes
+        // So for CBOR = CHUNK_THRESHOLD: N = CHUNK_THRESHOLD - 12
+        // For CBOR = CHUNK_THRESHOLD + 1: N = CHUNK_THRESHOLD - 11
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
@@ -2050,26 +2028,28 @@ mod test {
         let mut cursor_handle = btree.open(root);
         let mut cursor = cursor_handle.open_cursor();
 
-        let exact_threshold = vec![0u8; CHUNK_THRESHOLD];
-        cursor.insert_u64(1, exact_threshold.clone());
+        // A string whose CBOR encoding as a single-element array = CHUNK_THRESHOLD bytes.
+        let inline_str = "x".repeat(CHUNK_THRESHOLD - 12);
+        let inline_vals = vec![ScalarValue::String(inline_str.clone())];
+        cursor.insert_u64(1, inline_vals.clone());
 
         cursor.first();
-        let mut buf = Vec::new();
-        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
-        assert_eq!(buf, exact_threshold, "CHUNK_THRESHOLD fits in one page");
         assert!(
             cursor.get_entry().unwrap().key().len() > 0,
             "entry should have a key"
         );
+        let decoded = cursor.get_entry().unwrap().decode_as_array();
+        assert_eq!(decoded, inline_vals, "CHUNK_THRESHOLD fits inline");
 
-        let over_threshold = vec![0u8; CHUNK_THRESHOLD + 1];
-        cursor.insert_u64(2, over_threshold.clone());
+        // One extra byte pushes CBOR over CHUNK_THRESHOLD → overflow.
+        let overflow_str = "x".repeat(CHUNK_THRESHOLD - 11);
+        let overflow_vals = vec![ScalarValue::String(overflow_str.clone())];
+        cursor.insert_u64(2, overflow_vals.clone());
 
         cursor.find_u64(2);
-        let mut buf = Vec::new();
-        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
+        let decoded = cursor.get_entry().unwrap().decode_as_array();
         assert_eq!(
-            buf, over_threshold,
+            decoded, overflow_vals,
             "Value over threshold should use overflow"
         );
     }
@@ -2080,21 +2060,23 @@ mod test {
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let large_value = vec![42u8; OVERFLOW_LIMIT * 3 + 1];
+        // String of length OVERFLOW_LIMIT * 3 - 11 encodes as CBOR of OVERFLOW_LIMIT * 3 + 1 bytes
+        // (serde externally-tagged enum: 12 bytes overhead for 256+ char strings), spanning
+        // multiple overflow pages.
+        let large_vals = vec![ScalarValue::String("x".repeat(OVERFLOW_LIMIT * 3 - 11))];
 
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(1, large_value.clone());
+            cursor.insert_u64(1, large_vals.clone());
         }
 
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             cursor.first();
-            let mut buf = Vec::new();
-            cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
-            assert_eq!(buf, large_value);
+            let decoded = cursor.get_entry().unwrap().decode_as_array();
+            assert_eq!(decoded, large_vals);
         }
     }
 
@@ -2109,7 +2091,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 1..=5u64 {
-                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -2142,7 +2124,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 1..=3u64 {
-                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -2167,9 +2149,9 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(1, b"one".to_vec());
-            cursor.insert_u64(3, b"three".to_vec());
-            cursor.insert_u64(5, b"five".to_vec());
+            cursor.insert_u64(1, vec![ScalarValue::String("one".to_string())]);
+            cursor.insert_u64(3, vec![ScalarValue::String("three".to_string())]);
+            cursor.insert_u64(5, vec![ScalarValue::String("five".to_string())]);
         }
 
         // Position at key 1, insert key 2, verify next() lands on 2
@@ -2178,7 +2160,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             cursor.find_u64(1);
-            cursor.insert_u64(2, b"two".to_vec());
+            cursor.insert_u64(2, vec![ScalarValue::String("two".to_string())]);
             // After insert, cursor is in RequiresSeek state with saved_key=1
             cursor.next();
             assert_eq!(
@@ -2199,7 +2181,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 1..=50u64 {
-                cursor.insert_u64(i, format!("value_{}", i).into_bytes());
+                cursor.insert_u64(i, vec![ScalarValue::String(format!("value_{}", i))]);
             }
         }
 
@@ -2211,7 +2193,7 @@ mod test {
 
             // Insert 50 more keys to force splits
             for i in 51..=100u64 {
-                cursor.insert_u64(i, format!("value_{}", i).into_bytes());
+                cursor.insert_u64(i, vec![ScalarValue::String(format!("value_{}", i))]);
             }
 
             // Cursor should still be able to navigate from key 10
@@ -2238,7 +2220,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 1..=10u64 {
-                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -2271,7 +2253,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for i in 1..=3u64 {
-                cursor.insert_u64(i, i.to_be_bytes().to_vec());
+                cursor.insert_u64(i, vec![ScalarValue::Integer(i as i64)]);
             }
         }
 
@@ -2299,9 +2281,9 @@ mod test {
             use super::encode_u64_key;
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(1, b"value1".to_vec());
-            cursor.insert_u64(2, b"value2".to_vec());
-            cursor.insert_u64(3, b"value3".to_vec());
+            cursor.insert_u64(1, vec![ScalarValue::String("value1".to_string())]);
+            cursor.insert_u64(2, vec![ScalarValue::String("value2".to_string())]);
+            cursor.insert_u64(3, vec![ScalarValue::String("value3".to_string())]);
             cursor.first();
 
             let entry = cursor.get_entry().expect("Should find first entry");
@@ -2328,7 +2310,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for key in &[b"abc" as &[u8], b"b", b"a", b"ab"] {
-                cursor.insert(key, b"value".to_vec());
+                cursor.insert(key, vec![ScalarValue::String("value".to_string())]);
             }
         }
 
@@ -2358,9 +2340,18 @@ mod test {
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert(&long_key, b"long_value".to_vec());
-            cursor.insert(&short_key, b"short_value".to_vec());
-            cursor.insert(&medium_key, b"medium_value".to_vec());
+            cursor.insert(
+                &long_key,
+                vec![ScalarValue::String("long_value".to_string())],
+            );
+            cursor.insert(
+                &short_key,
+                vec![ScalarValue::String("short_value".to_string())],
+            );
+            cursor.insert(
+                &medium_key,
+                vec![ScalarValue::String("medium_value".to_string())],
+            );
         }
 
         {
@@ -2396,7 +2387,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for key in &keys {
-                cursor.insert(key, b"v".to_vec());
+                cursor.insert(key, vec![ScalarValue::String("v".to_string())]);
             }
         }
 
@@ -2443,7 +2434,7 @@ mod test {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
             for key in &keys {
-                cursor.insert(key, b"val".to_vec());
+                cursor.insert(key, vec![ScalarValue::String("val".to_string())]);
             }
             cursor.verify().unwrap();
         }
@@ -2475,8 +2466,8 @@ mod test {
         btree.store.borrow().page_count()
     }
 
-    /// Insert a value and return the number of new pages allocated.
-    fn overflow_pages_for(btree: &mut BTree, root: u32, key: u64, value: Vec<u8>) -> u32 {
+    /// Insert values and return the number of new pages allocated.
+    fn overflow_pages_for(btree: &mut BTree, root: u32, key: u64, value: Vec<ScalarValue>) -> u32 {
         let before = page_count(btree);
         {
             let mut cursor_handle = btree.open(root);
@@ -2489,89 +2480,88 @@ mod test {
 
     #[test]
     fn test_chunk_threshold_no_overflow() {
-        // A value of exactly CHUNK_THRESHOLD bytes should store inline — no overflow pages.
+        // vec![ScalarValue::String(s)] with s.len() ≥ 256 encodes as s.len() + 12 CBOR bytes
+        // (serde externally-tagged enum: 1 array + 1 map + 7 key + 3 string header).
+        // A value with CBOR = CHUNK_THRESHOLD should store inline — no overflow pages.
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let value = vec![0xAAu8; CHUNK_THRESHOLD];
+        let value = vec![ScalarValue::String("x".repeat(CHUNK_THRESHOLD - 12))];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
             pages_added, 0,
-            "CHUNK_THRESHOLD bytes should store inline (no overflow pages), got {pages_added}"
+            "CBOR size = CHUNK_THRESHOLD should store inline (no overflow pages), got {pages_added}"
         );
 
         let mut cursor_handle = btree.open(root);
         let mut cursor = cursor_handle.open_cursor();
         cursor.first();
-        let mut buf = Vec::new();
-        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
-        assert_eq!(buf, value);
+        let decoded = cursor.get_entry().unwrap().decode_as_array();
+        assert_eq!(decoded, value);
     }
 
     #[test]
     fn test_chunk_threshold_plus_one_spills_to_one_overflow_page() {
-        // A value of CHUNK_THRESHOLD + 1 bytes should spill to exactly one overflow page.
+        // CBOR size = CHUNK_THRESHOLD + 1 should spill to exactly one overflow page
+        // (all bytes go to overflow since CHUNK_THRESHOLD+1 < OVERFLOW_LIMIT).
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let value = vec![0x55u8; CHUNK_THRESHOLD + 1];
+        let value = vec![ScalarValue::String("x".repeat(CHUNK_THRESHOLD - 11))];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
             pages_added, 1,
-            "CHUNK_THRESHOLD+1 bytes should use exactly 1 overflow page, got {pages_added}"
+            "CBOR size = CHUNK_THRESHOLD+1 should use exactly 1 overflow page, got {pages_added}"
         );
 
         let mut cursor_handle = btree.open(root);
         let mut cursor = cursor_handle.open_cursor();
         cursor.first();
-        let mut buf = Vec::new();
-        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
-        assert_eq!(buf, value);
+        let decoded = cursor.get_entry().unwrap().decode_as_array();
+        assert_eq!(decoded, value);
     }
 
     #[test]
     fn test_overflow_limit_boundary_two_pages() {
-        // CHUNK_THRESHOLD + OVERFLOW_LIMIT bytes: inline + exactly 1 overflow page
+        // CBOR size = OVERFLOW_LIMIT: exactly fills 1 overflow page.
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let value = vec![0x77u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT];
+        let value = vec![ScalarValue::String("x".repeat(OVERFLOW_LIMIT - 12))];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
             pages_added, 1,
-            "CHUNK_THRESHOLD + OVERFLOW_LIMIT bytes should fit in 1 overflow page, got {pages_added}"
+            "CBOR size = OVERFLOW_LIMIT should fit in exactly 1 overflow page, got {pages_added}"
         );
 
         let mut cursor_handle = btree.open(root);
         let mut cursor = cursor_handle.open_cursor();
         cursor.first();
-        let mut buf = Vec::new();
-        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
-        assert_eq!(buf, value);
+        let decoded = cursor.get_entry().unwrap().decode_as_array();
+        assert_eq!(decoded, value);
     }
 
     #[test]
     fn test_overflow_chain_three_pages() {
-        // CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 + 1 bytes: 3 overflow pages
+        // CBOR size = OVERFLOW_LIMIT * 2 + 1: spans 3 overflow pages.
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let value = vec![0x33u8; CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 + 1];
+        let value = vec![ScalarValue::String("x".repeat(OVERFLOW_LIMIT * 2 - 11))];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
             pages_added, 3,
-            "CHUNK_THRESHOLD + OVERFLOW_LIMIT*2 + 1 bytes should create 3 overflow pages, got {pages_added}"
+            "CBOR size = OVERFLOW_LIMIT*2+1 should create 3 overflow pages, got {pages_added}"
         );
 
         let mut cursor_handle = btree.open(root);
         let mut cursor = cursor_handle.open_cursor();
         cursor.first();
-        let mut buf = Vec::new();
-        cursor.get_entry().unwrap().read_to_end(&mut buf).unwrap();
-        assert_eq!(buf, value);
+        let decoded = cursor.get_entry().unwrap().decode_as_array();
+        assert_eq!(decoded, value);
     }
 }

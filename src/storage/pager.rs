@@ -38,7 +38,7 @@ impl Default for ZeroPage {
     fn default() -> Self {
         Self {
             magic: 0x53514C69, // "SQLi"
-            format_version: 2, // CBOR format, catalog root hardcoded at page 1
+            format_version: 3, // CBOR format v3: Cell.values is Vec<ScalarValue> array
             free_list_head: None,
         }
     }
