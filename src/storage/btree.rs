@@ -109,10 +109,11 @@ const MIN_CELLS_PER_PAGE: usize = 4;
 /// Measured empirically — see `measure_cbor_framing_overhead` in node.rs (actual: 14 bytes).
 const LEAF_PAGE_BASE_FRAMING_BYTES: usize = 15;
 
-/// CBOR framing overhead per `Cell` (key bytes + all CBOR headers), excluding raw value data.
+/// CBOR framing overhead per `Cell` (key bytes + all CBOR headers), excluding the CBOR
+/// encoding of the values.
 ///
-/// Measured as `cbor_size(cell) - value_len` across CBOR length-prefix tier boundaries
-/// — see `measure_cbor_framing_overhead` in node.rs. Re-tune with:
+/// Measured as `cbor_size(cell) - cbor_size(values)` — see `measure_cbor_framing_overhead`
+/// in node.rs. Re-tune with:
 ///   cargo test measure_cbor_framing -- --nocapture
 ///
 /// For data-tree row cells (the only cells whose values can overflow):
@@ -120,26 +121,94 @@ const LEAF_PAGE_BASE_FRAMING_BYTES: usize = 15;
 ///   Index-tree keys are larger but index values are always empty, so they never
 ///   trigger overflow and are not subject to CHUNK_THRESHOLD.
 ///
-/// Overhead breakdown (worst case: value ≥ 256 bytes):
+/// Overhead breakdown:
 ///   1  outer CBOR array header
-///   1  key byte-string header  (8-byte key ≤ 23, so 1-byte CBOR length prefix)
+///   1  key byte-string header  (8-byte key ≤ 23 → 1-byte CBOR length prefix)
 ///   8  key data bytes
-///   3  value byte-string header (value ≥ 256 bytes → 3-byte CBOR length prefix)
 ///  ──
-///  13  total
+///  10  total  (value is now a CBOR array, not a byte-string; no wrapper header)
 ///
-/// Note: with serde_bytes the key header depends only on key LENGTH (not byte values),
-/// so high-valued key bytes no longer incur a per-byte varint penalty. Only the
-/// value length prefix still requires this tier-based accounting.
-const CELL_FRAMING_BYTES: usize = 13;
+/// (Previously 13 when Cell.value was a serde_bytes byte-string with a 3-byte header.)
+const CELL_FRAMING_BYTES: usize = 10;
 
-/// Maximum inline value bytes stored directly in a `Cell` on a leaf page.
+/// Maximum CBOR-encoded size of `values: Vec<ScalarValue>` stored inline in a `Cell`.
 /// Derived so that `MIN_CELLS_PER_PAGE` cells can always fit on one page.
-/// With PAGE_SIZE=4096: CHUNK_THRESHOLD = (4096 - 15) / 4 - 13 = 1007.
+/// With PAGE_SIZE=4096: CHUNK_THRESHOLD = (4096 - 15) / 4 - 10 = 1010.
 /// Typical SQL rows (< 500 bytes) now store inline with no overflow pages.
 const CHUNK_THRESHOLD: usize = (pager::PAGE_SIZE as usize - LEAF_PAGE_BASE_FRAMING_BYTES)
     / MIN_CELLS_PER_PAGE
     - CELL_FRAMING_BYTES;
+
+/// Conservative upper-bound estimate of `ciborium::ser::into_writer(&values, ...)` size.
+///
+/// Used in `Cursor::insert` to avoid serialisation entirely for rows that clearly
+/// fit inline. If the estimate exceeds `CHUNK_THRESHOLD` we fall back to a full
+/// serialisation and exact check — safe because the estimate always over-approximates.
+///
+/// ScalarValue uses serde's externally-tagged enum representation in CBOR:
+///   - unit variant `Null`  → text string "Null" (5 bytes)
+///   - newtype variants     → `{variant_name: value}` CBOR map
+///     * Boolean  → 1(map) + 8("Boolean") + 1(bool) = 10 bytes
+///     * Integer  → 1(map) + 8("Integer") + 1-9(i64) = 10-18 bytes
+///     * Floating → 1(map) + 9("Floating") + 9(f64) = 19 bytes
+///     * String   → 1(map) + 7("String") + header + len
+///     * Blob     → 1(map) + 5("Blob")   + header + len
+///
+/// The outer Vec uses 5 bytes for the array header (pessimistic; actual is 1-5).
+fn cbor_size_estimate(values: &[ScalarValue]) -> usize {
+    let mut n: usize = 5; // conservative CBOR array header (≤ 5 bytes for any length)
+    for v in values {
+        n += match v {
+            // Unit variant → text string of the variant name.
+            ScalarValue::Null => 5, // 0x64 + "Null"
+            // Newtype variants → one-entry CBOR map {key: value}.
+            ScalarValue::Boolean(_) => 10, // 1(map) + 8("Boolean") + 1(bool)
+            ScalarValue::Integer(i) => {
+                let abs = i.unsigned_abs();
+                let val = if abs <= 23 {
+                    1
+                } else if abs <= 0xFF {
+                    2
+                } else if abs <= 0xFFFF {
+                    3
+                } else if abs <= 0xFFFF_FFFF {
+                    5
+                } else {
+                    9
+                };
+                9 + val // 1(map) + 8("Integer" key) + val
+            }
+            ScalarValue::Floating(_) => 19, // 1(map) + 9("Floating" key) + 9(f64)
+            ScalarValue::String(s) => {
+                let len = s.len();
+                let hdr = if len <= 23 {
+                    1
+                } else if len <= 0xFF {
+                    2
+                } else if len <= 0xFFFF {
+                    3
+                } else {
+                    5
+                };
+                8 + hdr + len // 1(map) + 7("String" key) + header + len
+            }
+            ScalarValue::Blob(b) => {
+                let len = b.len();
+                let hdr = if len <= 23 {
+                    1
+                } else if len <= 0xFF {
+                    2
+                } else if len <= 0xFFFF {
+                    3
+                } else {
+                    5
+                };
+                6 + hdr + len // 1(map) + 5("Blob" key) + header + len
+            }
+        };
+    }
+    n
+}
 
 /// All cursor operations — both reads and writes use `RefMut<NodePageStore>`.
 impl<'a> Cursor<'a> {
@@ -168,15 +237,20 @@ impl<'a> Cursor<'a> {
             _ => None,
         };
 
-        // Transitional overflow check (item 135): pre-serialise to measure size.
-        // Item 136 replaces this with cbor_size_estimate to avoid the allocation
-        // for the common inline case.
-        let mut probe_buf = Vec::new();
-        ciborium::ser::into_writer(&values, &mut probe_buf).unwrap();
-        let (cell_values, continuation) = if probe_buf.len() > CHUNK_THRESHOLD {
-            probe!(database, overflow_write);
-            let cont_page = split_and_store(&mut *self.store, &probe_buf);
-            (vec![], Some(cont_page))
+        // Fast path: if the conservative estimate is within CHUNK_THRESHOLD, skip
+        // serialisation entirely — no allocation for the common inline case.
+        let (cell_values, continuation) = if cbor_size_estimate(&values) > CHUNK_THRESHOLD {
+            // Estimate says the row *might* overflow. Serialise exactly to confirm.
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(&values, &mut buf).unwrap();
+            if buf.len() > CHUNK_THRESHOLD {
+                probe!(database, overflow_write);
+                let cont_page = split_and_store(&mut *self.store, &buf);
+                (vec![], Some(cont_page))
+            } else {
+                // Estimate was pessimistic — row fits inline after all.
+                (values, None)
+            }
         } else {
             (values, None)
         };
@@ -1121,7 +1195,7 @@ mod test {
     use proptest::prelude::*;
     use std::collections::BTreeMap;
 
-    use super::{CursorPosition, CHUNK_THRESHOLD, OVERFLOW_LIMIT};
+    use super::{cbor_size_estimate, CursorPosition, CHUNK_THRESHOLD, OVERFLOW_LIMIT};
 
     #[test]
     fn test_create_blank() {
@@ -2008,6 +2082,63 @@ mod test {
             cursor.first();
             assert_eq!(cursor.cursor_state.position, CursorPosition::AtEnd);
             assert!(cursor.get_entry().is_none());
+        }
+    }
+
+    #[test]
+    fn test_cbor_size_estimate_is_upper_bound() {
+        // cbor_size_estimate must always >= actual CBOR size so the fast path is safe.
+        fn actual_size(values: &[ScalarValue]) -> usize {
+            let mut buf = Vec::new();
+            ciborium::ser::into_writer(values, &mut buf).unwrap();
+            buf.len()
+        }
+
+        let cases: Vec<Vec<ScalarValue>> = vec![
+            vec![],
+            vec![ScalarValue::Null],
+            vec![ScalarValue::Boolean(true)],
+            vec![ScalarValue::Boolean(false)],
+            vec![ScalarValue::Integer(0)],
+            vec![ScalarValue::Integer(23)],
+            vec![ScalarValue::Integer(24)],
+            vec![ScalarValue::Integer(255)],
+            vec![ScalarValue::Integer(256)],
+            vec![ScalarValue::Integer(i64::MAX)],
+            vec![ScalarValue::Integer(i64::MIN)],
+            vec![ScalarValue::Integer(-1)],
+            vec![ScalarValue::Integer(-24)],
+            vec![ScalarValue::Floating(3.14)],
+            vec![ScalarValue::String(String::new())],
+            vec![ScalarValue::String("x".to_string())],
+            vec![ScalarValue::String("x".repeat(23))],
+            vec![ScalarValue::String("x".repeat(24))],
+            vec![ScalarValue::String("x".repeat(255))],
+            vec![ScalarValue::String("x".repeat(256))],
+            vec![ScalarValue::String("x".repeat(1000))],
+            vec![ScalarValue::Blob(vec![])],
+            vec![ScalarValue::Blob(vec![0u8; 100])],
+            vec![
+                ScalarValue::Integer(1),
+                ScalarValue::String("hello".to_string()),
+            ],
+            vec![
+                ScalarValue::Null,
+                ScalarValue::Boolean(true),
+                ScalarValue::Integer(42),
+            ],
+        ];
+
+        for case in &cases {
+            let estimate = cbor_size_estimate(case);
+            let actual = actual_size(case);
+            assert!(
+                estimate >= actual,
+                "cbor_size_estimate under-estimated: estimate={} < actual={} for {:?}",
+                estimate,
+                actual,
+                case
+            );
         }
     }
 
