@@ -8,53 +8,74 @@ use super::page_id::PageId;
 /// Reads cell data from a leaf page, following overflow chains eagerly on
 /// construction.  After `new` returns the store borrow is released — no
 /// lifetime tie to the store.
-pub struct CellReader {
-    key: Vec<u8>,
-
-    // Owned buffer containing the complete (possibly multi-page) value.
-    buf: Vec<u8>,
-    buf_pos: usize,
+pub enum CellReader {
+    /// Cell is stored inline — values are available directly with no decode.
+    Inline {
+        key: Vec<u8>,
+        values: Vec<ScalarValue>,
+    },
+    /// Cell has an overflow chain — bytes are assembled eagerly; decode on
+    /// `decode_as_array`.
+    Overflow {
+        key: Vec<u8>,
+        buf: Vec<u8>,
+        buf_pos: usize,
+    },
 }
 
 impl std::io::Read for CellReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let available = self.buf.len() - self.buf_pos;
-        if available == 0 {
-            return Ok(0);
+        match self {
+            CellReader::Inline { .. } => Ok(0),
+            CellReader::Overflow {
+                buf: data, buf_pos, ..
+            } => {
+                let available = data.len() - *buf_pos;
+                if available == 0 {
+                    return Ok(0);
+                }
+                let n = available.min(buf.len());
+                buf[..n].copy_from_slice(&data[*buf_pos..*buf_pos + n]);
+                *buf_pos += n;
+                Ok(n)
+            }
         }
-        let to_copy = available.min(buf.len());
-        buf[..to_copy].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + to_copy]);
-        self.buf_pos += to_copy;
-        Ok(to_copy)
     }
 }
 
 impl CellReader {
     /// Construct a `CellReader` for the cell at `cell_idx` on `leaf_page_idx`.
     ///
-    /// All overflow pages are followed eagerly so the store borrow does not
-    /// outlive this function.  Returns `None` if the cell does not exist.
+    /// For inline cells the values are cloned from the page and no further I/O
+    /// is needed.  For overflow cells all overflow pages are followed eagerly so
+    /// the store borrow does not outlive this function.  Returns `None` if the
+    /// cell does not exist.
     pub fn new(
         store: &mut NodePageStore,
         leaf_page_idx: u32,
         cell_idx: usize,
     ) -> Option<CellReader> {
-        // Read the leaf page with a short-lived borrow.
-        let (key, mut buf, mut continuation) = {
+        let (key, values, continuation) = {
             let node = store.read(PageId(leaf_page_idx)).ok()?;
-            let leaf_page = node.leaf()?;
-            let cell = leaf_page.get_item_at_index(cell_idx)?;
+            let leaf = node.leaf()?;
+            let cell = leaf.get_item_at_index(cell_idx)?;
             (
                 cell.key().to_vec(),
-                cell.value().to_vec(),
+                cell.values().to_vec(),
                 cell.continuation(),
             )
         }; // node borrow ends here
 
-        // Eagerly follow the overflow chain.
-        while let Some(cont_page) = continuation {
+        if continuation.is_none() {
+            return Some(CellReader::Inline { key, values });
+        }
+
+        // Overflow path: assemble all bytes from the chain.
+        let mut buf = Vec::new();
+        let mut next = continuation;
+        while let Some(cont_page) = next {
             probe!(database, overflow_read, cont_page);
-            let (content, next) = {
+            let (content, continuation_next) = {
                 let node = store.read(PageId(cont_page)).ok()?;
                 let overflow = match node {
                     NodePage::OverflowPage(p) => p,
@@ -63,10 +84,10 @@ impl CellReader {
                 (overflow.value().to_vec(), overflow.continuation())
             }; // node borrow ends here
             buf.extend_from_slice(&content);
-            continuation = next;
+            next = continuation_next;
         }
 
-        Some(CellReader {
+        Some(CellReader::Overflow {
             key,
             buf,
             buf_pos: 0,
@@ -75,12 +96,20 @@ impl CellReader {
 
     /// Returns the raw key bytes for this cell.
     pub fn key(&self) -> &[u8] {
-        &self.key
+        match self {
+            CellReader::Inline { key, .. } => key,
+            CellReader::Overflow { key, .. } => key,
+        }
     }
 
     pub fn decode_as_array(&mut self) -> Vec<ScalarValue> {
-        probe!(database, cbor_row_decode);
-        ciborium::de::from_reader(self).unwrap()
+        match self {
+            CellReader::Inline { values, .. } => values.clone(),
+            CellReader::Overflow { .. } => {
+                probe!(database, cbor_row_decode);
+                ciborium::de::from_reader(self).unwrap()
+            }
+        }
     }
 }
 
@@ -97,17 +126,18 @@ mod tests {
         let mut btree = test.btree;
         let root_page = btree.create_tree();
 
-        // Insert a small value (no overflow)
         let key = 100u64;
-        let mut value = Vec::new();
-        ciborium::ser::into_writer(&vec![1, 2, 3], &mut value).unwrap();
+        let values = vec![
+            ScalarValue::Integer(1),
+            ScalarValue::Integer(2),
+            ScalarValue::Integer(3),
+        ];
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(key, value.clone());
+            cursor.insert_u64(key, values.clone());
         }
 
-        // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
@@ -116,9 +146,8 @@ mod tests {
             let mut reader = cursor.get_entry().unwrap();
             assert_eq!(reader.key(), crate::storage::encode_u64_key(key).as_slice());
 
-            let mut buf = Vec::new();
-            reader.read_to_end(&mut buf).unwrap();
-            assert_eq!(buf, value);
+            let decoded = reader.decode_as_array();
+            assert_eq!(decoded, values);
         }
     }
 
@@ -128,18 +157,16 @@ mod tests {
         let mut btree = test.btree;
         let root_page = btree.create_tree();
 
-        // Insert a value larger than CHUNK_THRESHOLD (55 bytes)
         let key = 200u64;
-        let large_value = vec![42u8; 100]; // 100 bytes
-        let mut value_json = Vec::new();
-        ciborium::ser::into_writer(&large_value, &mut value_json).unwrap();
+        // A string long enough to exceed CHUNK_THRESHOLD when CBOR-encoded
+        let large_string = "x".repeat(1100);
+        let values = vec![ScalarValue::String(large_string.clone())];
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(key, value_json.clone());
+            cursor.insert_u64(key, values.clone());
         }
 
-        // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
@@ -148,13 +175,8 @@ mod tests {
             let mut reader = cursor.get_entry().unwrap();
             assert_eq!(reader.key(), crate::storage::encode_u64_key(key).as_slice());
 
-            let mut buf = Vec::new();
-            reader.read_to_end(&mut buf).unwrap();
-            assert_eq!(buf, value_json);
-
-            // Verify the data deserializes correctly
-            let decoded: Vec<u8> = ciborium::de::from_reader(&buf[..]).unwrap();
-            assert_eq!(decoded, large_value);
+            let decoded = reader.decode_as_array();
+            assert_eq!(decoded, values);
         }
     }
 
@@ -164,18 +186,16 @@ mod tests {
         let mut btree = test.btree;
         let root_page = btree.create_tree();
 
-        // Insert a value that spans multiple overflow pages (> 155 bytes)
         let key = 300u64;
-        let very_large_value = vec![99u8; 300]; // 300 bytes
-        let mut value_json = Vec::new();
-        ciborium::ser::into_writer(&very_large_value, &mut value_json).unwrap();
+        // Large enough to span multiple overflow pages (> OVERFLOW_LIMIT bytes of CBOR)
+        let large_string = "y".repeat(5000);
+        let values = vec![ScalarValue::String(large_string.clone())];
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(key, value_json.clone());
+            cursor.insert_u64(key, values.clone());
         }
 
-        // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
@@ -184,13 +204,8 @@ mod tests {
             let mut reader = cursor.get_entry().unwrap();
             assert_eq!(reader.key(), crate::storage::encode_u64_key(key).as_slice());
 
-            let mut buf = Vec::new();
-            reader.read_to_end(&mut buf).unwrap();
-            assert_eq!(buf, value_json);
-
-            // Verify the data deserializes correctly
-            let decoded: Vec<u8> = ciborium::de::from_reader(&buf[..]).unwrap();
-            assert_eq!(decoded, very_large_value);
+            let decoded = reader.decode_as_array();
+            assert_eq!(decoded, values);
         }
     }
 
@@ -200,22 +215,18 @@ mod tests {
         let mut btree = test.btree;
         let root_page = btree.create_tree();
 
-        // Insert an array like [1, "alice", 30]
         let key = 400u64;
         let values = vec![
             ScalarValue::Integer(1),
             ScalarValue::String("alice".to_string()),
             ScalarValue::Integer(30),
         ];
-        let mut value_bytes = Vec::new();
-        ciborium::ser::into_writer(&values, &mut value_bytes).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(key, value_bytes.clone());
+            cursor.insert_u64(key, values.clone());
         }
 
-        // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
@@ -237,7 +248,6 @@ mod tests {
         let mut btree = test.btree;
         let root_page = btree.create_tree();
 
-        // Insert an array with various types
         let key = 500u64;
         let values = vec![
             ScalarValue::Integer(42),
@@ -246,15 +256,12 @@ mod tests {
             ScalarValue::Boolean(true),
             ScalarValue::Boolean(false),
         ];
-        let mut value_bytes = Vec::new();
-        ciborium::ser::into_writer(&values, &mut value_bytes).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(key, value_bytes.clone());
+            cursor.insert_u64(key, values.clone());
         }
 
-        // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
@@ -278,18 +285,14 @@ mod tests {
         let mut btree = test.btree;
         let root_page = btree.create_tree();
 
-        // Insert an empty array
         let key = 600u64;
         let values: Vec<ScalarValue> = vec![];
-        let mut value_bytes = Vec::new();
-        ciborium::ser::into_writer(&values, &mut value_bytes).unwrap();
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
-            cursor.insert_u64(key, value_bytes.clone());
+            cursor.insert_u64(key, values.clone());
         }
 
-        // Read it back with CellReader
         {
             let mut cursor_handle = btree.open(root_page);
             let mut cursor = cursor_handle.open_cursor();
@@ -299,6 +302,32 @@ mod tests {
             let decoded = reader.decode_as_array();
 
             assert_eq!(decoded.len(), 0);
+        }
+    }
+
+    /// Verify that a CellReader for an inline cell returns Ok(0) from io::Read —
+    /// the io::Read impl is only meaningful for overflow cells.
+    #[test]
+    fn test_inline_cell_read_returns_eof() {
+        let test = TestDb::default();
+        let mut btree = test.btree;
+        let root_page = btree.create_tree();
+
+        {
+            let mut cursor_handle = btree.open(root_page);
+            let mut cursor = cursor_handle.open_cursor();
+            cursor.insert_u64(1, vec![ScalarValue::Integer(99)]);
+        }
+
+        {
+            let mut cursor_handle = btree.open(root_page);
+            let mut cursor = cursor_handle.open_cursor();
+            cursor.first();
+
+            let mut reader = cursor.get_entry().unwrap();
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf).unwrap();
+            assert!(buf.is_empty(), "inline cells return no bytes via io::Read");
         }
     }
 }

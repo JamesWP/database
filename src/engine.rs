@@ -822,15 +822,13 @@ impl Engine {
                     .map(|reg| self.registers.get(*reg).scalar().unwrap().clone())
                     .collect();
 
-                let mut bytes = Vec::new();
                 probe!(database, cbor_row_encode);
-                ciborium::ser::into_writer(&scalar_values, &mut bytes).unwrap();
 
                 // Write to btree
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let rootpage = cursor.root_page();
                 let mut c = cursor.open_cursor();
-                c.insert_u64(key, bytes);
+                c.insert_u64(key, scalar_values);
                 drop(c);
 
                 // Advance the rowid cache so subsequent INSERTs skip the seek.
@@ -1490,16 +1488,13 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v0 = Vec::new();
-            let values = vec![ScalarValue::Integer(12345), ScalarValue::Integer(6789)];
-            ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert_u64(0, v0);
-            let mut v1 = Vec::new();
-            let values = vec![ScalarValue::Integer(12345)];
-            ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert_u64(1, v1.clone());
-            c.insert_u64(2, v1.clone());
-            c.insert_u64(3, v1);
+            c.insert_u64(
+                0,
+                vec![ScalarValue::Integer(12345), ScalarValue::Integer(6789)],
+            );
+            c.insert_u64(1, vec![ScalarValue::Integer(12345)]);
+            c.insert_u64(2, vec![ScalarValue::Integer(12345)]);
+            c.insert_u64(3, vec![ScalarValue::Integer(12345)]);
         }
 
         let r0 = Reg::new(0);
@@ -1538,16 +1533,22 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v0 = Vec::new();
-            let values = vec![ScalarValue::Integer(12345), ScalarValue::Integer(6789)];
-            ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert_u64(0, v0);
-            let mut v1 = Vec::new();
-            let values = vec![ScalarValue::Integer(12345), ScalarValue::Integer(0)];
-            ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert_u64(1, v1.clone());
-            c.insert_u64(2, v1.clone());
-            c.insert_u64(3, v1);
+            c.insert_u64(
+                0,
+                vec![ScalarValue::Integer(12345), ScalarValue::Integer(6789)],
+            );
+            c.insert_u64(
+                1,
+                vec![ScalarValue::Integer(12345), ScalarValue::Integer(0)],
+            );
+            c.insert_u64(
+                2,
+                vec![ScalarValue::Integer(12345), ScalarValue::Integer(0)],
+            );
+            c.insert_u64(
+                3,
+                vec![ScalarValue::Integer(12345), ScalarValue::Integer(0)],
+            );
         }
 
         let r0 = Reg::new(0);
@@ -1590,22 +1591,22 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v0 = Vec::new();
-            let values0 = vec![
-                ScalarValue::Integer(1),
-                ScalarValue::String("alice".to_string()),
-                ScalarValue::Integer(30),
-            ];
-            ciborium::ser::into_writer(&values0, &mut v0).unwrap();
-            c.insert_u64(0, v0);
-            let mut v1 = Vec::new();
-            let values1 = vec![
-                ScalarValue::Integer(2),
-                ScalarValue::String("bob".to_string()),
-                ScalarValue::Integer(25),
-            ];
-            ciborium::ser::into_writer(&values1, &mut v1).unwrap();
-            c.insert_u64(1, v1);
+            c.insert_u64(
+                0,
+                vec![
+                    ScalarValue::Integer(1),
+                    ScalarValue::String("alice".to_string()),
+                    ScalarValue::Integer(30),
+                ],
+            );
+            c.insert_u64(
+                1,
+                vec![
+                    ScalarValue::Integer(2),
+                    ScalarValue::String("bob".to_string()),
+                    ScalarValue::Integer(25),
+                ],
+            );
         }
 
         let r0 = Reg::new(0);
@@ -1677,14 +1678,14 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v0 = Vec::new();
-            let values = vec![ScalarValue::Integer(100), ScalarValue::Integer(200)];
-            ciborium::ser::into_writer(&values, &mut v0).unwrap();
-            c.insert_u64(0, v0);
-            let mut v1 = Vec::new();
-            let values = vec![ScalarValue::Integer(300), ScalarValue::Integer(400)];
-            ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert_u64(1, v1);
+            c.insert_u64(
+                0,
+                vec![ScalarValue::Integer(100), ScalarValue::Integer(200)],
+            );
+            c.insert_u64(
+                1,
+                vec![ScalarValue::Integer(300), ScalarValue::Integer(400)],
+            );
         }
 
         let r0 = Reg::new(0);
@@ -1797,18 +1798,9 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v1 = Vec::new();
-            let values = vec![ScalarValue::Integer(10)];
-            ciborium::ser::into_writer(&values, &mut v1).unwrap();
-            c.insert_u64(1, v1);
-            let mut v2 = Vec::new();
-            let values = vec![ScalarValue::Integer(20)];
-            ciborium::ser::into_writer(&values, &mut v2).unwrap();
-            c.insert_u64(2, v2);
-            let mut v5 = Vec::new();
-            let values = vec![ScalarValue::Integer(50)];
-            ciborium::ser::into_writer(&values, &mut v5).unwrap();
-            c.insert_u64(5, v5);
+            c.insert_u64(1, vec![ScalarValue::Integer(10)]);
+            c.insert_u64(2, vec![ScalarValue::Integer(20)]);
+            c.insert_u64(5, vec![ScalarValue::Integer(50)]);
         }
 
         let r_cursor = Reg::new(0);
@@ -1900,18 +1892,9 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v10 = Vec::new();
-            let values = vec![ScalarValue::Integer(100)];
-            ciborium::ser::into_writer(&values, &mut v10).unwrap();
-            c.insert_u64(10, v10);
-            let mut v20 = Vec::new();
-            let values = vec![ScalarValue::Integer(200)];
-            ciborium::ser::into_writer(&values, &mut v20).unwrap();
-            c.insert_u64(20, v20);
-            let mut v30 = Vec::new();
-            let values = vec![ScalarValue::Integer(300)];
-            ciborium::ser::into_writer(&values, &mut v30).unwrap();
-            c.insert_u64(30, v30);
+            c.insert_u64(10, vec![ScalarValue::Integer(100)]);
+            c.insert_u64(20, vec![ScalarValue::Integer(200)]);
+            c.insert_u64(30, vec![ScalarValue::Integer(300)]);
         }
 
         let r_cursor = Reg::new(0);
@@ -2061,18 +2044,9 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v10 = Vec::new();
-            let values = vec![ScalarValue::Integer(30)];
-            ciborium::ser::into_writer(&values, &mut v10).unwrap();
-            c.insert_u64(10, v10);
-            let mut v20 = Vec::new();
-            let values = vec![ScalarValue::Integer(10)];
-            ciborium::ser::into_writer(&values, &mut v20).unwrap();
-            c.insert_u64(20, v20);
-            let mut v30 = Vec::new();
-            let values = vec![ScalarValue::Integer(20)];
-            ciborium::ser::into_writer(&values, &mut v30).unwrap();
-            c.insert_u64(30, v30);
+            c.insert_u64(10, vec![ScalarValue::Integer(30)]);
+            c.insert_u64(20, vec![ScalarValue::Integer(10)]);
+            c.insert_u64(30, vec![ScalarValue::Integer(20)]);
         }
 
         let r_buffer = Reg::new(0);
@@ -2144,30 +2118,30 @@ mod test {
         {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
-            let mut v1 = Vec::new();
-            let values1 = vec![
-                ScalarValue::Integer(1),
-                ScalarValue::String("charlie".to_string()),
-                ScalarValue::Integer(25),
-            ];
-            ciborium::ser::into_writer(&values1, &mut v1).unwrap();
-            c.insert_u64(1, v1);
-            let mut v2 = Vec::new();
-            let values2 = vec![
-                ScalarValue::Integer(2),
-                ScalarValue::String("alice".to_string()),
-                ScalarValue::Integer(30),
-            ];
-            ciborium::ser::into_writer(&values2, &mut v2).unwrap();
-            c.insert_u64(2, v2);
-            let mut v3 = Vec::new();
-            let values3 = vec![
-                ScalarValue::Integer(3),
-                ScalarValue::String("bob".to_string()),
-                ScalarValue::Integer(28),
-            ];
-            ciborium::ser::into_writer(&values3, &mut v3).unwrap();
-            c.insert_u64(3, v3);
+            c.insert_u64(
+                1,
+                vec![
+                    ScalarValue::Integer(1),
+                    ScalarValue::String("charlie".to_string()),
+                    ScalarValue::Integer(25),
+                ],
+            );
+            c.insert_u64(
+                2,
+                vec![
+                    ScalarValue::Integer(2),
+                    ScalarValue::String("alice".to_string()),
+                    ScalarValue::Integer(30),
+                ],
+            );
+            c.insert_u64(
+                3,
+                vec![
+                    ScalarValue::Integer(3),
+                    ScalarValue::String("bob".to_string()),
+                    ScalarValue::Integer(28),
+                ],
+            );
         }
 
         // Bytecode for SELECT * FROM users ORDER BY name
@@ -2234,8 +2208,8 @@ mod test {
             let mut c = cursor.open_cursor();
             let key20 = storage::encode_integer_key(20);
             let key30 = storage::encode_integer_key(30);
-            c.insert(&key20, vec![2]);
-            c.insert(&key30, vec![3]);
+            c.insert(&key20, vec![ScalarValue::Integer(2)]);
+            c.insert(&key30, vec![ScalarValue::Integer(3)]);
         }
 
         let cursor_reg = Reg::new(0);
@@ -2277,8 +2251,8 @@ mod test {
             let mut c = cursor.open_cursor();
             let key20 = storage::encode_integer_key(20);
             let key30 = storage::encode_integer_key(30);
-            c.insert(&key20, vec![2]);
-            c.insert(&key30, vec![3]);
+            c.insert(&key20, vec![ScalarValue::Integer(2)]);
+            c.insert(&key30, vec![ScalarValue::Integer(3)]);
         }
 
         let cursor_reg = Reg::new(0);
@@ -2321,7 +2295,7 @@ mod test {
             let mut cursor = btree.open(root);
             let mut c = cursor.open_cursor();
             let key20 = storage::encode_integer_key(20);
-            c.insert(&key20, vec![2]);
+            c.insert(&key20, vec![ScalarValue::Integer(2)]);
         }
 
         let cursor_reg = Reg::new(0);

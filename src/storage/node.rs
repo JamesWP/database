@@ -385,6 +385,7 @@ mod test {
     use super::{Cell, NodePage, OverflowPage};
 
     use super::{InteriorNodePage, LeafNodePage, SearchResult};
+    use crate::engine::scalarvalue::ScalarValue;
 
     fn make_key(k: u64) -> Vec<u8> {
         k.to_be_bytes().to_vec()
@@ -395,11 +396,20 @@ mod test {
         let mut page = LeafNodePage::default();
 
         // []
-        page.insert_item_at_index(0, Cell::new(make_key(2), vec![0], None));
+        page.insert_item_at_index(
+            0,
+            Cell::new(make_key(2), vec![ScalarValue::Integer(0)], None),
+        );
         // [2]
-        page.insert_item_at_index(0, Cell::new(make_key(1), vec![0], None));
+        page.insert_item_at_index(
+            0,
+            Cell::new(make_key(1), vec![ScalarValue::Integer(0)], None),
+        );
         // [1, 2]
-        page.insert_item_at_index(2, Cell::new(make_key(3), vec![0], None));
+        page.insert_item_at_index(
+            2,
+            Cell::new(make_key(3), vec![ScalarValue::Integer(0)], None),
+        );
         // [1, 2, 3]
 
         assert_eq!(page.cells[0].key(), make_key(1).as_slice());
@@ -419,9 +429,18 @@ mod test {
     fn test_search() {
         let mut page = LeafNodePage::default();
 
-        page.insert_item_at_index(0, Cell::new(make_key(1), vec![0], None));
-        page.insert_item_at_index(1, Cell::new(make_key(2), vec![0], None));
-        page.insert_item_at_index(2, Cell::new(make_key(3), vec![0], None));
+        page.insert_item_at_index(
+            0,
+            Cell::new(make_key(1), vec![ScalarValue::Integer(0)], None),
+        );
+        page.insert_item_at_index(
+            1,
+            Cell::new(make_key(2), vec![ScalarValue::Integer(0)], None),
+        );
+        page.insert_item_at_index(
+            2,
+            Cell::new(make_key(3), vec![ScalarValue::Integer(0)], None),
+        );
 
         println!("Page: {:?}", page);
         assert_eq!(0, found_index(page.search(&make_key(1))));
@@ -440,9 +459,10 @@ mod test {
         for (idx, key) in keys.iter().enumerate() {
             let result = page.search(key);
             match result {
-                SearchResult::NotPresent(i) => {
-                    page.insert_item_at_index(i, Cell::new(key.clone(), vec![idx as u8], None))
-                }
+                SearchResult::NotPresent(i) => page.insert_item_at_index(
+                    i,
+                    Cell::new(key.clone(), vec![ScalarValue::Integer(idx as i64)], None),
+                ),
                 SearchResult::Found(_) => panic!("Unexpected duplicate"),
                 SearchResult::GoDown(_, _) => panic!(),
             }
@@ -468,8 +488,11 @@ mod test {
 
             for (key, value) in insertions {
                 let key_bytes = key.to_be_bytes().to_vec();
-                let value = value.to_be_bytes().to_vec();
-                let cell = Cell::new(key_bytes.clone(), value, None);
+                let cell = Cell::new(
+                    key_bytes.clone(),
+                    vec![ScalarValue::Integer(value as i64)],
+                    None,
+                );
                 let result = page.search(&key_bytes);
                 match result {
                     SearchResult::Found(idx) => page.set_item_at_index(idx, cell),
@@ -586,12 +609,14 @@ mod test {
             buf.len()
         }
 
-        // cell_overhead: everything in the CBOR cell except the raw value bytes.
-        // = 1 (outer array) + key_header + key_data + value_header
+        // cell_overhead: everything in the CBOR cell except the CBOR-encoded values array.
+        // = 1 (outer array header) + key_header + key_data
         // For data-tree cells key is always 8 bytes (u64 rowid); key_header is 1 byte.
-        // value_header grows across tier boundaries: 1 byte (≤23), 2 bytes (24–255), 3 bytes (256+).
-        let cell_overhead = |key_len: usize, value_len: usize| -> usize {
-            cbor_size(&Cell::new(vec![0u8; key_len], vec![0u8; value_len], None)) - value_len
+        // The values field is a CBOR array; its header is part of the values encoding.
+        let cell_overhead = |values: &Vec<ScalarValue>| -> usize {
+            let values_cbor_size = cbor_size(values);
+            let cell = Cell::new(vec![0u8; 8], values.clone(), None);
+            cbor_size(&cell) - values_cbor_size
         };
 
         let overflow_no_cont = NodePage::OverflowPage(OverflowPage::new(vec![], None));
@@ -611,12 +636,18 @@ mod test {
         let leaf_empty_size = cbor_size(&leaf_empty);
         let leaf_one_cell_size = cbor_size(&leaf_one_cell_page);
 
-        // Sweep value sizes across CBOR length-prefix tier boundaries for an 8-byte key.
-        // The overhead (cell_size - value_len) changes only at tier boundaries.
-        let tier_boundaries = [0usize, 23, 24, 255, 256, 65535];
-        let max_data_cell_overhead = tier_boundaries
+        // Sweep values of different types; overhead is always key+header framing = 10.
+        let sample_values: Vec<Vec<ScalarValue>> = vec![
+            vec![],
+            vec![ScalarValue::Integer(0)],
+            vec![ScalarValue::Integer(i64::MAX)],
+            vec![ScalarValue::String("x".repeat(256))],
+            vec![ScalarValue::String("x".repeat(65535))],
+            vec![ScalarValue::Null, ScalarValue::Boolean(true)],
+        ];
+        let max_data_cell_overhead = sample_values
             .iter()
-            .map(|&v| cell_overhead(8, v))
+            .map(|v| cell_overhead(v))
             .max()
             .unwrap();
 
@@ -637,12 +668,8 @@ mod test {
             "per-cell framing (leaf_one_cell - leaf_empty): {} bytes",
             leaf_one_cell_size - leaf_empty_size
         );
-        println!("--- cell_overhead(key=8, value=N) at tier boundaries ---");
-        for v in tier_boundaries {
-            println!("  value={v:5}: overhead={}", cell_overhead(8, v));
-        }
         println!(
-            "max_data_cell_overhead (key=8): {} bytes",
+            "max_data_cell_overhead (key=8, various values): {} bytes",
             max_data_cell_overhead
         );
 
@@ -663,7 +690,9 @@ mod test {
             leaf_empty_size <= 15,
             "leaf_empty framing ({leaf_empty_size}) exceeds constant LEAF_PAGE_BASE_FRAMING_BYTES=15"
         );
-        // CELL_FRAMING_BYTES = 13 must be >= max overhead across all value-size tiers
+        // CELL_FRAMING_BYTES = 13 must be >= max overhead across all value types.
+        // With format v3 the actual overhead is 10 (1 outer + 1 key-header + 8 key-data),
+        // which is <= 13 so the constant remains valid until item 136 lowers it to 10.
         assert!(
             max_data_cell_overhead <= 13,
             "max data-cell overhead ({max_data_cell_overhead}) exceeds constant CELL_FRAMING_BYTES=13"
