@@ -245,13 +245,16 @@ impl<'a> Cursor<'a> {
             ciborium::ser::into_writer(&values, &mut buf).unwrap();
             if buf.len() > CHUNK_THRESHOLD {
                 probe!(database, overflow_write);
+                probe!(database, cell_write_overflow);
                 let cont_page = split_and_store(&mut *self.store, &buf);
                 (vec![], Some(cont_page))
             } else {
                 // Estimate was pessimistic — row fits inline after all.
+                probe!(database, cell_write_inline);
                 (values, None)
             }
         } else {
+            probe!(database, cell_write_inline);
             (values, None)
         };
 

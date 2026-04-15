@@ -822,8 +822,6 @@ impl Engine {
                     .map(|reg| self.registers.get(*reg).scalar().unwrap().clone())
                     .collect();
 
-                probe!(database, cbor_row_encode);
-
                 // Write to btree
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let rootpage = cursor.root_page();
