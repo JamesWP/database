@@ -690,12 +690,12 @@ mod test {
             leaf_empty_size <= 15,
             "leaf_empty framing ({leaf_empty_size}) exceeds constant LEAF_PAGE_BASE_FRAMING_BYTES=15"
         );
-        // CELL_FRAMING_BYTES = 13 must be >= max overhead across all value types.
-        // With format v3 the actual overhead is 10 (1 outer + 1 key-header + 8 key-data),
-        // which is <= 13 so the constant remains valid until item 136 lowers it to 10.
+        // CELL_FRAMING_BYTES = 10: overhead = cbor_size(cell) - cbor_size(values).
+        // For an 8-byte key: 1 (outer array) + 1 (key header) + 8 (key data) = 10.
+        // The values CBOR array header is not counted here — it belongs to the values.
         assert!(
-            max_data_cell_overhead <= 13,
-            "max data-cell overhead ({max_data_cell_overhead}) exceeds constant CELL_FRAMING_BYTES=13"
+            max_data_cell_overhead <= 10,
+            "max data-cell overhead ({max_data_cell_overhead}) exceeds constant CELL_FRAMING_BYTES=10"
         );
     }
 
