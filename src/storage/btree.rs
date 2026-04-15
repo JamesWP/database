@@ -239,26 +239,27 @@ impl<'a> Cursor<'a> {
 
         // Fast path: if the conservative estimate is within CHUNK_THRESHOLD, skip
         // serialisation entirely — no allocation for the common inline case.
-        let (cell_values, continuation) = if cbor_size_estimate(&values) > CHUNK_THRESHOLD {
+        let cell = if cbor_size_estimate(&values) > CHUNK_THRESHOLD {
             // Estimate says the row *might* overflow. Serialise exactly to confirm.
             let mut buf = Vec::new();
             ciborium::ser::into_writer(&values, &mut buf).unwrap();
             if buf.len() > CHUNK_THRESHOLD {
                 probe!(database, overflow_write);
                 probe!(database, cell_write_overflow);
-                let cont_page = split_and_store(&mut *self.store, &buf);
-                (vec![], Some(cont_page))
+                // Store the first CHUNK_THRESHOLD bytes inline in the cell; send only
+                // the remaining bytes to the overflow chain.
+                let inline = buf[..CHUNK_THRESHOLD].to_vec();
+                let cont_page = split_and_store(&mut *self.store, &buf[CHUNK_THRESHOLD..]);
+                Cell::new_overflow(key.to_vec(), inline, cont_page)
             } else {
                 // Estimate was pessimistic — row fits inline after all.
                 probe!(database, cell_write_inline);
-                (values, None)
+                Cell::new(key.to_vec(), values, None)
             }
         } else {
             probe!(database, cell_write_inline);
-            (values, None)
+            Cell::new(key.to_vec(), values, None)
         };
-
-        let cell = Cell::new(key.to_vec(), cell_values, continuation);
 
         let mut stack = Vec::new();
         stack.push(self.cursor_state.root_page);
@@ -2659,7 +2660,9 @@ mod test {
 
     #[test]
     fn test_overflow_limit_boundary_two_pages() {
-        // CBOR size = OVERFLOW_LIMIT: exactly fills 1 overflow page.
+        // CBOR size = OVERFLOW_LIMIT.  With prefix-inline: first CHUNK_THRESHOLD bytes stored
+        // in cell, remaining OVERFLOW_LIMIT - CHUNK_THRESHOLD bytes sent to overflow chain.
+        // overflow bytes = 4052 - 1010 = 3042 < OVERFLOW_LIMIT → exactly 1 overflow page.
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
@@ -2668,7 +2671,7 @@ mod test {
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
             pages_added, 1,
-            "CBOR size = OVERFLOW_LIMIT should fit in exactly 1 overflow page, got {pages_added}"
+            "overflow bytes = OVERFLOW_LIMIT - CHUNK_THRESHOLD should use 1 overflow page, got {pages_added}"
         );
 
         let mut cursor_handle = btree.open(root);
@@ -2680,16 +2683,22 @@ mod test {
 
     #[test]
     fn test_overflow_chain_three_pages() {
-        // CBOR size = OVERFLOW_LIMIT * 2 + 1: spans 3 overflow pages.
+        // With prefix-inline: overflow bytes = CBOR size - CHUNK_THRESHOLD.
+        // For 3 overflow pages: overflow bytes > 2 * OVERFLOW_LIMIT.
+        // String length = CHUNK_THRESHOLD + OVERFLOW_LIMIT*2 - 11
+        //   → CBOR = CHUNK_THRESHOLD + OVERFLOW_LIMIT*2 + 1
+        //   → overflow bytes = OVERFLOW_LIMIT*2 + 1 → 3 pages.
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let value = vec![ScalarValue::String("x".repeat(OVERFLOW_LIMIT * 2 - 11))];
+        let value = vec![ScalarValue::String(
+            "x".repeat(CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 - 11),
+        )];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
             pages_added, 3,
-            "CBOR size = OVERFLOW_LIMIT*2+1 should create 3 overflow pages, got {pages_added}"
+            "overflow bytes = OVERFLOW_LIMIT*2+1 should create 3 overflow pages, got {pages_added}"
         );
 
         let mut cursor_handle = btree.open(root);
