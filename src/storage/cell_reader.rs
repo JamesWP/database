@@ -104,9 +104,12 @@ impl CellReader {
 
     pub fn decode_as_array(&mut self) -> Vec<ScalarValue> {
         match self {
-            CellReader::Inline { values, .. } => values.clone(),
+            CellReader::Inline { values, .. } => {
+                probe!(database, cell_read_inline);
+                values.clone()
+            }
             CellReader::Overflow { .. } => {
-                probe!(database, cbor_row_decode);
+                probe!(database, cbor_overflow_row_decode);
                 ciborium::de::from_reader(self).unwrap()
             }
         }
