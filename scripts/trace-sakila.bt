@@ -26,10 +26,13 @@ usdt:./target/release/database:database:row_yield            { @row_yield++;    
 
 // ─── USDT: CBOR encode / decode ──────────────────────────────────────────────
 
-usdt:./target/release/database:database:cbor_page_encode     { @cbor_page_encode++;     }
-usdt:./target/release/database:database:cbor_page_decode     { @cbor_page_decode++;     }
-usdt:./target/release/database:database:cbor_row_encode      { @cbor_row_encode++;      }
-usdt:./target/release/database:database:cbor_row_decode      { @cbor_row_decode++;      }
+usdt:./target/release/database:database:cbor_page_encode                  { @cbor_page_encode++;                  }
+usdt:./target/release/database:database:cbor_page_decode                  { @cbor_page_decode++;                  }
+usdt:./target/release/database:database:cell_write_inline                 { @cell_write_inline++;                 }
+usdt:./target/release/database:database:cell_write_overflow               { @cell_write_overflow++;               }
+usdt:./target/release/database:database:cbor_size_estimate_false_positive { @cbor_size_estimate_false_positive++; }
+usdt:./target/release/database:database:cell_read_inline                  { @cell_read_inline++;                  }
+usdt:./target/release/database:database:cbor_overflow_row_decode          { @cbor_overflow_row_decode++;          }
 
 // ─── USDT: storage / pager ───────────────────────────────────────────────────
 
@@ -121,10 +124,13 @@ interval:s:1 {
     printf("  delete_cursor:  %lld\n", @engine_delete_cursor);
     printf("  row_yield:      %lld\n", @row_yield);
     printf("  -- CBOR --\n");
-    printf("  page_encode:    %lld\n", @cbor_page_encode);
-    printf("  page_decode:    %lld\n", @cbor_page_decode);
-    printf("  row_encode:     %lld\n", @cbor_row_encode);
-    printf("  row_decode:     %lld\n", @cbor_row_decode);
+    printf("  page_encode:              %lld\n", @cbor_page_encode);
+    printf("  page_decode:              %lld\n", @cbor_page_decode);
+    printf("  cell_write_inline:        %lld\n", @cell_write_inline);
+    printf("  cell_write_overflow:      %lld\n", @cell_write_overflow);
+    printf("  estimate_false_positive:  %lld\n", @cbor_size_estimate_false_positive);
+    printf("  cell_read_inline:         %lld\n", @cell_read_inline);
+    printf("  overflow_row_decode:      %lld\n", @cbor_overflow_row_decode);
     printf("  -- pager --\n");
     printf("  page_read:      %lld\n", @page_read);
     printf("  cache_hit:      %lld\n", @page_read_cache_hit);
@@ -182,10 +188,13 @@ END {
     printf("  row_yield:      %lld\n", @row_yield);
 
     printf("\n  [CBOR]\n");
-    printf("  page_encode:    %lld\n", @cbor_page_encode);
-    printf("  page_decode:    %lld\n", @cbor_page_decode);
-    printf("  row_encode:     %lld\n", @cbor_row_encode);
-    printf("  row_decode:     %lld\n", @cbor_row_decode);
+    printf("  page_encode:              %lld\n", @cbor_page_encode);
+    printf("  page_decode:              %lld\n", @cbor_page_decode);
+    printf("  cell_write_inline:        %lld\n", @cell_write_inline);
+    printf("  cell_write_overflow:      %lld\n", @cell_write_overflow);
+    printf("  estimate_false_positive:  %lld\n", @cbor_size_estimate_false_positive);
+    printf("  cell_read_inline:         %lld\n", @cell_read_inline);
+    printf("  overflow_row_decode:      %lld\n", @cbor_overflow_row_decode);
 
     printf("\n  [pager]\n");
     printf("  page_read:      %lld\n", @page_read);
