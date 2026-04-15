@@ -91,7 +91,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **BA** | Eliminate Page Clones | 3 | [phase-ba-arc-page-cache.md](completed/phase-ba-arc-page-cache.md) | Superseded by BB |
 | **BB** | Storage Layer Redesign: NodePageStore | 5 | [phase-bb-node-page-store.md](completed/phase-bb-node-page-store.md) | Completed |
 | **BC** | Lexer Performance | 2 | [phase-bc-lexer-perf.md](completed/phase-bc-lexer-perf.md) | Completed |
-| **BD** | Collapse Row Encoding: Eliminate Double-CBOR | 3 | [phase-bd-collapse-row-encoding.md](phase-bd-collapse-row-encoding.md) | Planned |
+| **BD** | Collapse Row Encoding: Eliminate Double-CBOR | 3 | [phase-bd-collapse-row-encoding.md](completed/phase-bd-collapse-row-encoding.md) | Completed |
 | **BE** | Cache Parsed Table Schema: Eliminate DDL Re-parsing | 3 | [phase-be-schema-cache.md](phase-be-schema-cache.md) | Planned |
 ## Sakila Compatibility
 
