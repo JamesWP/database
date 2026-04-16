@@ -71,7 +71,12 @@ impl NodePageStore {
                  Please recreate your database."
                     .into(),
             )),
-            Some(3) => Ok(()),
+            Some(3) => Err(Error::FormatError(
+                "Database format version 3 is no longer supported. \
+                 Please recreate your database."
+                    .into(),
+            )),
+            Some(4) => Ok(()),
             Some(v) => Err(Error::FormatError(format!(
                 "Unknown database format version {}. \
                  This database may have been created by a newer version.",
@@ -148,11 +153,15 @@ impl NodePageStore {
             let node = self.cache.remove(&id).expect("dirty page must be in cache");
             let (bytes, node) = match encode_page(node) {
                 Ok(r) => r,
-                Err(Error::PageFull(_node)) => {
+                Err(Error::PageFull(node)) => {
+                    let mut cbor = Vec::new();
+                    let _ = ciborium::ser::into_writer(&node, &mut cbor);
+                    let b64 = cbor_to_base64(&cbor);
                     panic!(
                         "NodePageStore: page {:?} overflowed at flush — \
-                         cbor_size_estimate() missed this case",
-                        id
+                         cbor_size_estimate() missed this case.\n\
+                         Page contents (CBOR base64): {}",
+                        id, b64
                     );
                 }
                 Err(e) => return Err(e),
@@ -261,6 +270,26 @@ fn encode_page(node: NodePage) -> Result<([u8; PAGE_SIZE as usize], NodePage), E
             }
         }
     }
+}
+
+// ── base64 helper ────────────────────────────────────────────────────────────
+
+/// Encode `bytes` as standard base64 (RFC 4648, with `=` padding).
+/// Used in panic diagnostics — no external crate needed.
+fn cbor_to_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(n >> 18) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 { ALPHABET[((n >> 6) & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { ALPHABET[(n & 0x3F) as usize] as char } else { '=' });
+    }
+    out
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

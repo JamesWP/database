@@ -38,7 +38,7 @@ impl Default for ZeroPage {
     fn default() -> Self {
         Self {
             magic: 0x53514C69, // "SQLi"
-            format_version: 3, // CBOR format v3: typed Cell.values + overflow prefix-inline
+            format_version: 4, // CBOR format v4: variable-length key size estimate fix
             free_list_head: None,
         }
     }
