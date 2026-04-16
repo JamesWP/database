@@ -431,16 +431,19 @@ impl OverflowPage {
 /// Mirrors the logic in `btree.rs::cbor_size_estimate` (for the values portion)
 /// plus the per-cell framing constants.  Must never underestimate.
 fn cell_cbor_size_estimate(cell: &Cell) -> usize {
+    let key_len = cell.key().len();
+    // CBOR byte-string header: 1 byte for ≤ 23, 2 for ≤ 255, 3 for ≤ 65535, 5 otherwise.
+    let key_hdr = if key_len <= 23 { 1 } else if key_len <= 0xFF { 2 } else if key_len <= 0xFFFF { 3 } else { 5 };
     if cell.continuation().is_some() {
         // Overflow cell: [key_bytes, inline_bytes, u32_cont]
-        //   1 (outer array) + 1 (key hdr, 8-byte key ≤ 23) + 8 (key)
+        //   1 (outer array) + key_hdr + key_len
         //   + 3 (bytes hdr, inline_bytes > 255) + inline_bytes.len()
         //   + 5 (u32, worst-case 5 bytes)
-        1 + 1 + 8 + 3 + cell.inline_bytes().len() + 5
+        1 + key_hdr + key_len + 3 + cell.inline_bytes().len() + 5
     } else {
         // Inline cell: [key_bytes, values_array]
-        //   10 = CELL_FRAMING_BYTES (outer array + key hdr + 8-byte key)
-        10 + scalar_values_cbor_size_estimate(cell.values())
+        //   1 (outer array) + key_hdr + key_len + values
+        1 + key_hdr + key_len + scalar_values_cbor_size_estimate(cell.values())
     }
 }
 
@@ -470,6 +473,7 @@ fn scalar_values_cbor_size_estimate(values: &[ScalarValue]) -> usize {
                 8 + hdr + len
             }
             ScalarValue::Blob(b) => {
+                // Blob uses #[serde(with = "serde_bytes")] → CBOR byte string.
                 let len = b.len();
                 let hdr = if len <= 23 { 1 } else if len <= 0xFF { 2 }
                           else if len <= 0xFFFF { 3 } else { 5 };
@@ -872,18 +876,189 @@ mod test {
         }
     }
 
-    proptest! {
-            #[test]
-            fn test_interior_page_split(interior_num_edges in 4u64..150) {
-                let num_inserts = interior_num_edges-2; // there are already two edges in the interior page
-                let mut interior_node = InteriorNodePage::new(1, make_key(1), 1);
-                for page in 0..num_inserts {
-                    interior_node.insert_child_page(make_key(page+2), 1);
+    /// Regression: estimator previously hardcoded 8-byte keys, undercounting pages
+    /// where index cells carry long composite keys (e.g. 51 bytes).
+    ///
+    /// Parametric form tests the general fix; the exact CBOR binary that triggered
+    /// the flush panic (136 cells, 51-byte keys, 7495 encoded bytes) is stored in
+    /// tests/fixtures/panic_page_cbor.bin and loaded with include_bytes!.
+    #[test]
+    fn test_leaf_cbor_size_estimate_long_keys() {
+        fn real_cbor_size(page: &NodePage) -> usize {
+            let mut buf = vec![];
+            ciborium::ser::into_writer(page, &mut buf).unwrap();
+            buf.len()
+        }
+
+        // Parametric: various key lengths, including the 51-byte index composite key.
+        for key_len in [24usize, 51, 100, 255, 256] {
+            for cell_count in [1usize, 50, 136] {
+                let mut leaf = LeafNodePage::default();
+                for i in 0..cell_count {
+                    leaf.insert_item_at_index(i, Cell::new(vec![0u8; key_len], vec![], None));
                 }
-                let (left, right) = interior_node.split();
-    // Both sides should be within 1 key of each other
-                let diff = (left.keys.len() as i64 - right.keys.len() as i64).unsigned_abs();
-                prop_assert!(diff <= 1);
+                let page = NodePage::Leaf(leaf);
+                let estimate = page.cbor_size_estimate();
+                let actual = real_cbor_size(&page);
+                assert!(
+                    estimate >= actual,
+                    "estimate ({estimate}) < actual ({actual}) for key_len={key_len} cell_count={cell_count}"
+                );
             }
         }
+
+        // Exact CBOR page that triggered the flush panic.
+        let cbor = include_bytes!("../../tests/fixtures/panic_page_cbor.bin");
+        let page: NodePage =
+            ciborium::de::from_reader(cbor.as_slice()).expect("failed to decode panic page");
+        let estimate = page.cbor_size_estimate();
+        let actual = real_cbor_size(&page);
+        assert!(
+            estimate >= actual,
+            "estimate ({estimate}) < actual ({actual}) for panic page (136 cells, 51-byte keys)"
+        );
+    }
+
+
+    proptest! {
+        #[test]
+        fn test_interior_page_split(interior_num_edges in 4u64..150) {
+            let num_inserts = interior_num_edges - 2;
+            let mut interior_node = InteriorNodePage::new(1, make_key(1), 1);
+            for page in 0..num_inserts {
+                interior_node.insert_child_page(make_key(page + 2), 1);
+            }
+            let (left, right) = interior_node.split();
+            // Both sides should be within 1 key of each other
+            let diff = (left.keys.len() as i64 - right.keys.len() as i64).unsigned_abs();
+            prop_assert!(diff <= 1);
+        }
+    }
+
+    // ── Size-estimate proptests ───────────────────────────────────────────────
+    //
+    // One proptest per estimation layer, each verifying the invariant:
+    //   estimate >= actual_cbor_size
+    //
+    // Layer hierarchy (bottom → top):
+    //   1. scalar_values_cbor_size_estimate  — values inside a cell
+    //   2. cell_cbor_size_estimate           — one cell (inline or overflow)
+    //   3. LeafNodePage::cbor_size_estimate  — full leaf page
+    //   4. InteriorNodePage::cbor_size_estimate — full interior page
+
+    fn arb_scalar_value() -> impl Strategy<Value = ScalarValue> {
+        prop_oneof![
+            Just(ScalarValue::Null),
+            any::<bool>().prop_map(ScalarValue::Boolean),
+            any::<i64>().prop_map(ScalarValue::Integer),
+            // Use a bounded finite range — avoids NaN/Inf edge cases in serialization.
+            (-1.0e15f64..1.0e15f64).prop_map(ScalarValue::Floating),
+            prop::string::string_regex("[a-zA-Z0-9 ]{0,300}").unwrap()
+                .prop_map(ScalarValue::String),
+            prop::collection::vec(any::<u8>(), 0..=300usize).prop_map(ScalarValue::Blob),
+        ]
+    }
+
+    /// Layer 1: scalar_values_cbor_size_estimate
+    proptest! {
+        #[test]
+        fn proptest_scalar_values_estimate(
+            values in prop::collection::vec(arb_scalar_value(), 0..=20usize)
+        ) {
+            let estimate = super::scalar_values_cbor_size_estimate(&values);
+            let mut buf = vec![];
+            ciborium::ser::into_writer(&values, &mut buf).unwrap();
+            prop_assert!(
+                estimate >= buf.len(),
+                "estimate={estimate} actual={} values={values:?}", buf.len()
+            );
+        }
+    }
+
+    /// Layer 2: cell_cbor_size_estimate — inline and overflow cells with
+    /// arbitrary key lengths (the bug was a hardcoded 8-byte key assumption).
+    proptest! {
+        #[test]
+        fn proptest_cell_estimate(
+            key        in prop::collection::vec(any::<u8>(), 0..=300usize),
+            values     in prop::collection::vec(arb_scalar_value(), 0..=10usize),
+            // Some(inline_bytes, cont_page) → overflow cell; None → inline cell.
+            overflow   in prop::option::of(
+                (prop::collection::vec(any::<u8>(), 0..=1100usize), any::<u32>())
+            ),
+        ) {
+            let cell = if let Some((inline_bytes, cont)) = overflow {
+                Cell::new_overflow(key, inline_bytes, cont)
+            } else {
+                Cell::new(key, values, None)
+            };
+            let estimate = super::cell_cbor_size_estimate(&cell);
+            let mut buf = vec![];
+            ciborium::ser::into_writer(&cell, &mut buf).unwrap();
+            prop_assert!(
+                estimate >= buf.len(),
+                "estimate={estimate} actual={}", buf.len()
+            );
+        }
+    }
+
+    /// Layer 3: LeafNodePage::cbor_size_estimate — arbitrary cells including
+    /// long keys (the direct regression layer for the panic-page bug).
+    proptest! {
+        #[test]
+        fn proptest_leaf_page_estimate(
+            cells in prop::collection::vec(
+                (
+                    prop::collection::vec(any::<u8>(), 0..=300usize),
+                    prop::collection::vec(arb_scalar_value(), 0..=10usize),
+                ),
+                0..=50usize,
+            ),
+        ) {
+            let mut leaf = LeafNodePage::default();
+            for (i, (key, values)) in cells.into_iter().enumerate() {
+                leaf.insert_item_at_index(i, Cell::new(key, values, None));
+            }
+            let page = NodePage::Leaf(leaf);
+            let estimate = page.cbor_size_estimate();
+            let mut buf = vec![];
+            ciborium::ser::into_writer(&page, &mut buf).unwrap();
+            prop_assert!(
+                estimate >= buf.len(),
+                "estimate={estimate} actual={}", buf.len()
+            );
+        }
+    }
+
+    /// Layer 4: InteriorNodePage::cbor_size_estimate — arbitrary key lengths
+    /// and key counts.
+    proptest! {
+        #[test]
+        fn proptest_interior_page_estimate(
+            n_extra_keys in 0usize..=50usize,
+            key_len      in 1usize..=300usize,
+        ) {
+            // Build keys as zero-padded buffers whose last N bytes encode the index,
+            // ensuring ascending order and uniqueness.
+            fn indexed_key(i: usize, len: usize) -> Vec<u8> {
+                let mut k = vec![0u8; len];
+                let idx = (i as u64).to_be_bytes();
+                let copy = len.min(8);
+                k[len - copy..].copy_from_slice(&idx[8 - copy..]);
+                k
+            }
+            let mut node = InteriorNodePage::new(0, indexed_key(0, key_len), 1);
+            for i in 1..=n_extra_keys {
+                node.insert_child_page(indexed_key(i, key_len), (i + 2) as u32);
+            }
+            let page = NodePage::Interior(node);
+            let estimate = page.cbor_size_estimate();
+            let mut buf = vec![];
+            ciborium::ser::into_writer(&page, &mut buf).unwrap();
+            prop_assert!(
+                estimate >= buf.len(),
+                "estimate={estimate} actual={}", buf.len()
+            );
+        }
+    }
 }
