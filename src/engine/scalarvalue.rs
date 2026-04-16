@@ -5,7 +5,7 @@ pub enum ScalarValue {
     Floating(f64),
     Boolean(bool),
     String(String),
-    Blob(Vec<u8>),
+    Blob(#[serde(with = "serde_bytes")] Vec<u8>),
     Null,
 }
 
