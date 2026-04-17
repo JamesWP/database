@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0295fbf63e63dc73eb4f29aa44bcb3ef3f9fe73c747be9d6ecf98f72414f503f # shrinks to values = [Blob([24, 24, 24, 24, 24])]
+cc 89f9b4291632a48626acd750b69ba69cd04b5debeb9dc92d6ad31aac24a7984b # shrinks to key = [], values = [Blob([24, 24, 24, 24, 24])], overflow = None
+cc f62a8dfb8dfca3ab9e4ded15b88b0cf061041c8f286c9598cc22edff6d32352b # shrinks to cells = [([], [Blob([24, 24, 24, 24, 24, 24, 24, 24])])]
