@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use probe::probe;
 
-use crate::frontend::ast::Statement;
+use crate::frontend::ast::{ColumnConstraint, DataType, DefaultValue, Statement};
 use crate::frontend::parse;
 
 use super::cell_reader::CellReader;
@@ -11,6 +11,23 @@ use super::page_id::PageId;
 
 /// The fixed root page of the catalog B-tree (always page 1).
 pub(super) const CATALOG_ROOT: PageId = PageId(1);
+
+/// Parsed column metadata extracted once during `CatalogSnapshot::build()`.
+#[derive(Debug, Clone)]
+pub struct ColumnInfo {
+    pub name: String,
+    pub data_type: Option<DataType>,
+    pub default: Option<DefaultValue>,
+    pub primary_key: bool,
+    pub unique: bool,
+}
+
+/// Parsed table metadata stored in the catalog snapshot.
+#[derive(Debug, Clone)]
+pub struct TableInfo {
+    pub rootpage: u32,
+    pub columns: Vec<ColumnInfo>,
+}
 
 /// Index metadata extracted from the catalog B-tree.
 #[derive(Debug, Clone)]
@@ -33,6 +50,8 @@ pub struct CatalogSnapshot {
     pub(super) by_rootpage: HashMap<u32, String>,
     /// table name → all indexes for that table
     pub indexes: HashMap<String, Vec<IndexInfo>>,
+    /// table name → pre-parsed table metadata (populated at build time)
+    pub parsed_tables: HashMap<String, TableInfo>,
 }
 
 impl CatalogSnapshot {
@@ -61,6 +80,9 @@ impl CatalogSnapshot {
             match obj_type {
                 "table" => {
                     snapshot.by_rootpage.insert(rootpage, name.clone());
+                    if let Some(info) = parse_table_info(rootpage, &sql) {
+                        snapshot.parsed_tables.insert(name.clone(), info);
+                    }
                     snapshot.tables.insert(name, (rootpage, sql));
                 }
                 "index" => {
@@ -89,6 +111,13 @@ impl CatalogSnapshot {
         self.tables.get(table_name).cloned()
     }
 
+    /// Return the pre-parsed table metadata for `table_name`, or `None` if not found.
+    #[inline(never)]
+    pub fn lookup_table_info(&self, table_name: &str) -> Option<&TableInfo> {
+        probe!(database, catalog_lookup_table_info);
+        self.parsed_tables.get(table_name)
+    }
+
     /// Reverse lookup: find the table name for a given root page.
     #[inline(never)]
     pub fn lookup_table_by_rootpage(&self, rootpage: u32) -> Option<String> {
@@ -102,6 +131,28 @@ impl CatalogSnapshot {
         probe!(database, catalog_lookup_indexes);
         self.indexes.get(table_name).cloned().unwrap_or_default()
     }
+}
+
+fn parse_table_info(rootpage: u32, sql: &str) -> Option<TableInfo> {
+    let ct = match parse(sql) {
+        Ok(Statement::CreateTable(ct)) => ct,
+        _ => return None,
+    };
+    Some(TableInfo {
+        rootpage,
+        columns: ct
+            .columns
+            .into_iter()
+            .map(|col| ColumnInfo {
+                name: col.name,
+                data_type: col.type_name,
+                default: col.default,
+                primary_key: col.constraints.contains(&ColumnConstraint::PrimaryKey),
+                unique: col.constraints.contains(&ColumnConstraint::Unique)
+                    || col.constraints.contains(&ColumnConstraint::PrimaryKey),
+            })
+            .collect(),
+    })
 }
 
 /// Extract column names from an index DDL string by parsing it with the SQL

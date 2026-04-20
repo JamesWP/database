@@ -88,6 +88,37 @@ mod tests {
         assert!(cat.catalog().lookup_table("gamma").is_some());
     }
 
+    // ---- lookup_table_info ----
+
+    #[test]
+    fn test_lookup_table_info_basic() {
+        use crate::frontend::ast::DataType;
+        let mut cat = TempCatalog::new();
+        let rootpage = cat.create_tree();
+        cat.insert_entry(
+            "table",
+            "users",
+            "users",
+            rootpage,
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)",
+        );
+        let snap = cat.catalog();
+        let info = snap.lookup_table_info("users").expect("info missing");
+        assert_eq!(info.rootpage, rootpage);
+        assert_eq!(info.columns[0].name, "id");
+        assert!(info.columns[0].primary_key);
+        assert!(info.columns[0].unique);
+        assert_eq!(info.columns[1].name, "name");
+        assert_eq!(info.columns[1].data_type, Some(DataType::Text));
+        assert!(!info.columns[1].primary_key);
+    }
+
+    #[test]
+    fn test_lookup_table_info_not_found_returns_none() {
+        let cat = TempCatalog::new();
+        assert!(cat.catalog().lookup_table_info("nonexistent").is_none());
+    }
+
     // ---- lookup_table_by_rootpage ----
 
     #[test]
