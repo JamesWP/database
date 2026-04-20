@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use crate::frontend::ast::{ColumnConstraint, DataType, DefaultValue, Statement};
-use crate::frontend::parse;
+use crate::frontend::ast::{DataType, DefaultValue};
 use crate::storage::BTree;
 
 use super::PlanError;
@@ -115,34 +114,24 @@ mod tests {
 }
 
 pub fn resolve_table(table_name: &str, catalog: &BTree) -> Result<Table, PlanError> {
-    let (rootpage, sql) = catalog
-        .catalog()
-        .lookup_table(table_name)
+    let snap = catalog.catalog();
+    let info = snap
+        .lookup_table_info(table_name)
         .ok_or_else(|| PlanError::TableNotFound(table_name.to_string()))?;
-
-    // Parse the stored CREATE TABLE DDL to extract column definitions
-    let stmt = parse(&sql).map_err(|_| PlanError::UnsupportedStatement)?;
-    let create = match stmt {
-        Statement::CreateTable(c) => c,
-        _ => return Err(PlanError::UnsupportedStatement),
-    };
-
-    let columns = create
-        .columns
-        .into_iter()
-        .map(|col| Column {
-            name: col.name,
-            data_type: col.type_name,
-            default: col.default,
-            primary_key: col.constraints.contains(&ColumnConstraint::PrimaryKey),
-            unique: col.constraints.contains(&ColumnConstraint::Unique)
-                || col.constraints.contains(&ColumnConstraint::PrimaryKey),
-        })
-        .collect();
 
     Ok(Table {
         name: table_name.to_string(),
-        rootpage,
-        columns,
+        rootpage: info.rootpage,
+        columns: info
+            .columns
+            .iter()
+            .map(|col| Column {
+                name: col.name.clone(),
+                data_type: col.data_type.clone(),
+                default: col.default.clone(),
+                primary_key: col.primary_key,
+                unique: col.unique,
+            })
+            .collect(),
     })
 }
