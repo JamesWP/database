@@ -44,8 +44,6 @@ pub struct IndexInfo {
 /// Constructed by `BTree::cache()`; callers query it directly.
 #[derive(Clone, Default)]
 pub struct CatalogSnapshot {
-    /// table name → (rootpage, DDL sql)
-    pub tables: HashMap<String, (u32, String)>,
     /// rootpage → table name (reverse lookup)
     pub(super) by_rootpage: HashMap<u32, String>,
     /// table name → all indexes for that table
@@ -81,9 +79,8 @@ impl CatalogSnapshot {
                 "table" => {
                     snapshot.by_rootpage.insert(rootpage, name.clone());
                     if let Some(info) = parse_table_info(rootpage, &sql) {
-                        snapshot.parsed_tables.insert(name.clone(), info);
+                        snapshot.parsed_tables.insert(name, info);
                     }
-                    snapshot.tables.insert(name, (rootpage, sql));
                 }
                 "index" => {
                     let column_names = extract_columns_from_index_sql(&sql);
@@ -102,13 +99,6 @@ impl CatalogSnapshot {
             }
         });
         snapshot
-    }
-
-    /// Look up a table by name. Returns `(rootpage, sql)` if found.
-    #[inline(never)]
-    pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> {
-        probe!(database, catalog_lookup_table);
-        self.tables.get(table_name).cloned()
     }
 
     /// Return the pre-parsed table metadata for `table_name`, or `None` if not found.
