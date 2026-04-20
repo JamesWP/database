@@ -1,7 +1,5 @@
 //! Query optimizer: rewrites a naive LogicalPlan tree to use indexes and elide redundant sorts.
 
-use crate::frontend::ast::Statement;
-use crate::frontend::parse;
 use crate::storage::BTree;
 
 use super::{BinaryOp, JoinStrategy, Literal, LogicalPlan, PlanExpr, UnaryOp};
@@ -295,18 +293,9 @@ fn try_index_scan_plan(
         idx.column_names
             .first()
             .and_then(|col_name| {
-                // Resolve the column name to a table column index.
-                catalog
-                    .catalog()
-                    .lookup_table(&table_name)
-                    .and_then(|(_, sql)| {
-                        parse(&sql).ok().and_then(|stmt| match stmt {
-                            Statement::CreateTable(ct) => {
-                                ct.columns.iter().position(|c| c.name == *col_name)
-                            }
-                            _ => None,
-                        })
-                    })
+                let snap = catalog.catalog();
+                snap.lookup_table_info(&table_name)
+                    .and_then(|info| info.columns.iter().position(|c| c.name == *col_name))
             })
             .unwrap_or(usize::MAX)
             == table_col_idx
@@ -378,17 +367,9 @@ fn try_index_probe_plan(
             idx.column_names
                 .first()
                 .and_then(|col_name| {
-                    catalog
-                        .catalog()
-                        .lookup_table(&table_name)
-                        .and_then(|(_, sql)| {
-                            parse(&sql).ok().and_then(|stmt| match stmt {
-                                Statement::CreateTable(ct) => {
-                                    ct.columns.iter().position(|c| c.name == *col_name)
-                                }
-                                _ => None,
-                            })
-                        })
+                    let snap = catalog.catalog();
+                    snap.lookup_table_info(&table_name)
+                        .and_then(|info| info.columns.iter().position(|c| c.name == *col_name))
                 })
                 .unwrap_or(usize::MAX)
                 == *right_table_col_idx
@@ -680,10 +661,10 @@ fn try_covering_index_scan(
 
     // Look up the table's column names to map table-col-idx → name.
     let table_name = catalog.catalog().lookup_table_by_rootpage(table_rootpage)?;
-    let (_, table_sql) = catalog.catalog().lookup_table(&table_name)?;
-    let table_cols: Vec<String> = match parse(&table_sql).ok()? {
-        Statement::CreateTable(ct) => ct.columns.into_iter().map(|c| c.name).collect(),
-        _ => return None,
+    let table_cols: Vec<String> = {
+        let snap = catalog.catalog();
+        let info = snap.lookup_table_info(&table_name)?;
+        info.columns.iter().map(|c| c.name.clone()).collect()
     };
 
     // Look up the index's column names.
