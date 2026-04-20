@@ -92,7 +92,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **BB** | Storage Layer Redesign: NodePageStore | 5 | [phase-bb-node-page-store.md](completed/phase-bb-node-page-store.md) | Completed |
 | **BC** | Lexer Performance | 2 | [phase-bc-lexer-perf.md](completed/phase-bc-lexer-perf.md) | Completed |
 | **BD** | Collapse Row Encoding: Eliminate Double-CBOR | 3 | [phase-bd-collapse-row-encoding.md](phase-bd-collapse-row-encoding.md) | Planned |
-| **BE** | Cache Parsed Table Schema: Eliminate DDL Re-parsing | 2 | [phase-be-schema-cache.md](phase-be-schema-cache.md) | Planned |
+| **BE** | Cache Parsed Table Schema: Eliminate DDL Re-parsing | 3 | [phase-be-schema-cache.md](phase-be-schema-cache.md) | Planned |
 ## Sakila Compatibility
 
 Phases AJ–AV are ordered to progressively support the [sqlite-sakila-db](https://github.com/jOOQ/sakila/tree/main/sqlite-sakila-db) benchmark schema. Each phase unlocks more of the schema/data/views:

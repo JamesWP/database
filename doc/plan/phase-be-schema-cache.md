@@ -10,6 +10,7 @@ lookup instead of re-parsing the DDL string on every query.
 |---|-------|------|------------|
 | 138 | 3 | Add `TableInfo`/`ColumnInfo` to `CatalogSnapshot`; parse DDL once in `build()`; add `lookup_table_info()`; update `resolve_table()` to use it | — |
 | 139 | 4 | Fix optimizer: replace three `parse(&sql)` call sites with `lookup_table_info()` | 138 |
+| 140 | 3 | Migrate all remaining `lookup_table()` callers to `lookup_table_info()`; remove `CatalogSnapshot::tables` field and `lookup_table()` method | 139 |
 
 ---
 Important: Each item should be committed separately, follow 'Git Workflow' in CLAUDE.md
@@ -384,6 +385,175 @@ indexes, including the Sakila workload after schema load.
 
 ---
 
+## 140. Remove `CatalogSnapshot::tables` and `lookup_table()` (Track 3)
+
+### What Changes
+
+After items 138 and 139 every hot-path caller has been migrated. This item migrates the
+remaining cold-path callers and deletes the now-redundant raw DDL map.
+
+#### Callers to migrate
+
+**`src/db.rs` — CREATE TABLE / DROP TABLE / CREATE INDEX**
+
+- `lookup_table(name).is_some()` (existence check before CREATE TABLE) →
+  `lookup_table_info(name).is_some()`
+- `lookup_table(name).is_none()` (existence check before DROP TABLE) →
+  `lookup_table_info(name).is_none()`
+- `lookup_table(name)` for rootpage (rowid cache invalidation before DROP TABLE) →
+  `lookup_table_info(name).map(|info| info.rootpage)`
+- CREATE INDEX path — currently calls `lookup_table()` then `parse(&ddl)` then iterates
+  `create_table.columns`. Replace with `lookup_table_info()` and use `ColumnInfo` directly:
+
+```rust
+// Before:
+let (table_rootpage, ddl) = catalog
+    .catalog()
+    .lookup_table(&ci.table_name)
+    .ok_or_else(|| ExecuteError::TableNotFound(ci.table_name.clone()))?;
+let parsed_ddl = parse(&ddl).map_err(ExecuteError::Parse)?;
+let create_table = match parsed_ddl { Statement::CreateTable(ct) => ct, _ => { ... } };
+for col_name in &ci.column_names {
+    let column_def = create_table.columns.iter().find(|c| &c.name == col_name)...;
+    if !matches!(column_def.type_name, Some(DataType::Integer) | Some(DataType::Text)) { ... }
+    let col_idx = create_table.columns.iter().position(|c| &c.name == col_name).unwrap();
+    column_idxs.push(col_idx);
+}
+
+// After:
+let info = catalog
+    .catalog()
+    .lookup_table_info(&ci.table_name)
+    .ok_or_else(|| ExecuteError::TableNotFound(ci.table_name.clone()))?;
+let table_rootpage = info.rootpage;
+for col_name in &ci.column_names {
+    let (col_idx, col) = info
+        .columns
+        .iter()
+        .enumerate()
+        .find(|(_, c)| &c.name == col_name)
+        .ok_or_else(|| ExecuteError::ColumnNotFound {
+            table: ci.table_name.clone(),
+            column: col_name.clone(),
+        })?;
+    if !matches!(col.data_type, Some(DataType::Integer) | Some(DataType::Text)) {
+        return Err(ExecuteError::ColumnNotInteger { ... });
+    }
+    column_idxs.push(col_idx);
+}
+```
+
+This also eliminates `parse(&ddl)` and the `ParseError` mapping from the CREATE INDEX path.
+
+**`src/repl/modes/btree.rs`**
+
+- Existence check (line 55): `lookup_table(name).is_some()` →
+  `lookup_table_info(name).is_some()`
+- Table open (line 111): `lookup_table(&name)` for rootpage →
+  `lookup_table_info(&name).map(|info| info.rootpage)`
+- `"verify all"` (line 244): `lookup_table("db_schema")` for rootpage →
+  `lookup_table_info("db_schema").map(|info| info.rootpage)`
+
+**`src/repl/modes/planner.rs`**
+
+The `"schema"` command currently displays the raw DDL string of the catalog table.
+Replace with a listing derived from `TableInfo`:
+
+```rust
+// Before:
+match shared.btree.catalog().lookup_table("db_schema") {
+    Some((_, sql)) => CommandResult::Message(format!("Catalog DDL: {}", sql)),
+    None => CommandResult::Message("No catalog found".to_string()),
+}
+
+// After:
+match shared.btree.catalog().lookup_table_info("db_schema") {
+    Some(info) => {
+        let cols = info.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ");
+        CommandResult::Message(format!("Catalog columns: {cols}"))
+    }
+    None => CommandResult::Message("No catalog found".to_string()),
+}
+```
+
+**`src/catalog.rs` tests**
+
+Tests that call `catalog().lookup_table("name")` to assert existence, check the rootpage,
+or retrieve the DDL string must be updated:
+
+- Existence assertions → `lookup_table_info("name").is_some()` / `.is_none()`
+- Rootpage extraction → `lookup_table_info("name").map(|i| i.rootpage)`
+- DDL string tests (e.g. `test_insert_and_lookup_table` which asserts `sql ==
+  "CREATE TABLE users (id INTEGER)"`) → replace with assertions on `info.columns`,
+  e.g. `info.columns[0].name == "id"` and `info.columns[0].data_type == Some(DataType::Integer)`.
+
+#### Remove the field and method
+
+From `CatalogSnapshot`:
+```rust
+// Remove:
+pub tables: HashMap<String, (u32, String)>,
+
+// Remove:
+pub fn lookup_table(&self, table_name: &str) -> Option<(u32, String)> { ... }
+```
+
+From `CatalogSnapshot::build()`, remove the two lines that stored raw DDL:
+```rust
+// Remove:
+snapshot.tables.insert(name.clone(), (rootpage, sql.clone()));
+```
+
+The local `sql` binding in the closure is still needed for `parse_table_info(rootpage, &sql)`
+and for the index arm's `extract_columns_from_index_sql(&sql)`, so only the `.insert` call
+is removed. The `HashMap` field itself and any `.clone()` of `sql` solely for that insert
+can be dropped.
+
+### Background
+
+The `tables` map was the original catalog lookup mechanism, predating the parsed-schema
+cache added in item 138. Once all production callers use `lookup_table_info()`, the raw
+DDL map is dead weight: it holds one `String` per table (the full DDL) that is never read
+on any hot path. Removing it reduces per-snapshot memory, removes one `HashMap` clone on
+every `CatalogSnapshot::clone()`, and eliminates a maintenance trap (two sources of truth
+for the same data).
+
+The one caller that currently reads the DDL string in production is the CREATE INDEX path
+in `db.rs`; item 140 replaces that with `ColumnInfo` field accesses, which also eliminates
+a redundant `parse()` call on every `CREATE INDEX` statement.
+
+### Key Files
+
+- `src/db.rs` — CREATE TABLE existence, DROP TABLE, CREATE INDEX column validation
+- `src/repl/modes/btree.rs` — existence check, table open, verify-all
+- `src/repl/modes/planner.rs` — schema display command
+- `src/catalog.rs` — test updates
+- `src/storage/catalog_cache.rs` — remove `tables` field, `lookup_table()`, and the
+  `.insert` in `build()`
+
+### Tests
+
+- All existing SQL integration tests pass.
+- Updated `catalog.rs` tests pass, now asserting on `TableInfo` fields rather than raw SQL.
+- Verify `lookup_table` does not appear in any non-test source file:
+  `grep -r 'lookup_table\b' src/ --include='*.rs' | grep -v '#\[cfg(test)\]' | grep -v '\.rs-'`
+
+### Implementation Steps (1 commit)
+
+1. Update `db.rs`: migrate all four call sites (existence ×2, rootpage, CREATE INDEX).
+2. Update `repl/modes/btree.rs`: migrate three call sites.
+3. Update `repl/modes/planner.rs`: replace schema display.
+4. Update `catalog.rs` tests: replace all `lookup_table` calls with `lookup_table_info`.
+5. Remove `tables: HashMap<String, (u32, String)>` from `CatalogSnapshot`.
+6. Remove `lookup_table()` from `CatalogSnapshot`.
+7. Remove `snapshot.tables.insert(...)` from `build()`; drop any `sql.clone()` used
+   solely for that insert.
+8. `cargo fmt && cargo build && cargo test`.
+
+**Commit:** `catalog: remove CatalogSnapshot::tables and lookup_table(); all callers use lookup_table_info`
+
+---
+
 ## Verification
 
 - [ ] `cargo test` — all tests pass after each commit independently
@@ -393,5 +563,7 @@ indexes, including the Sakila workload after schema load.
 - [ ] `optimizer.rs` has no `parse(...)` call and no `Statement` import
 - [ ] `CatalogSnapshot` has a `parsed_tables` field populated during `build()`
 - [ ] `lookup_table_info()` returns `None` (not a panic) for an unknown table name
+- [ ] `CatalogSnapshot` has no `tables` field and no `lookup_table()` method
+- [ ] `lookup_table` does not appear in any non-test source file
 - [ ] Perf: `perf record` against Sakila INSERT benchmark shows `resolve_table` cost
   substantially reduced from the baseline 17 %
