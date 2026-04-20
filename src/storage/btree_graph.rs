@@ -317,11 +317,11 @@ pub fn dump<W: Write>(output: &mut W, btree: &BTree) -> Result {
 
     // User tables and indexes (skip root pages already rendered)
     let cache = btree.catalog();
-    for (name, (rootpage, _sql)) in &cache.tables {
-        if *rootpage == CATALOG_ROOT {
+    for (name, info) in &cache.parsed_tables {
+        if info.rootpage == CATALOG_ROOT {
             continue;
         }
-        write_subgraph(output, btree, *rootpage, name, TreeKind::Table)?;
+        write_subgraph(output, btree, info.rootpage, name, TreeKind::Table)?;
     }
     for (_tbl_name, indexes) in &cache.indexes {
         for idx in indexes {

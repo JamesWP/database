@@ -120,7 +120,7 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
             let name = &ct.table_name;
 
             // Check if table already exists
-            if catalog.catalog().lookup_table(name).is_some() {
+            if catalog.catalog().lookup_table_info(name).is_some() {
                 return Err(ExecuteError::TableAlreadyExists(name.clone()));
             }
 
@@ -156,13 +156,17 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
             let name = &drop.table_name;
 
             // Check if table exists
-            if catalog.catalog().lookup_table(name).is_none() {
+            if catalog.catalog().lookup_table_info(name).is_none() {
                 return Err(ExecuteError::TableNotFound(name.clone()));
             }
 
             // Invalidate the rowid cache before deleting so a subsequent CREATE
             // TABLE + INSERT on the same rootpage starts rowids from 1.
-            if let Some((rootpage, _)) = catalog.catalog().lookup_table(name) {
+            if let Some(rootpage) = catalog
+                .catalog()
+                .lookup_table_info(name)
+                .map(|info| info.rootpage)
+            {
                 catalog.invalidate_rowid_cache(rootpage);
             }
 
@@ -180,10 +184,12 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
             };
 
             // 1. Resolve table and validate it exists
-            let (table_rootpage, ddl) = catalog
+            let table_info = catalog
                 .catalog()
-                .lookup_table(&ci.table_name)
-                .ok_or_else(|| ExecuteError::TableNotFound(ci.table_name.clone()))?;
+                .lookup_table_info(&ci.table_name)
+                .ok_or_else(|| ExecuteError::TableNotFound(ci.table_name.clone()))?
+                .clone();
+            let table_rootpage = table_info.rootpage;
 
             // 2. Check if index already exists
             let existing = catalog.catalog().lookup_indexes_for_table(&ci.table_name);
@@ -193,34 +199,21 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
                 }
             }
 
-            // 3. Parse DDL to get column info
-            let parsed_ddl = parse(&ddl).map_err(ExecuteError::Parse)?;
-            let create_table = match parsed_ddl {
-                Statement::CreateTable(ct) => ct,
-                _ => {
-                    return Err(ExecuteError::Parse(
-                        crate::frontend::ParseError::UnexpectedToken(
-                            crate::frontend::parser::Expect::Table,
-                            crate::frontend::lexer::Type::Eof,
-                        ),
-                    ))
-                }
-            };
-
-            // 4. Find columns and verify each is INTEGER or TEXT
+            // 3. Find columns and verify each is INTEGER or TEXT
             let mut column_idxs = Vec::new();
             for col_name in &ci.column_names {
-                let column_def = create_table
+                let (col_idx, col) = table_info
                     .columns
                     .iter()
-                    .find(|col| &col.name == col_name)
+                    .enumerate()
+                    .find(|(_, c)| &c.name == col_name)
                     .ok_or_else(|| ExecuteError::ColumnNotFound {
                         table: ci.table_name.clone(),
                         column: col_name.clone(),
                     })?;
 
                 if !matches!(
-                    column_def.type_name,
+                    col.data_type,
                     Some(DataType::Integer) | Some(DataType::Text)
                 ) {
                     return Err(ExecuteError::ColumnNotInteger {
@@ -229,11 +222,6 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
                     });
                 }
 
-                let col_idx = create_table
-                    .columns
-                    .iter()
-                    .position(|col| &col.name == col_name)
-                    .unwrap();
                 column_idxs.push(col_idx);
             }
 
@@ -244,7 +232,7 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
             let plan = LogicalPlan::PopulateIndex {
                 input: Box::new(LogicalPlan::Scan {
                     rootpage: table_rootpage,
-                    columns: (0..create_table.columns.len()).collect(),
+                    columns: (0..table_info.columns.len()).collect(),
                     with_key: true,
                 }),
                 index_rootpage,
@@ -309,17 +297,15 @@ pub fn build_explain_schema(catalog: &BTree) -> ExplainSchema {
     // ExplainSchema directly from the snapshot without calling parse() again.
     let mut schema = ExplainSchema::default();
     let cache = catalog.catalog();
-    for (name, (rootpage, sql)) in &cache.tables {
-        if let Ok(Statement::CreateTable(ct)) = parse(sql) {
-            let columns = ct.columns.iter().map(|c| c.name.clone()).collect();
-            schema.tables.insert(
-                *rootpage,
-                TableMeta {
-                    name: name.clone(),
-                    columns,
-                },
-            );
-        }
+    for (name, info) in &cache.parsed_tables {
+        let columns = info.columns.iter().map(|c| c.name.clone()).collect();
+        schema.tables.insert(
+            info.rootpage,
+            TableMeta {
+                name: name.clone(),
+                columns,
+            },
+        );
     }
     for (tbl_name, indexes) in &cache.indexes {
         for idx in indexes {

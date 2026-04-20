@@ -13,9 +13,10 @@ mod tests {
     #[test]
     fn test_create_bootstraps_self_referencing_entry() {
         let cat = TempCatalog::new();
-        let (rootpage, _sql) = cat
+        let rootpage = cat
             .catalog()
-            .lookup_table("db_schema")
+            .lookup_table_info("db_schema")
+            .map(|i| i.rootpage)
             .expect("bootstrap entry missing");
         assert_eq!(rootpage, CATALOG_ROOT);
     }
@@ -27,13 +28,14 @@ mod tests {
             let _ = BTree::new(&path);
         }
         let cat = BTree::new(&path);
-        assert_eq!(cat.catalog().tables.len(), 1);
+        assert_eq!(cat.catalog().parsed_tables.len(), 1);
     }
 
     // ---- insert_entry / lookup_table ----
 
     #[test]
     fn test_insert_and_lookup_table() {
+        use crate::frontend::ast::DataType;
         let mut cat = TempCatalog::new();
         let rootpage = cat.create_tree();
         cat.insert_entry(
@@ -43,17 +45,17 @@ mod tests {
             rootpage,
             "CREATE TABLE users (id INTEGER)",
         );
-        let result = cat.catalog().lookup_table("users");
-        assert!(result.is_some());
-        let (rp, sql) = result.unwrap();
-        assert_eq!(rp, rootpage);
-        assert!(sql.contains("users"));
+        let snap = cat.catalog();
+        let info = snap.lookup_table_info("users").expect("entry missing");
+        assert_eq!(info.rootpage, rootpage);
+        assert_eq!(info.columns[0].name, "id");
+        assert_eq!(info.columns[0].data_type, Some(DataType::Integer));
     }
 
     #[test]
     fn test_lookup_table_not_found_returns_none() {
         let cat = TempCatalog::new();
-        assert!(cat.catalog().lookup_table("nonexistent").is_none());
+        assert!(cat.catalog().lookup_table_info("nonexistent").is_none());
     }
 
     #[test]
@@ -67,7 +69,7 @@ mod tests {
             rp,
             "CREATE INDEX idx_users_id ON users(id)",
         );
-        assert!(cat.catalog().lookup_table("idx_users_id").is_none());
+        assert!(cat.catalog().lookup_table_info("idx_users_id").is_none());
     }
 
     #[test]
@@ -83,9 +85,9 @@ mod tests {
                 &format!("CREATE TABLE {} (id INTEGER)", name),
             );
         }
-        assert!(cat.catalog().lookup_table("alpha").is_some());
-        assert!(cat.catalog().lookup_table("beta").is_some());
-        assert!(cat.catalog().lookup_table("gamma").is_some());
+        assert!(cat.catalog().lookup_table_info("alpha").is_some());
+        assert!(cat.catalog().lookup_table_info("beta").is_some());
+        assert!(cat.catalog().lookup_table_info("gamma").is_some());
     }
 
     // ---- lookup_table_info ----
@@ -243,7 +245,7 @@ mod tests {
         let rp = cat.create_tree();
         cat.insert_entry("table", "t1", "t1", rp, "CREATE TABLE t1 (x INTEGER)");
         // 1 bootstrap entry (db_schema) + 1 inserted
-        assert_eq!(cat.catalog().tables.len(), 2);
+        assert_eq!(cat.catalog().parsed_tables.len(), 2);
     }
 
     // ---- delete_entries_for_table ----
@@ -268,7 +270,7 @@ mod tests {
             "CREATE INDEX _pk_users_id ON users(id)",
         );
         assert!(cat.delete_entries_for_table("users"));
-        assert!(cat.catalog().lookup_table("users").is_none());
+        assert!(cat.catalog().lookup_table_info("users").is_none());
         assert!(cat.catalog().lookup_indexes_for_table("users").is_empty());
     }
 
@@ -292,8 +294,8 @@ mod tests {
             );
         }
         cat.delete_entries_for_table("drop");
-        assert!(cat.catalog().lookup_table("keep").is_some());
-        assert!(cat.catalog().lookup_table("drop").is_none());
+        assert!(cat.catalog().lookup_table_info("keep").is_some());
+        assert!(cat.catalog().lookup_table_info("drop").is_none());
     }
 
     // ---- unique flag ----
@@ -415,7 +417,7 @@ mod tests {
         let rp = cat.create_tree();
         cat.insert_entry("table", "t", "t", rp, "CREATE TABLE t (id INTEGER)");
         assert!(!cat.catalog_cache_populated());
-        let _ = cat.catalog().lookup_table("t");
+        let _ = cat.catalog().lookup_table_info("t");
         assert!(cat.catalog_cache_populated());
     }
 
@@ -424,13 +426,13 @@ mod tests {
         let mut cat = TempCatalog::new();
         let rp = cat.create_tree();
         cat.insert_entry("table", "a", "a", rp, "CREATE TABLE a (x INTEGER)");
-        let _ = cat.catalog().lookup_table("a");
+        let _ = cat.catalog().lookup_table_info("a");
         assert!(cat.catalog_cache_populated());
         let rp2 = cat.create_tree();
         cat.insert_entry("table", "b", "b", rp2, "CREATE TABLE b (x INTEGER)");
         assert!(!cat.catalog_cache_populated());
-        assert!(cat.catalog().lookup_table("a").is_some());
-        assert!(cat.catalog().lookup_table("b").is_some());
+        assert!(cat.catalog().lookup_table_info("a").is_some());
+        assert!(cat.catalog().lookup_table_info("b").is_some());
     }
 
     #[test]
@@ -444,11 +446,11 @@ mod tests {
             rp,
             "CREATE TABLE drop_me (x INTEGER)",
         );
-        let _ = cat.catalog().lookup_table("drop_me");
+        let _ = cat.catalog().lookup_table_info("drop_me");
         assert!(cat.catalog_cache_populated());
         cat.delete_entries_for_table("drop_me");
         assert!(!cat.catalog_cache_populated());
-        assert!(cat.catalog().lookup_table("drop_me").is_none());
+        assert!(cat.catalog().lookup_table_info("drop_me").is_none());
     }
 
     #[test]
@@ -480,7 +482,7 @@ mod tests {
             rp,
             "CREATE TABLE things (x TEXT)",
         );
-        let _ = cat.catalog().lookup_table("things");
+        let _ = cat.catalog().lookup_table_info("things");
         assert_eq!(
             cat.catalog().lookup_table_by_rootpage(rp),
             Some("things".to_string())
@@ -505,6 +507,6 @@ mod tests {
             );
         }
         let btree = BTree::new(&path);
-        assert!(btree.catalog().lookup_table("persisted").is_some());
+        assert!(btree.catalog().lookup_table_info("persisted").is_some());
     }
 }
