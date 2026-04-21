@@ -131,19 +131,12 @@ impl NodePageStore {
     /// Mark `node` as dirty — it will be encoded and written to disk on the next
     /// `flush()`.  No CBOR encoding or disk I/O happens here in the common case.
     ///
-    /// When `node.cbor_size_estimate()` exceeds `PAGE_SIZE` the node is encoded
-    /// immediately to confirm whether it truly overflows.  If it does, returns
-    /// `Err(Error::PageFull(node))` so the caller can split — otherwise the node
-    /// is stored in the dirty set as normal (the confirmed-fit encoded bytes are
-    /// discarded; the node will be re-encoded at flush).
+    /// Returns `Err(Error::PageFull(node))` immediately if the exact encoded size
+    /// exceeds `PAGE_SIZE`, so the caller can split before retrying.
     pub fn write(&mut self, id: PageId, node: NodePage) -> Result<(), Error> {
-        let node = if node.cbor_size_estimate() > PAGE_SIZE as usize {
-            // Estimate says the page might overflow — encode to confirm.
-            let (_bytes, node) = encode_page(node)?; // may return Err(PageFull(node))
-            node
-        } else {
-            node
-        };
+        if node.cbor_encoded_size() > PAGE_SIZE as usize {
+            return Err(Error::PageFull(node));
+        }
         self.cache.insert(id, node);
         self.dirty.insert(id);
         Ok(())
@@ -158,16 +151,8 @@ impl NodePageStore {
             let node = self.cache.remove(&id).expect("dirty page must be in cache");
             let (bytes, node) = match encode_page(node) {
                 Ok(r) => r,
-                Err(Error::PageFull(node)) => {
-                    let mut cbor = Vec::new();
-                    let _ = ciborium::ser::into_writer(&node, &mut cbor);
-                    let b64 = cbor_to_base64(&cbor);
-                    panic!(
-                        "NodePageStore: page {:?} overflowed at flush — \
-                         cbor_size_estimate() missed this case.\n\
-                         Page contents (CBOR base64): {}",
-                        id, b64
-                    );
+                Err(Error::PageFull(_)) => {
+                    unreachable!("cbor_encoded_size() is exact; PageFull at flush is impossible")
                 }
                 Err(e) => return Err(e),
             };
@@ -275,26 +260,6 @@ fn encode_page(node: NodePage) -> Result<([u8; PAGE_SIZE as usize], NodePage), E
             }
         }
     }
-}
-
-// ── base64 helper ────────────────────────────────────────────────────────────
-
-/// Encode `bytes` as standard base64 (RFC 4648, with `=` padding).
-/// Used in panic diagnostics — no external crate needed.
-fn cbor_to_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(ALPHABET[(n >> 18) as usize] as char);
-        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 { ALPHABET[((n >> 6) & 0x3F) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { ALPHABET[(n & 0x3F) as usize] as char } else { '=' });
-    }
-    out
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
