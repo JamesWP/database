@@ -5,7 +5,7 @@ echo "Running fmt before commit..."
 cargo fmt --check
 
 echo "Checking for warnings..."
-cargo build 2>&1 | grep -q "^warning:" \
+CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0 cargo check 2>&1 | grep -q "^warning:" \
     && echo "THERE ARE WARNINGS! Go fix!" && exit 1
 
 echo "Running tests before commit..."
