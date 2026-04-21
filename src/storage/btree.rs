@@ -2028,8 +2028,7 @@ mod test {
     }
 
     #[test]
-    fn test_cbor_size_estimate_is_upper_bound() {
-        // cbor_size_estimate must always >= actual CBOR size so the fast path is safe.
+    fn test_cbor_size_estimate_is_exact() {
         fn actual_size(values: &[ScalarValue]) -> usize {
             let mut buf = Vec::new();
             ciborium::ser::into_writer(values, &mut buf).unwrap();
@@ -2072,15 +2071,7 @@ mod test {
         ];
 
         for case in &cases {
-            let estimate = cbor_size_estimate(case);
-            let actual = actual_size(case);
-            assert!(
-                estimate >= actual,
-                "cbor_size_estimate under-estimated: estimate={} < actual={} for {:?}",
-                estimate,
-                actual,
-                case
-            );
+            assert_eq!(cbor_size_estimate(case), actual_size(case), "{:?}", case);
         }
     }
 
