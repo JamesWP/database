@@ -3,8 +3,6 @@ use std::io::Write;
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::scalarvalue::ScalarValue;
-
 use super::cell::{Cell, Key};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
