@@ -139,75 +139,22 @@ const CHUNK_THRESHOLD: usize = (pager::PAGE_SIZE as usize - LEAF_PAGE_BASE_FRAMI
     / MIN_CELLS_PER_PAGE
     - CELL_FRAMING_BYTES;
 
-/// Conservative upper-bound estimate of `ciborium::ser::into_writer(&values, ...)` size.
-///
-/// Used in `Cursor::insert` to avoid serialisation entirely for rows that clearly
-/// fit inline. If the estimate exceeds `CHUNK_THRESHOLD` we fall back to a full
-/// serialisation and exact check — safe because the estimate always over-approximates.
-///
-/// ScalarValue uses serde's externally-tagged enum representation in CBOR:
-///   - unit variant `Null`  → text string "Null" (5 bytes)
-///   - newtype variants     → `{variant_name: value}` CBOR map
-///     * Boolean  → 1(map) + 8("Boolean") + 1(bool) = 10 bytes
-///     * Integer  → 1(map) + 8("Integer") + 1-9(i64) = 10-18 bytes
-///     * Floating → 1(map) + 9("Floating") + 9(f64) = 19 bytes
-///     * String   → 1(map) + 7("String") + header + len
-///     * Blob     → 1(map) + 5("Blob")   + header + len
-///
-/// The outer Vec uses 5 bytes for the array header (pessimistic; actual is 1-5).
+/// Serialise `values` to a sink that counts bytes without allocating.
+/// Returns the exact CBOR encoded length.
 fn cbor_size_estimate(values: &[ScalarValue]) -> usize {
-    let mut n: usize = 5; // conservative CBOR array header (≤ 5 bytes for any length)
-    for v in values {
-        n += match v {
-            // Unit variant → text string of the variant name.
-            ScalarValue::Null => 5, // 0x64 + "Null"
-            // Newtype variants → one-entry CBOR map {key: value}.
-            ScalarValue::Boolean(_) => 10, // 1(map) + 8("Boolean") + 1(bool)
-            ScalarValue::Integer(i) => {
-                let abs = i.unsigned_abs();
-                let val = if abs <= 23 {
-                    1
-                } else if abs <= 0xFF {
-                    2
-                } else if abs <= 0xFFFF {
-                    3
-                } else if abs <= 0xFFFF_FFFF {
-                    5
-                } else {
-                    9
-                };
-                9 + val // 1(map) + 8("Integer" key) + val
-            }
-            ScalarValue::Floating(_) => 19, // 1(map) + 9("Floating" key) + 9(f64)
-            ScalarValue::String(s) => {
-                let len = s.len();
-                let hdr = if len <= 23 {
-                    1
-                } else if len <= 0xFF {
-                    2
-                } else if len <= 0xFFFF {
-                    3
-                } else {
-                    5
-                };
-                8 + hdr + len // 1(map) + 7("String" key) + header + len
-            }
-            ScalarValue::Blob(b) => {
-                let len = b.len();
-                let hdr = if len <= 23 {
-                    1
-                } else if len <= 0xFF {
-                    2
-                } else if len <= 0xFFFF {
-                    3
-                } else {
-                    5
-                };
-                6 + hdr + len // 1(map) + 5("Blob" key) + header + len
-            }
-        };
+    struct CountingWriter(usize);
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
-    n
+    let mut w = CountingWriter(0);
+    ciborium::ser::into_writer(values, &mut w).unwrap();
+    w.0
 }
 
 /// All cursor operations — both reads and writes use `RefMut<NodePageStore>`.
@@ -237,26 +184,16 @@ impl<'a> Cursor<'a> {
             _ => None,
         };
 
-        // Fast path: if the conservative estimate is within CHUNK_THRESHOLD, skip
-        // serialisation entirely — no allocation for the common inline case.
+        // If the exact encoded size fits inline, skip serialisation entirely.
+        // Only overflow rows pay for a second (allocating) serialisation pass.
         let cell = if cbor_size_estimate(&values) > CHUNK_THRESHOLD {
-            // Estimate says the row *might* overflow. Serialise exactly to confirm.
+            probe!(database, overflow_write);
+            probe!(database, cell_write_overflow);
             let mut buf = Vec::new();
             ciborium::ser::into_writer(&values, &mut buf).unwrap();
-            if buf.len() > CHUNK_THRESHOLD {
-                probe!(database, overflow_write);
-                probe!(database, cell_write_overflow);
-                // Store the first CHUNK_THRESHOLD bytes inline in the cell; send only
-                // the remaining bytes to the overflow chain.
-                let inline = buf[..CHUNK_THRESHOLD].to_vec();
-                let cont_page = split_and_store(&mut *self.store, &buf[CHUNK_THRESHOLD..]);
-                Cell::new_overflow(key.to_vec(), inline, cont_page)
-            } else {
-                // Estimate was pessimistic — row fits inline after all.
-                probe!(database, cbor_size_estimate_false_positive);
-                probe!(database, cell_write_inline);
-                Cell::new(key.to_vec(), values, None)
-            }
+            let inline = buf[..CHUNK_THRESHOLD].to_vec();
+            let cont_page = split_and_store(&mut *self.store, &buf[CHUNK_THRESHOLD..]);
+            Cell::new_overflow(key.to_vec(), inline, cont_page)
         } else {
             probe!(database, cell_write_inline);
             Cell::new(key.to_vec(), values, None)
