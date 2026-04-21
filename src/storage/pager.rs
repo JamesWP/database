@@ -38,7 +38,7 @@ impl Default for ZeroPage {
     fn default() -> Self {
         Self {
             magic: 0x53514C69, // "SQLi"
-            format_version: 5, // CBOR format v5: Blob values serialised as CBOR byte strings
+            format_version: 4, // CBOR format v4: Blob values serialised as CBOR byte strings
             free_list_head: None,
         }
     }
