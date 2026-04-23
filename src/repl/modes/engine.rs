@@ -16,7 +16,7 @@ struct StepState {
 }
 
 impl StepState {
-    fn new(program: &CompiledProgram, btree: BTree) -> Self {
+    fn new(program: &CompiledProgram, btree: &BTree) -> Self {
         StepState {
             engine: Engine::from_compiled_with_btree(program, btree),
             pc: 0,
@@ -149,7 +149,7 @@ impl Mode for EngineMode {
 
                 let state = self
                     .step_state
-                    .get_or_insert_with(|| StepState::new(program, (*shared.btree).clone()));
+                    .get_or_insert_with(|| StepState::new(program, &shared.btree));
 
                 if state.halted {
                     return CommandResult::Message(
@@ -202,7 +202,7 @@ impl Mode for EngineMode {
 
                 let state = self
                     .step_state
-                    .get_or_insert_with(|| StepState::new(program, (*shared.btree).clone()));
+                    .get_or_insert_with(|| StepState::new(program, &shared.btree));
 
                 if state.halted {
                     return CommandResult::Message(
@@ -262,7 +262,7 @@ impl Mode for EngineMode {
 
             ["restart"] => match &self.program {
                 Some(p) => {
-                    self.step_state = Some(StepState::new(p, (*shared.btree).clone()));
+                    self.step_state = Some(StepState::new(p, &shared.btree));
                     CommandResult::Message("Execution restarted from instruction 0.".to_string())
                 }
                 None => CommandResult::Message(
@@ -281,8 +281,7 @@ impl Mode for EngineMode {
                 };
                 let source_sql = self.source_sql.clone().unwrap_or_default();
                 let logical_plan = self.logical_plan.as_ref().cloned();
-                let debugger =
-                    TuiDebugger::new(program, (*shared.btree).clone(), source_sql, logical_plan);
+                let debugger = TuiDebugger::new(program, &shared.btree, source_sql, logical_plan);
                 match debugger.run() {
                     Ok(()) => CommandResult::Message("Debugger exited.".to_string()),
                     Err(e) => CommandResult::Error(format!("TUI error: {e}")),

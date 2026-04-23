@@ -59,12 +59,12 @@ impl Engine {
     /// Create an engine from a compiled program with a BTree for storage operations.
     pub fn from_compiled_with_btree(
         compiled: &crate::compiler::CompiledProgram,
-        btree: storage::BTree,
+        btree: &storage::BTree,
     ) -> Engine {
         let program: ProgramCode = compiled.operations.as_slice().into();
         let registers = Registers::new(compiled.num_registers);
         Engine {
-            btree: Some(btree),
+            btree: Some(btree.share()),
             registers,
             program,
         }
@@ -74,12 +74,12 @@ impl Engine {
     pub(crate) fn with_program(
         operations: &[Operation],
         num_registers: usize,
-        btree: storage::BTree,
+        btree: &storage::BTree,
     ) -> Engine {
         let program: ProgramCode = operations.into();
         let registers = Registers::new(num_registers);
         Engine {
-            btree: Some(btree),
+            btree: Some(btree.share()),
             registers,
             program,
         }
@@ -998,12 +998,12 @@ mod test {
         fn new_with_btree(
             operations: &[Operation],
             num_registers: usize,
-            btree: BTree,
+            btree: &BTree,
         ) -> TestHarness {
             let program = operations.into();
             let registers = Registers::new(num_registers);
             let mut engine = Engine::new(registers, program);
-            engine.btree = Some(btree);
+            engine.btree = Some(btree.share());
             TestHarness {
                 engine: engine,
                 yields: Vec::default(),
@@ -1512,7 +1512,7 @@ mod test {
                 Operation::Halt,
             ],
             3,
-            btree,
+            &btree,
         );
 
         harness.run();
@@ -1567,7 +1567,7 @@ mod test {
                 Operation::Halt,                      // End
             ],
             4,
-            btree,
+            &btree,
         );
 
         harness.run();
@@ -1626,7 +1626,7 @@ mod test {
                 Operation::Halt,                                 // 8
             ],
             5,
-            btree,
+            &btree,
         );
 
         harness.run();
@@ -1659,7 +1659,7 @@ mod test {
             Operation::Halt,
         ];
 
-        let mut engine = Engine::with_program(&ops, 1, btree);
+        let mut engine = Engine::with_program(&ops, 1, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 1);
@@ -1703,7 +1703,7 @@ mod test {
             Operation::Halt,
         ];
 
-        let mut engine = Engine::with_program(&ops, 4, btree);
+        let mut engine = Engine::with_program(&ops, 4, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 2);
@@ -1735,7 +1735,7 @@ mod test {
             Operation::Halt,
         ];
 
-        let mut engine = Engine::with_program(&ops, 3, btree);
+        let mut engine = Engine::with_program(&ops, 3, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 0);
@@ -1773,7 +1773,7 @@ mod test {
                 Operation::Halt,                                       // 11
             ],
             7,
-            btree,
+            &btree,
         );
 
         harness.run();
@@ -1813,7 +1813,7 @@ mod test {
                 Operation::Halt,
             ],
             2,
-            btree,
+            &btree,
         );
 
         harness.run();
@@ -1846,7 +1846,7 @@ mod test {
                 Operation::Halt,
             ],
             4,
-            btree,
+            &btree,
         );
 
         harness.run();
@@ -1871,7 +1871,7 @@ mod test {
             Operation::Halt,
         ];
 
-        let mut engine = Engine::with_program(&ops, 1, btree);
+        let mut engine = Engine::with_program(&ops, 1, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 3);
@@ -1910,7 +1910,7 @@ mod test {
             Operation::Halt,
         ];
 
-        let mut engine = Engine::with_program(&ops, 3, btree);
+        let mut engine = Engine::with_program(&ops, 3, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 1);
@@ -1957,7 +1957,7 @@ mod test {
             Operation::Halt,
         ];
 
-        let mut engine = Engine::with_program(&ops, 3, TestDb::default().btree);
+        let mut engine = Engine::with_program(&ops, 3, &TestDb::default().btree);
         let yields = engine.run_with_limit(100);
 
         // Rows should come out in sorted order (ascending)
@@ -2007,7 +2007,7 @@ mod test {
             Operation::Halt,                       // addr 18
         ];
 
-        let mut engine = Engine::with_program(&ops, 3, TestDb::default().btree);
+        let mut engine = Engine::with_program(&ops, 3, &TestDb::default().btree);
         let yields = engine.run_with_limit(100);
 
         // Should yield 6 rows total: 3 from first pass + 3 from second pass
@@ -2091,7 +2091,7 @@ mod test {
             Operation::Halt,
         ];
 
-        let mut engine = Engine::with_program(&ops, 4, btree);
+        let mut engine = Engine::with_program(&ops, 4, &btree);
         let yields = engine.run_with_limit(100);
 
         // Should yield 3 rows in sorted order (ascending): 10, 20, 30
@@ -2181,7 +2181,7 @@ mod test {
             /*20*/ Operation::Halt,
         ];
 
-        let mut engine = Engine::with_program(&ops, 9, btree);
+        let mut engine = Engine::with_program(&ops, 9, &btree);
         let yields = engine.run_with_limit(100);
 
         // Should yield 3 rows sorted by name (column index 1)
@@ -2230,7 +2230,7 @@ mod test {
                 Operation::Halt,
             ],
             4,
-            btree,
+            &btree,
         );
         harness.run();
         assert_eq!(harness.num_yields(), 1);
@@ -2275,7 +2275,7 @@ mod test {
                 Operation::Halt,
             ],
             5,
-            btree,
+            &btree,
         );
         harness.run();
         assert_eq!(harness.num_yields(), 1);
@@ -2316,7 +2316,7 @@ mod test {
                 Operation::Halt,
             ],
             4,
-            btree,
+            &btree,
         );
         harness.run();
         assert_eq!(harness.num_yields(), 1);
@@ -2364,7 +2364,7 @@ mod test {
                 Operation::Halt,
             ],
             5,
-            btree,
+            &btree,
         );
         harness.run();
         assert_eq!(harness.num_yields(), 1);

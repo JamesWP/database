@@ -405,7 +405,6 @@ impl OverflowPage {
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use std::collections::HashSet;
@@ -763,7 +762,6 @@ mod test {
         );
     }
 
-
     proptest! {
         #[test]
         fn test_interior_page_split(interior_num_edges in 4u64..150) {
@@ -778,5 +776,4 @@ mod test {
             prop_assert!(diff <= 1);
         }
     }
-
 }

@@ -101,9 +101,7 @@ impl<'de> Visitor<'de> for CellDeserializeVisitor {
         A: serde::de::SeqAccess<'de>,
     {
         let key: serde_bytes::ByteBuf = seq.next_element()?.unwrap();
-        let payload: ValuesPayload = seq
-            .next_element()?
-            .unwrap_or(ValuesPayload::Array(vec![]));
+        let payload: ValuesPayload = seq.next_element()?.unwrap_or(ValuesPayload::Array(vec![]));
         let continuation: Option<u32> = seq.next_element()?;
 
         let (values, inline_bytes) = match payload {
