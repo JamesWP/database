@@ -239,12 +239,7 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
                 column_idxs,
             };
             let compiled = compiler::compile(&plan);
-            Engine::with_program(
-                compiled.operations(),
-                compiled.num_registers(),
-                catalog.clone(),
-            )
-            .run();
+            Engine::with_program(compiled.operations(), compiled.num_registers(), catalog).run();
 
             // 7. Add catalog entry
             catalog.insert_entry("index", &ci.index_name, &ci.table_name, index_rootpage, sql);
@@ -265,11 +260,8 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
             let plan = planner::plan(stmt, catalog).map_err(ExecuteError::Plan)?;
             let mut compiled = compiler::compile(&plan);
             compiled.column_names = column_names;
-            let engine = Engine::with_program(
-                compiled.operations(),
-                compiled.num_registers(),
-                catalog.clone(),
-            );
+            let engine =
+                Engine::with_program(compiled.operations(), compiled.num_registers(), catalog);
             Ok(ExecuteResult::Query(QueryExecution::new(
                 engine,
                 compiled.column_names,

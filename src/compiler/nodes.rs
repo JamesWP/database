@@ -2125,7 +2125,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(&plan);
 
         // Run through engine
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         // Count should yield single row with value 3
@@ -2152,7 +2152,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(&plan);
 
         // Run through engine
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         // Count should yield 0 for empty table
@@ -2184,7 +2184,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(&plan);
 
         // Run through engine
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         // Should have 2 rows
@@ -2218,7 +2218,7 @@ mod tests {
         let test = TestDb::default();
         let btree = test.btree;
 
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 3);
@@ -2246,7 +2246,7 @@ mod tests {
         let test = TestDb::default();
         let btree = test.btree;
 
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 0);
@@ -2272,7 +2272,7 @@ mod tests {
         let test = TestDb::default();
         let btree = test.btree;
 
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 1);
@@ -2296,7 +2296,7 @@ mod tests {
         let test = TestDb::default();
         let btree = test.btree;
 
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 1);
@@ -2320,7 +2320,7 @@ mod tests {
         let test = TestDb::default();
         let btree = test.btree;
 
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 3);
@@ -2339,7 +2339,7 @@ mod tests {
         let test = TestDb::default();
         let btree = test.btree;
 
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 0);
@@ -2357,7 +2357,7 @@ mod tests {
         let test = TestDb::default();
         let btree = test.btree;
 
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 1);
@@ -2385,7 +2385,7 @@ mod tests {
         let (ops, num_registers) = compile_plan(plan);
         let test = TestDb::default();
         let btree = test.btree;
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         engine.run()
     }
 
@@ -2894,7 +2894,7 @@ mod tests {
 
         let (ops, num_registers) = compile_plan(&plan);
 
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         // Should yield a single row with count = 2
@@ -2927,12 +2927,8 @@ mod tests {
         };
 
         let (ops, num_registers) = compile_plan(&insert_plan);
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
-        let insert_yields = engine.run();
+        let insert_yields = Engine::with_program(&ops, num_registers, &btree).run();
         assert_eq!(insert_yields[0][0], ScalarValue::Integer(3));
-
-        // Get btree back from engine
-        let btree = engine.take_btree().unwrap();
 
         // Second: SCAN to read back
         let scan_plan = LogicalPlan::Scan {
@@ -2942,7 +2938,7 @@ mod tests {
         };
 
         let (ops, num_registers) = compile_plan(&scan_plan);
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let scan_yields = engine.run();
 
         assert_eq!(scan_yields.len(), 3);
@@ -2974,7 +2970,7 @@ mod tests {
         };
 
         let (ops, num_registers) = compile_plan(&plan);
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         let yields = engine.run();
 
         assert_eq!(yields.len(), 1);
@@ -3009,11 +3005,8 @@ mod tests {
             indexes: vec![index.clone()],
         };
         let (ops, num_regs) = compile_plan(&plan);
-        let mut engine = Engine::with_program(&ops, num_regs, btree);
-        let yields = engine.run();
+        let yields = Engine::with_program(&ops, num_regs, &btree).run();
         assert_eq!(yields[0][0], ScalarValue::Integer(1), "first insert count");
-
-        let btree = engine.take_btree().unwrap();
 
         // Second insert with the same indexed value must fail.
         let plan2 = LogicalPlan::Insert {
@@ -3025,7 +3018,7 @@ mod tests {
             indexes: vec![index],
         };
         let (ops2, num_regs2) = compile_plan(&plan2);
-        let mut engine2 = Engine::with_program(&ops2, num_regs2, btree);
+        let mut engine2 = Engine::with_program(&ops2, num_regs2, &btree);
         let result = engine2.run_result();
         assert!(
             matches!(result, Err(EngineError::ConstraintViolation(_))),
@@ -3063,7 +3056,7 @@ mod tests {
             indexes: vec![index],
         };
         let (ops, num_regs) = compile_plan(&plan);
-        let mut engine = Engine::with_program(&ops, num_regs, btree);
+        let mut engine = Engine::with_program(&ops, num_regs, &btree);
         let yields = engine.run();
         assert_eq!(yields[0][0], ScalarValue::Integer(3), "all 3 rows inserted");
     }
@@ -3093,7 +3086,7 @@ mod tests {
             indexes: vec![index],
         };
         let (ops, num_regs) = compile_plan(&plan);
-        let mut engine = Engine::with_program(&ops, num_regs, btree);
+        let mut engine = Engine::with_program(&ops, num_regs, &btree);
         let yields = engine.run();
         assert_eq!(yields[0][0], ScalarValue::Integer(2), "both rows inserted");
     }
@@ -3263,10 +3256,10 @@ mod tests {
     /// Run a plan that requires btree access.
     fn run_plan_with_btree(
         plan: &LogicalPlan,
-        btree: crate::storage::BTree,
+        btree: &crate::storage::BTree,
     ) -> Vec<Vec<ScalarValue>> {
         let (ops, num_registers) = compile_plan(plan);
-        let mut engine = Engine::with_program(&ops, num_registers, btree);
+        let mut engine = Engine::with_program(&ops, num_registers, &btree);
         engine.run()
     }
 
@@ -3295,7 +3288,7 @@ mod tests {
             on_eq_col0_col2(),
         );
 
-        let yields = run_plan_with_btree(&plan, btree);
+        let yields = run_plan_with_btree(&plan, &btree);
 
         assert_eq!(yields.len(), 3, "expected 3 rows, got: {:?}", yields);
         assert_eq!(
@@ -3360,7 +3353,7 @@ mod tests {
             on_eq_col0_col2(),
         );
 
-        let yields = run_plan_with_btree(&plan, btree);
+        let yields = run_plan_with_btree(&plan, &btree);
 
         assert_eq!(yields.len(), 2, "expected 2 rows, got: {:?}", yields);
         assert_eq!(yields[0][3], ScalarValue::Integer(200));
@@ -3390,7 +3383,7 @@ mod tests {
             on_true(),
         );
 
-        let yields = run_plan_with_btree(&plan, btree);
+        let yields = run_plan_with_btree(&plan, &btree);
         assert_eq!(yields.len(), 0);
     }
 
@@ -3417,7 +3410,7 @@ mod tests {
             on_true(),
         );
 
-        let yields = run_plan_with_btree(&plan, btree);
+        let yields = run_plan_with_btree(&plan, &btree);
         assert_eq!(yields.len(), 0);
     }
 
@@ -3516,7 +3509,7 @@ mod tests {
             left_column_count: 2,
         };
 
-        let yields = run_plan_with_btree(&plan, btree);
+        let yields = run_plan_with_btree(&plan, &btree);
 
         assert_eq!(yields.len(), 3, "expected 3 rows, got: {:?}", yields);
         assert_eq!(

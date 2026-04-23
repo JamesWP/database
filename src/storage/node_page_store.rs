@@ -99,7 +99,6 @@ impl NodePageStore {
         Ok(())
     }
 
-
     /// Borrow a `&NodePage` from the cache (fetching from disk on miss).
     ///
     /// The returned reference must be dropped before calling `allocate`,
@@ -375,7 +374,10 @@ mod tests {
         store.write(id, leaf()).unwrap();
 
         // Page is dirty but not yet on disk — cold read from disk must fail.
-        assert!(store.dirty.contains(&id), "page should be dirty after write");
+        assert!(
+            store.dirty.contains(&id),
+            "page should be dirty after write"
+        );
         let bytes = store.pager.read_raw(id);
         let disk_result = decode_page(&bytes);
         assert!(
@@ -385,9 +387,15 @@ mod tests {
 
         // After flush the page is on disk and the dirty set is cleared.
         store.flush().unwrap();
-        assert!(!store.dirty.contains(&id), "dirty set should be empty after flush");
+        assert!(
+            !store.dirty.contains(&id),
+            "dirty set should be empty after flush"
+        );
         let bytes = store.pager.read_raw(id);
-        assert!(decode_page(&bytes).is_ok(), "page should be readable from disk after flush");
+        assert!(
+            decode_page(&bytes).is_ok(),
+            "page should be readable from disk after flush"
+        );
     }
 
     #[test]
@@ -413,6 +421,10 @@ mod tests {
         store.take(id).unwrap();
         store.write(id, leaf()).unwrap();
 
-        assert_eq!(store.dirty.len(), 1, "multiple writes to same page collapse to one dirty entry");
+        assert_eq!(
+            store.dirty.len(),
+            1,
+            "multiple writes to same page collapse to one dirty entry"
+        );
     }
 }

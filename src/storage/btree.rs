@@ -787,6 +787,17 @@ impl BTree {
         );
     }
 
+    /// Create a BTree sharing the underlying page store and rowid cache via Arc,
+    /// but with a fresh empty catalog cache. Used by the engine so it doesn't
+    /// inherit a deep-copied CatalogSnapshot from the caller.
+    pub fn share(&self) -> BTree {
+        BTree {
+            store: self.store.clone(),
+            rowid_cache: self.rowid_cache.clone(),
+            catalog_cache: RefCell::new(None),
+        }
+    }
+
     /// Invalidate the rowid cache entry for a given rootpage (call on DROP TABLE).
     pub fn invalidate_rowid_cache(&self, rootpage: u32) {
         self.rowid_cache.borrow_mut().remove(&rootpage);

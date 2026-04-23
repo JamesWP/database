@@ -29,9 +29,9 @@ enum StepOutcome {
     Stop, // Yield, Halt, or Error — caller should break
 }
 
-pub struct TuiDebugger {
+pub struct TuiDebugger<'a> {
     program: CompiledProgram,
-    btree: BTree,
+    btree: &'a BTree,
     engine: Engine,
     halted: bool,
     output_log: Vec<String>,
@@ -47,14 +47,14 @@ pub struct TuiDebugger {
     header_height: u16,
 }
 
-impl TuiDebugger {
+impl<'a> TuiDebugger<'a> {
     pub fn new(
         program: CompiledProgram,
-        btree: BTree,
+        btree: &'a BTree,
         source_sql: String,
         logical_plan: Option<LogicalPlan>,
     ) -> Self {
-        let engine = Engine::from_compiled_with_btree(&program, btree.clone());
+        let engine = Engine::from_compiled_with_btree(&program, btree);
 
         let sql_display: Vec<Line<'static>> = source_sql
             .lines()
@@ -62,7 +62,7 @@ impl TuiDebugger {
             .collect();
 
         let plan_strs: Vec<String> = if let Some(plan) = &logical_plan {
-            let schema = build_explain_schema(&btree.clone());
+            let schema = build_explain_schema(btree);
             format_plan(plan, &schema)
                 .into_iter()
                 .map(|(id, text)| format!("{id:>3}  {text}"))
@@ -193,7 +193,7 @@ impl TuiDebugger {
     }
 
     fn do_restart(&mut self) {
-        self.engine = Engine::from_compiled_with_btree(&self.program, self.btree.clone());
+        self.engine = Engine::from_compiled_with_btree(&self.program, self.btree);
         self.halted = false;
         self.output_log.clear();
         self.yielded_rows.clear();
