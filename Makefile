@@ -67,6 +67,9 @@ trace-query:
 install-hooks:
 	git config core.hooksPath .githooks
 
+wasm:
+	wasm-pack build --target web --out-dir pkg
+
 PROG=target/release/database
 
 VHS=PATH="$(PWD)/.bin:$(PATH)" vhs
