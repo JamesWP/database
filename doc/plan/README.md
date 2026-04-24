@@ -69,7 +69,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AF** | Covering Indexes | 3 | [phase-af-covering-indexes.md](completed/phase-af-covering-indexes.md) | Completed |
 | **AG** | Workspace Split: Core Library + CLI Crate | 4 | [phase-ag-workspace-split.md](completed/phase-ag-workspace-split.md) | Completed |
 | **AH** | Decouple `colored` from Core Library | 4 | [phase-ah-decouple-colored.md](completed/phase-ah-decouple-colored.md) | Completed |
-| **AI** | Move `inspect_page` to CLI | 2 | [phase-ai-inspect-to-cli.md](phase-ai-inspect-to-cli.md) | Planned |
+| **AI** | Move `inspect_page` to CLI | 2 | [phase-ai-inspect-to-cli.md](completed/phase-ai-inspect-to-cli.md) | Completed |
 | **AJ-1** | Extract Catalog Layer from BTree | 3 | [phase-aj1-catalog-layer.md](completed/phase-aj1-catalog-layer.md) | Completed |
 | **AJ** | Type System & Schema Compatibility | 8 | [phase-aj-type-system.md](completed/phase-aj-type-system.md) | Completed |
 | **AK** | String Operators & Functions | — | — | Backlog |
