@@ -1,8 +1,11 @@
+[workspace]
+members = [".", "crates/database-cli"]
+resolver = "2"
+
 [package]
 name = "database"
 version = "0.1.0"
 edition = "2021"
-default-run = "database"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
