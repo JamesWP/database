@@ -8,7 +8,7 @@ use crate::repl::{CommandResult, Mode, ModeId, SharedState};
 use database::engine::scalarvalue::ScalarValue;
 use database::frontend::ast;
 use database::frontend::parse;
-use database::storage::{CellReader, CursorHandle};
+use database::storage::{BTree, CellReader, CursorHandle};
 
 /// BTree mode state - cursor is created/dropped as part of mode state
 #[derive(Debug)]
@@ -323,7 +323,7 @@ impl Mode for BTreeMode {
                     Err(_) => return CommandResult::Error("Invalid page number".to_string()),
                 };
 
-                match shared.btree.inspect_page(page_num) {
+                match inspect_page(&shared.btree, page_num) {
                     Ok(_) => CommandResult::Ok,
                     Err(e) => CommandResult::Error(e),
                 }
@@ -333,7 +333,7 @@ impl Mode for BTreeMode {
                 let file_size = shared.btree.file_size_pages();
 
                 for page_num in 0..file_size {
-                    if let Err(e) = shared.btree.inspect_page(page_num) {
+                    if let Err(e) = inspect_page(&shared.btree, page_num) {
                         return CommandResult::Error(e);
                     }
                     println!();
@@ -400,6 +400,97 @@ impl BTreeMode {
             Some(cursor) => f(cursor),
         }
     }
+}
+
+fn inspect_page(btree: &BTree, page_num: u32) -> Result<(), String> {
+    let mut store = btree.node_page_store_mut();
+    let file_size = store.page_count();
+
+    if page_num >= file_size {
+        return Err(format!(
+            "Page {} out of range (file has {} pages)",
+            page_num, file_size
+        ));
+    }
+
+    println!("Page {} raw CBOR structure:", page_num);
+    println!("=====================================");
+
+    if page_num == 0 {
+        println!("Type: ZeroPage");
+        if let Some(desc) = store.zero_page_debug() {
+            println!("{}", desc);
+        }
+    } else {
+        let node = store
+            .read(database::storage::PageId::from(page_num))
+            .map_err(|e| e.to_string())?
+            .clone();
+        match &node {
+            database::storage::NodePage::Leaf(leaf) => {
+                println!("Type: LeafNodePage");
+                println!("Number of items: {}", leaf.num_items());
+                println!("\nCells:");
+                for i in 0..leaf.num_items() {
+                    if let Some(cell) = leaf.get_item_at_index(i) {
+                        let key = cell.key();
+                        let values = cell.values();
+                        let continuation = cell.continuation();
+                        let key_hex = key
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        println!("  Cell {i}:");
+                        println!("    key={key_hex}");
+                        if let Some(cont_page) = continuation {
+                            println!("    continuation={cont_page} (overflow)");
+                            println!("    decoded=[]");
+                        } else {
+                            println!("    continuation=None");
+                            println!("    decoded={values:?}");
+                        }
+                    }
+                }
+            }
+            database::storage::NodePage::Interior(interior) => {
+                println!("Type: InteriorNodePage");
+                println!("Number of edges: {}", interior.num_edges());
+                println!("\nKeys and child pages:");
+                for i in 0..interior.num_edges() {
+                    let child = interior.get_child_page_by_index(i);
+                    if i > 0 {
+                        let key = interior.get_key_by_index(i - 1);
+                        let key_hex = key
+                            .iter()
+                            .map(|b| format!("{:02x}", b))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        println!("  Edge {i}: key={key_hex}, child_page={child}");
+                    } else {
+                        println!("  Edge {i}: (left-most), child_page={child}");
+                    }
+                }
+            }
+            database::storage::NodePage::OverflowPage(overflow) => {
+                println!("Type: OverflowPage");
+                let data = overflow.value();
+                let continuation = overflow.continuation();
+                println!("Data length: {}", data.len());
+                println!("Continuation: {continuation:?}");
+                let hex: String = data
+                    .iter()
+                    .take(16)
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let suffix = if data.len() > 16 { "..." } else { "" };
+                println!("Data hex: {hex}{suffix}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn print_value(entry: Option<CellReader>) -> ControlFlow<()> {

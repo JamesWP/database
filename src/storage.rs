@@ -26,5 +26,6 @@ pub use catalog_cache::CatalogSnapshot;
 pub use catalog_cache::IndexInfo;
 pub use cell_reader::CellReader;
 pub use error::Error as StorageError;
+pub use node::NodePage;
 pub use node_page_store::NodePageStore;
 pub use page_id::PageId;

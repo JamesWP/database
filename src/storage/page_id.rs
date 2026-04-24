@@ -11,6 +11,12 @@ impl PageId {
     }
 }
 
+impl From<u32> for PageId {
+    fn from(n: u32) -> Self {
+        PageId(n)
+    }
+}
+
 impl fmt::Display for PageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PageId({})", self.0)
