@@ -952,6 +952,7 @@ impl BTree {
         self.store.borrow_mut()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dump_to_file(&self, output_path: &std::path::Path) -> std::io::Result<()> {
         let file = std::fs::OpenOptions::new()
             .create(true)
