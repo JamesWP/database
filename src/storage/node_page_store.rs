@@ -163,8 +163,7 @@ impl NodePageStore {
     }
 
     /// Return a debug string representation of the ZeroPage for diagnostic
-    /// tools (e.g. `BTree::inspect_page`).  Returns `None` if the database is
-    /// empty.
+    /// tools.  Returns `None` if the database is empty.
     pub fn zero_page_debug(&self) -> Option<String> {
         self.pager.get_zero_page().map(|z| format!("{:#?}", z))
     }
