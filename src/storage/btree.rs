@@ -1122,8 +1122,6 @@ mod test {
     use crate::storage::BTree;
     use crate::test::TestDb;
     use proptest::prelude::*;
-    use std::collections::BTreeMap;
-
     use super::{cbor_size_estimate, CursorPosition, CHUNK_THRESHOLD, OVERFLOW_LIMIT};
 
     #[test]

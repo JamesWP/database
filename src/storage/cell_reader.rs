@@ -121,7 +121,6 @@ impl CellReader {
 #[cfg(test)]
 mod tests {
     use crate::engine::scalarvalue::ScalarValue;
-    use crate::storage::BTree;
     use crate::test::TestDb;
     use std::io::Read;
 
