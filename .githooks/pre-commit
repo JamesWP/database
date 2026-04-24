@@ -4,6 +4,9 @@ set -e
 echo "Running fmt before commit..."
 cargo fmt --check
 
+echo "Running cargo check..."
+cargo check --workspace
+
 echo "Checking for warnings..."
 CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0 cargo check --workspace 2>&1 | grep -q "^warning:" \
     && echo "THERE ARE WARNINGS! Go fix!" && exit 1
