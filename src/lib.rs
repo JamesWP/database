@@ -10,4 +10,5 @@ pub mod planner;
 pub mod storage;
 
 pub mod test;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
