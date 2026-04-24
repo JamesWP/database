@@ -945,6 +945,13 @@ impl BTree {
         self.catalog_cache.borrow().is_some()
     }
 
+    /// Mutably borrow the underlying NodePageStore for diagnostic / inspection purposes.
+    pub fn node_page_store_mut(
+        &self,
+    ) -> std::cell::RefMut<'_, super::node_page_store::NodePageStore> {
+        self.store.borrow_mut()
+    }
+
     /// Inspect a page and print its raw CBOR structure.
     /// Returns an error if the page number is out of range.
     pub fn inspect_page(&self, page_num: u32) -> Result<(), String> {
@@ -1118,11 +1125,11 @@ pub fn encode_index_value(value: &crate::engine::scalarvalue::ScalarValue) -> Ve
 #[cfg(test)]
 mod test {
 
+    use super::{cbor_size_estimate, CursorPosition, CHUNK_THRESHOLD, OVERFLOW_LIMIT};
     use crate::engine::scalarvalue::ScalarValue;
     use crate::storage::BTree;
     use crate::test::TestDb;
     use proptest::prelude::*;
-    use super::{cbor_size_estimate, CursorPosition, CHUNK_THRESHOLD, OVERFLOW_LIMIT};
 
     #[test]
     fn test_create_blank() {
