@@ -9,14 +9,15 @@ A single-file relational database library in Rust, similar to SQLite. Implements
 ## Build & Test Commands
 
 ```bash
-cargo build              # Debug build
-cargo build --release    # Release build
-cargo build --release    # Release build (includes frame pointers + debug symbols for perf)
-cargo test               # Run all tests (lib + integration + doctests) - THE BASELINE
-cargo test test_sql_     # Run SQL integration tests
-cargo test <test_name>   # Run single test
-cargo run -- <db_file>   # Run interactive CLI
-cargo fmt                # Format code
+cargo build --workspace              # Debug build (all crates)
+cargo build --release                # Release build (library only)
+cargo build --workspace --release    # Release build (all crates)
+cargo test                           # Run all library tests - THE BASELINE
+cargo test --workspace               # Run tests for all crates
+cargo test test_sql_                 # Run SQL integration tests
+cargo test <test_name>               # Run single test
+cargo run -p database-cli -- <db_file>  # Run interactive CLI
+cargo fmt --all                      # Format all crates
 ```
 
 ### Test Organization
@@ -60,9 +61,9 @@ CREATE TABLE users (id INTEGER, name TEXT)
 
 **Code Quality (before committing):**
 ```bash
-cargo fmt                        # Format code
-cargo build 2>&1 | grep warning  # Zero warnings policy - fix all warnings
-cargo test                       # All tests must pass
+cargo fmt --all                              # Format all crates
+cargo build --workspace 2>&1 | grep warning  # Zero warnings policy - fix all warnings
+cargo test --workspace                       # All tests must pass
 ```
 
 - Use the project's `update-sql-tests` binary for updating SQL test expected outputs — never manually edit test output.
@@ -95,15 +96,30 @@ make install-hooks
 
 **Standard Workflow:**
 ```bash
-cargo fmt && cargo build && cargo test  # Verify before changes
+cargo fmt --all && cargo build --workspace && cargo test --workspace  # Verify before changes
 # ... make changes ...
-cargo fmt && cargo build && cargo test  # Verify after changes
+cargo fmt --all && cargo build --workspace && cargo test --workspace  # Verify after changes
 git add <files>
-git diff --cached --stat                # Show for review
-git commit -m "message"                 # After approval
+git diff --cached --stat                                               # Show for review
+git commit -m "message"                                                # After approval
 ```
 
 **Phase Completion:** Run final verification, show summary (`git log --oneline -N`), update documentation.
+
+## Workspace Layout
+
+The repository is a Cargo workspace with two crates:
+
+- **`crates/database` (root)** — the core library (`src/`). Zero interactive/TUI dependencies. This is what an application embeds.
+- **`crates/database-cli`** — the interactive REPL and TUI debugger (`crates/database-cli/src/`). Depends on the library and brings in UI deps (`rustyline`, `ratatui`, `crossterm`, `ansi-to-tui`, `colored`).
+
+```toml
+# Embed the engine in your application:
+[dependencies]
+database = { path = "path/to/database/crates/database" }
+```
+
+The `tests/`, `build.rs`, and `src/bin/update-sql-tests.rs` all belong to the root library crate.
 
 ## Architecture
 
@@ -136,7 +152,7 @@ SQL Input → Frontend (Lexer/Parser/AST) → Planner → Engine (VM) → Storag
 - `node.rs` - Leaf and interior node structures
 - `cell.rs`, `cell_reader.rs` - Key-value cell storage with overflow support for large values
 
-**REPL** (`src/repl/`): Mode-based interactive CLI
+**REPL** (`crates/database-cli/src/repl/`): Mode-based interactive CLI
 - `mod.rs` - Main REPL loop and mode switching
 - `mode.rs` - Mode trait and types
 - `modes/` - Individual mode implementations (btree, parser, planner, engine)
@@ -148,7 +164,7 @@ SQL Input → Frontend (Lexer/Parser/AST) → Planner → Engine (VM) → Storag
 
 ## Interactive CLI
 
-The REPL uses a mode-based architecture. Run with `cargo run -- <db_file>`:
+The REPL uses a mode-based architecture. Run with `cargo run -p database-cli -- <db_file>`:
 
 ```
 db> modes              # List available modes
@@ -196,21 +212,21 @@ Commands can be executed directly from the command line (useful for debugging an
 
 ```bash
 # General format
-cargo run -- <db_file> <mode> <command...>
+cargo run -p database-cli -- <db_file> <mode> <command...>
 
 # List all tables
-cargo run -- test.db btree tables
+cargo run -p database-cli -- test.db btree tables
 
 # Inspect page structure (debugging CBOR serialization)
-cargo run -- test.db btree inspect page 0
-cargo run -- test.db btree inspect all
+cargo run -p database-cli -- test.db btree inspect page 0
+cargo run -p database-cli -- test.db btree inspect all
 
 # SQL queries
-cargo run -- test.db sql "SELECT * FROM users"
+cargo run -p database-cli -- test.db sql "SELECT * FROM users"
 
 # Parse and plan
-cargo run -- test.db parser parse "SELECT * FROM users"
-cargo run -- test.db planner plan "SELECT * FROM users"
+cargo run -p database-cli -- test.db parser parse "SELECT * FROM users"
+cargo run -p database-cli -- test.db planner plan "SELECT * FROM users"
 ```
 
 ## Debugging Commands
@@ -220,32 +236,32 @@ When working on storage, serialization, or fixing bugs, these commands are essen
 **Inspect Database Format:**
 ```bash
 # Check ZeroPage (magic number, version, free list, schema root)
-cargo run -- test.db btree inspect page 0
+cargo run -p database-cli -- test.db btree inspect page 0
 
 # View entire database structure
-cargo run -- test.db btree inspect all
+cargo run -p database-cli -- test.db btree inspect all
 ```
 
 **Examine Catalog:**
 ```bash
 # List all tables with root pages
-cargo run -- test.db btree tables
+cargo run -p database-cli -- test.db btree tables
 
 # Inspect catalog entries (schema stored as CBOR Vec<ScalarValue>)
-cargo run -- test.db btree open db_schema
-cargo run -- test.db btree print data
+cargo run -p database-cli -- test.db btree open db_schema
+cargo run -p database-cli -- test.db btree print data
 ```
 
 **Debug Specific Tables:**
 ```bash
 # View table data with CBOR decoding
-cargo run -- test.db btree open users
-cargo run -- test.db btree print data
+cargo run -p database-cli -- test.db btree open users
+cargo run -p database-cli -- test.db btree print data
 
 # Verify B-tree integrity
-cargo run -- test.db btree open users
-cargo run -- test.db btree verify
-cargo run -- test.db btree verify all
+cargo run -p database-cli -- test.db btree open users
+cargo run -p database-cli -- test.db btree verify
+cargo run -p database-cli -- test.db btree verify all
 ```
 
 **After CBOR Migration (Phase F):**
@@ -275,11 +291,11 @@ Each secondary index is a separate B-tree with its own root page.
 
 ```bash
 # Load sakila schema first
-rm -f sakila.db && ./target/release/database sakila.db file sakila-schema-stripped.sql
+rm -f sakila.db && ./target/release/database-cli sakila.db file sakila-schema-stripped.sql
 
 # Record with LBR — produces clean full stacks, small output, no lost chunks
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release
-perf record --call-graph lbr -F 2000 -o perf.data -- ./target/release/database sakila.db file ../sakila/sqlite-sakila-db/sqlite-sakila-insert-data.sql
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --workspace --release
+perf record --call-graph lbr -F 2000 -o perf.data -- ./target/release/database-cli sakila.db file ../sakila/sqlite-sakila-db/sqlite-sakila-insert-data.sql
 
 perf report
 

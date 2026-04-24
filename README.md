@@ -53,7 +53,7 @@ A hobby implementation of a relational database similar to SQLite. It includes a
 ```bash
 git clone https://github.com/jameswp/database
 cd database
-cargo run -- mydb.db
+cargo run -p database-cli -- mydb.db
 ```
 
 ```
@@ -74,11 +74,33 @@ sql> SELECT * FROM users WHERE age > 27 ORDER BY name
 ## Build & Test
 
 ```bash
-cargo build              # Debug build
-cargo build --release    # Release build
-cargo test               # Run all tests
-cargo test test_sql_     # SQL integration tests only
-cargo run -- <db_file>   # Interactive REPL
+cargo build --workspace              # Debug build (all crates)
+cargo build --workspace --release    # Release build
+cargo test --workspace               # Run all tests
+cargo test test_sql_                 # SQL integration tests only
+cargo run -p database-cli -- <db_file>  # Interactive REPL
+```
+
+## Embedding
+
+Add the core library to your project (no REPL or TUI dependencies):
+
+```toml
+# Cargo.toml
+[dependencies]
+database = { path = "path/to/database" }
+```
+
+```rust
+use database::db::Db;
+
+fn main() {
+    let mut db = Db::open("app.db").unwrap();
+    db.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT, value TEXT)").unwrap();
+    db.execute("INSERT INTO kv VALUES ('hello', 'world')").unwrap();
+    let rows = db.query("SELECT key, value FROM kv").unwrap();
+    println!("{:?}", rows);
+}
 ```
 
 ## Architecture
