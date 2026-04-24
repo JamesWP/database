@@ -326,18 +326,28 @@ dependencies = [
 name = "database"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
+ "colored",
+ "probe",
+ "proptest",
+ "rand 0.8.5",
+ "serde",
+ "serde_bytes",
+ "tempfile",
+]
+
+[[package]]
+name = "database-cli"
+version = "0.1.0"
+dependencies = [
  "ansi-to-tui",
  "ciborium",
  "colored",
  "crossterm 0.28.1",
- "probe",
- "proptest",
+ "database",
  "rand 0.8.5",
  "ratatui",
  "rustyline",
- "serde",
- "serde_bytes",
- "tempfile",
 ]
 
 [[package]]
