@@ -18,6 +18,11 @@ Important: Each item should be committed separately, follow 'Git Workflow' in CL
 
 ## Overview
 
+**Prerequisite:** Phase BF (WASM Core Library Prerequisites) must be completed first — it
+gates the `testing` module and `BTree::dump_to_file()` so the library compiles for
+`wasm32-unknown-unknown` without those host-platform dependencies. The only remaining
+blocker after BF is the file-backed `Pager`, which this phase replaces (item 83).
+
 The database is a pure-Rust library with no OS dependencies beyond file I/O (the `Pager`). Compiling to WASM requires:
 
 1. Replacing file-based storage with an in-memory buffer (the `Pager` reads/writes pages; substituting a `Vec<u8>` makes it WASM-compatible).
