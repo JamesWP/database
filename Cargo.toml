@@ -10,6 +10,9 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+wasm = ["wasm-bindgen", "js-sys", "serde-wasm-bindgen"]
+
 [dependencies]
 ciborium = { version = "0.2", default-features = false, features = ["std"] }
 probe = "0.5"
@@ -17,9 +20,15 @@ serde = { version = "1.0.158", features = ["derive"] }
 serde_bytes = "0.11"
 tempfile = "3.24.0"
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+
 [dev-dependencies]
 proptest = "1.1.0"
 rand = "0.8.5"
+wasm-bindgen-test = "0.3"
 
 [profile.release]
 debug = 1
