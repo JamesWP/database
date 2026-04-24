@@ -67,7 +67,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **AD** | Page-Geometry-Aware Overflow Thresholds | 4 | [phase-ad-overflow-thresholds.md](completed/phase-ad-overflow-thresholds.md) | Completed |
 | **AE** | TUI Bytecode Debugger | 3 | [phase-ae-tui-debugger.md](completed/phase-ae-tui-debugger.md) | Completed |
 | **AF** | Covering Indexes | 3 | [phase-af-covering-indexes.md](completed/phase-af-covering-indexes.md) | Completed |
-| **AG** | Workspace Split: Core Library + CLI Crate | 4 | [phase-ag-workspace-split.md](phase-ag-workspace-split.md) | Planned |
+| **AG** | Workspace Split: Core Library + CLI Crate | 4 | [phase-ag-workspace-split.md](completed/phase-ag-workspace-split.md) | Completed |
 | **AH** | Decouple `colored` from Core Library | 4 | [phase-ah-decouple-colored.md](phase-ah-decouple-colored.md) | Planned |
 | **AI** | Move `inspect_page` to CLI | 2 | [phase-ai-inspect-to-cli.md](phase-ai-inspect-to-cli.md) | Planned |
 | **AJ-1** | Extract Catalog Layer from BTree | 3 | [phase-aj1-catalog-layer.md](completed/phase-aj1-catalog-layer.md) | Completed |
