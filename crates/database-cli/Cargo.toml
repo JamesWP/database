@@ -5,3 +5,10 @@ edition = "2021"
 
 [dependencies]
 database = { path = "../.." }
+ansi-to-tui = "8"
+ciborium = { version = "0.2", default-features = false, features = ["std"] }
+colored = "2"
+crossterm = "0.28"
+rand = "0.8.5"
+ratatui = "0.30"
+rustyline = "17.0.2"
