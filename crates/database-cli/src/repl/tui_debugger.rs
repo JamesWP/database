@@ -1,5 +1,7 @@
 use ansi_to_tui::IntoText as _;
 use colored::Colorize as _;
+
+use crate::display::{ColoredOperation, ColoredScalarValue};
 use crossterm::{
     event::{self, Event, KeyCode},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -153,7 +155,10 @@ impl<'a> TuiDebugger<'a> {
                 StepOutcome::Stop
             }
             Ok(StepSuccess::Yield(values)) => {
-                let row_display: Vec<String> = values.iter().map(|v| format!("{v}")).collect();
+                let row_display: Vec<String> = values
+                    .iter()
+                    .map(|v| format!("{}", ColoredScalarValue(v)))
+                    .collect();
                 self.output_log.push(format!(
                     "Step {pc}: {op_plain}  → row: {}",
                     row_display.join(", ")
@@ -265,7 +270,7 @@ impl<'a> TuiDebugger<'a> {
                 } else {
                     "  "
                 };
-                let ansi_str = format!("{prefix}{i:4}  {op}");
+                let ansi_str = format!("{prefix}{i:4}  {}", ColoredOperation(op));
                 let mut text = ansi_str.into_text().unwrap_or_default();
                 if i == pc && !self.halted {
                     for line in &mut text.lines {
@@ -298,7 +303,7 @@ impl<'a> TuiDebugger<'a> {
             .filter_map(|(i, val)| {
                 let ansi_str = match val {
                     RegisterValue::None => return None,
-                    RegisterValue::ScalarValue(s) => format!("  r{i} = {s}"),
+                    RegisterValue::ScalarValue(s) => format!("  r{i} = {}", ColoredScalarValue(s)),
                     RegisterValue::CursorHandle(_) => format!("  r{i} = <cursor>"),
                     RegisterValue::RowBuffer(_) => format!("  r{i} = <rowbuffer>"),
                     RegisterValue::GroupTable(_) => format!("  r{i} = <grouptable>"),

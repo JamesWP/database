@@ -1,3 +1,4 @@
+mod display;
 mod repl;
 
 use database::storage::BTree;

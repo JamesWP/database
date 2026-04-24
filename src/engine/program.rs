@@ -310,17 +310,15 @@ impl Reg {
 
 impl std::fmt::Display for Reg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use colored::Colorize;
-        write!(f, "{}", format!("R{}", self.0).yellow())
+        write!(f, "R{}", self.0)
     }
 }
 
 impl std::fmt::Display for JumpTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use colored::Colorize;
         match self {
-            JumpTarget::Resolved(addr) => write!(f, "{}", format!("@{}", addr).magenta()),
-            JumpTarget::Unresolved(label) => write!(f, "{}", format!("?L{}", label.0).red()),
+            JumpTarget::Resolved(addr) => write!(f, "@{addr}"),
+            JumpTarget::Unresolved(label) => write!(f, "?L{}", label.0),
         }
     }
 }
@@ -338,284 +336,132 @@ impl std::fmt::Display for MoveOperation {
 
 impl std::fmt::Display for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use colored::Colorize;
         use Operation::*;
+
+        macro_rules! regs_str {
+            ($regs:expr) => {
+                $regs
+                    .iter()
+                    .map(|r| format!("{r}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+        }
 
         match self {
             // Value operations
-            StoreValue(r, v) => write!(f, "{:10} {}, {}", "Store".cyan().bold(), r, v),
-            IncrementValue(r) => write!(f, "{:10} {}", "Inc".cyan().bold(), r),
-            DecrementValue(r) => write!(f, "{:10} {}", "Dec".cyan().bold(), r),
-            AddValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Add".cyan().bold(), d, a, b),
-            SubtractValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Sub".cyan().bold(), d, a, b),
-            MultiplyValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Mul".cyan().bold(), d, a, b),
-            DivideValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Div".cyan().bold(), d, a, b),
-            RemainderValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Rem".cyan().bold(), d, a, b),
-            LessThanValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Lt".cyan().bold(), d, a, b),
-            LessThanOrEqualValue(d, a, b) => {
-                write!(f, "{:10} {}, {}, {}", "Le".cyan().bold(), d, a, b)
-            }
-            GreaterThanValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Gt".cyan().bold(), d, a, b),
-            GreaterThanOrEqualValue(d, a, b) => {
-                write!(f, "{:10} {}, {}, {}", "Ge".cyan().bold(), d, a, b)
-            }
-            EqualsValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Eq".cyan().bold(), d, a, b),
-            NotEqualsValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Ne".cyan().bold(), d, a, b),
-            AndValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "And".cyan().bold(), d, a, b),
-            OrValue(d, a, b) => write!(f, "{:10} {}, {}, {}", "Or".cyan().bold(), d, a, b),
-            NotValue(d, s) => write!(f, "{:10} {}, {}", "Not".cyan().bold(), d, s),
-            NegateValue(d, s) => write!(f, "{:10} {}, {}", "Neg".cyan().bold(), d, s),
-            CopyValue(d, s) => write!(f, "{:10} {}, {}", "Copy".cyan().bold(), d, s),
-            IsNullValue(d, s) => write!(f, "{:10} {}, {}", "IsNull".cyan().bold(), d, s),
-            IsNotNullValue(d, s) => write!(f, "{:10} {}, {}", "IsNotNull".cyan().bold(), d, s),
+            StoreValue(r, v) => write!(f, "{:10} {r}, {v}", "Store"),
+            IncrementValue(r) => write!(f, "{:10} {r}", "Inc"),
+            DecrementValue(r) => write!(f, "{:10} {r}", "Dec"),
+            AddValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Add"),
+            SubtractValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Sub"),
+            MultiplyValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Mul"),
+            DivideValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Div"),
+            RemainderValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Rem"),
+            LessThanValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Lt"),
+            LessThanOrEqualValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Le"),
+            GreaterThanValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Gt"),
+            GreaterThanOrEqualValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Ge"),
+            EqualsValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Eq"),
+            NotEqualsValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Ne"),
+            AndValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "And"),
+            OrValue(d, a, b) => write!(f, "{:10} {d}, {a}, {b}", "Or"),
+            NotValue(d, s) => write!(f, "{:10} {d}, {s}", "Not"),
+            NegateValue(d, s) => write!(f, "{:10} {d}, {s}", "Neg"),
+            CopyValue(d, s) => write!(f, "{:10} {d}, {s}", "Copy"),
+            IsNullValue(d, s) => write!(f, "{:10} {d}, {s}", "IsNull"),
+            IsNotNullValue(d, s) => write!(f, "{:10} {d}, {s}", "IsNotNull"),
 
             // String/Scalar Function operations
-            LengthValue(d, s) => write!(f, "{:10} {}, {}", "Length".cyan().bold(), d, s),
-            UpperValue(d, s) => write!(f, "{:10} {}, {}", "Upper".cyan().bold(), d, s),
-            LowerValue(d, s) => write!(f, "{:10} {}, {}", "Lower".cyan().bold(), d, s),
-            AbsValue(d, s) => write!(f, "{:10} {}, {}", "Abs".cyan().bold(), d, s),
-            LikeValue(d, val, pat) => {
-                write!(f, "{:10} {}, {}, {}", "Like".cyan().bold(), d, val, pat)
-            }
+            LengthValue(d, s) => write!(f, "{:10} {d}, {s}", "Length"),
+            UpperValue(d, s) => write!(f, "{:10} {d}, {s}", "Upper"),
+            LowerValue(d, s) => write!(f, "{:10} {d}, {s}", "Lower"),
+            AbsValue(d, s) => write!(f, "{:10} {d}, {s}", "Abs"),
+            LikeValue(d, val, pat) => write!(f, "{:10} {d}, {val}, {pat}", "Like"),
 
             // Row buffer operations
-            InitRowBuffer(r) => write!(f, "{:10} {}", "InitRBuf".cyan().bold(), r),
+            InitRowBuffer(r) => write!(f, "{:10} {r}", "InitRBuf"),
             AppendToRowBuffer(buf, regs) => {
-                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
-                write!(
-                    f,
-                    "{:10} {}, [{}]",
-                    "AppendRow".cyan().bold(),
-                    buf,
-                    regs_str.join(", ")
-                )
+                write!(f, "{:10} {buf}, [{}]", "AppendRow", regs_str!(regs))
             }
             SortRowBuffer(buf, keys) => {
-                write!(
-                    f,
-                    "{:10} {}, {} keys",
-                    "SortRows".cyan().bold(),
-                    buf,
-                    keys.len()
-                )
+                write!(f, "{:10} {buf}, {} keys", "SortRows", keys.len())
             }
-            RewindRowBuffer(buf) => {
-                write!(f, "{:10} {}", "RewindBuf".cyan().bold(), buf)
-            }
+            RewindRowBuffer(buf) => write!(f, "{:10} {buf}", "RewindBuf"),
             NextFromRowBuffer(regs, buf, target) => {
-                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
-                write!(
-                    f,
-                    "{:10} [{}], {}, {}",
-                    "NextRow".cyan().bold(),
-                    regs_str.join(", "),
-                    buf,
-                    target
-                )
+                write!(f, "{:10} [{}], {buf}, {target}", "NextRow", regs_str!(regs))
             }
 
             // Group table operations
-            InitGroupTable(r) => write!(f, "{:10} {}", "InitGrpTbl".cyan().bold(), r),
+            InitGroupTable(r) => write!(f, "{:10} {r}", "InitGrpTbl"),
             UpdateGroup(table, keys, specs) => {
                 write!(
                     f,
-                    "{:10} {}, {} keys, {} aggs",
-                    "UpdateGrp".cyan().bold(),
-                    table,
+                    "{:10} {table}, {} keys, {} aggs",
+                    "UpdateGrp",
                     keys.len(),
                     specs.len()
                 )
             }
             YieldFromGroupTable(regs, table, target) => {
-                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
                 write!(
                     f,
-                    "{:10} [{}], {}, {}",
-                    "YieldGrp".cyan().bold(),
-                    regs_str.join(", "),
-                    table,
-                    target
+                    "{:10} [{}], {table}, {target}",
+                    "YieldGrp",
+                    regs_str!(regs)
                 )
             }
 
             // Database operations
-            Open(r, rootpage) => {
-                use colored::Colorize;
-                write!(
-                    f,
-                    "{:10} {}, {}",
-                    "Open".cyan().bold(),
-                    r,
-                    format!("page:{}", rootpage).green()
-                )
-            }
-            MoveCursor(r, op) => write!(f, "{:10} {}, {}", "MoveCursor".cyan().bold(), r, op),
+            Open(r, rootpage) => write!(f, "{:10} {r}, page:{rootpage}", "Open"),
+            MoveCursor(r, op) => write!(f, "{:10} {r}, {op}", "MoveCursor"),
             ReadCursor(regs, cursor) => {
-                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
-                write!(
-                    f,
-                    "{:10} [{}], {}",
-                    "ReadCursor".cyan().bold(),
-                    regs_str.join(", "),
-                    cursor
-                )
+                write!(f, "{:10} [{}], {cursor}", "ReadCursor", regs_str!(regs))
             }
-            ReadKey(dest, cursor) => {
-                write!(f, "{:10} {}, {}", "ReadKey".cyan().bold(), dest, cursor)
-            }
+            ReadKey(dest, cursor) => write!(f, "{:10} {dest}, {cursor}", "ReadKey"),
             WriteCursor(cursor, key, regs) => {
-                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
-                write!(
-                    f,
-                    "{:10} {}, {}, [{}]",
-                    "Write".cyan().bold(),
-                    cursor,
-                    key,
-                    regs_str.join(", ")
-                )
+                write!(f, "{:10} {cursor}, {key}, [{}]", "Write", regs_str!(regs))
             }
             WriteIndex(cursor, vals, pk, unique) => {
-                let vals_str: Vec<String> = vals.iter().map(|r| format!("{}", r)).collect();
                 let label = if *unique { "WriteIdxUniq" } else { "WriteIdx" };
-                write!(
-                    f,
-                    "{:10} {}, [{}], {}",
-                    label.cyan().bold(),
-                    cursor,
-                    vals_str.join(", "),
-                    pk
-                )
+                write!(f, "{:10} {cursor}, [{}], {pk}", label, regs_str!(vals))
             }
             CheckUnique(cursor, vals) => {
-                let vals_str: Vec<String> = vals.iter().map(|r| format!("{}", r)).collect();
-                write!(
-                    f,
-                    "{:10} {}, [{}]",
-                    "CheckUniq".cyan().bold(),
-                    cursor,
-                    vals_str.join(", ")
-                )
+                write!(f, "{:10} {cursor}, [{}]", "CheckUniq", regs_str!(vals))
             }
-            InitRowid(cursor, key) => {
-                write!(f, "{:10} {}, {}", "InitRowid".cyan().bold(), cursor, key)
-            }
+            InitRowid(cursor, key) => write!(f, "{:10} {cursor}, {key}", "InitRowid"),
             DeleteIndex(cursor, vals, pk) => {
-                let vals_str: Vec<String> = vals.iter().map(|r| format!("{}", r)).collect();
-                write!(
-                    f,
-                    "{:10} {}, [{}], {}",
-                    "DelIdx".cyan().bold(),
-                    cursor,
-                    vals_str.join(", "),
-                    pk
-                )
+                write!(f, "{:10} {cursor}, [{}], {pk}", "DelIdx", regs_str!(vals))
             }
-            DeleteCursor(cursor) => {
-                write!(f, "{:10} {}", "Delete".cyan().bold(), cursor)
-            }
-            CanReadCursor(dest, cursor) => {
-                write!(f, "{:10} {}, {}", "CanRead".cyan().bold(), dest, cursor)
-            }
-            EncodeIndexKey(dest, src) => {
-                write!(f, "{:10} {}, {}", "EncIdxKey".cyan().bold(), dest, src)
-            }
-            ReadCurrentKey(dest, cursor) => {
-                write!(f, "{:10} {}, {}", "ReadKey".cyan().bold(), dest, cursor)
-            }
+            DeleteCursor(cursor) => write!(f, "{:10} {cursor}", "Delete"),
+            CanReadCursor(dest, cursor) => write!(f, "{:10} {dest}, {cursor}", "CanRead"),
+            EncodeIndexKey(dest, src) => write!(f, "{:10} {dest}, {src}", "EncIdxKey"),
+            ReadCurrentKey(dest, cursor) => write!(f, "{:10} {dest}, {cursor}", "ReadKey"),
             BlobStartsWith(dest, blob, prefix) => {
-                write!(
-                    f,
-                    "{:10} {}, {}, {}",
-                    "BlobSW".cyan().bold(),
-                    dest,
-                    blob,
-                    prefix
-                )
+                write!(f, "{:10} {dest}, {blob}, {prefix}", "BlobSW")
             }
             BlobPrefixLt(dest, blob, bound) => {
-                write!(
-                    f,
-                    "{:10} {}, {}, {}",
-                    "BlobPfxLt".cyan().bold(),
-                    dest,
-                    blob,
-                    bound
-                )
+                write!(f, "{:10} {dest}, {blob}, {bound}", "BlobPfxLt")
             }
             BlobPrefixLe(dest, blob, bound) => {
-                write!(
-                    f,
-                    "{:10} {}, {}, {}",
-                    "BlobPfxLe".cyan().bold(),
-                    dest,
-                    blob,
-                    bound
-                )
+                write!(f, "{:10} {dest}, {blob}, {bound}", "BlobPfxLe")
             }
             BlobSliceTail(dest, blob, offset) => {
-                write!(
-                    f,
-                    "{:10} {}, {}, {}",
-                    "BlobTail".cyan().bold(),
-                    dest,
-                    blob,
-                    offset
-                )
+                write!(f, "{:10} {dest}, {blob}, {offset}", "BlobTail")
             }
-            BlobSliceLast(dest, blob, n) => {
-                write!(
-                    f,
-                    "{:10} {}, {}, {}",
-                    "BlobLast".cyan().bold(),
-                    dest,
-                    blob,
-                    n
-                )
-            }
-            BlobDropLast(dest, blob, n) => {
-                write!(
-                    f,
-                    "{:10} {}, {}, {}",
-                    "BlobDrop".cyan().bold(),
-                    dest,
-                    blob,
-                    n
-                )
-            }
-            DecodeU64Key(dest, blob) => {
-                write!(f, "{:10} {}, {}", "DecU64Key".cyan().bold(), dest, blob)
-            }
+            BlobSliceLast(dest, blob, n) => write!(f, "{:10} {dest}, {blob}, {n}", "BlobLast"),
+            BlobDropLast(dest, blob, n) => write!(f, "{:10} {dest}, {blob}, {n}", "BlobDrop"),
+            DecodeU64Key(dest, blob) => write!(f, "{:10} {dest}, {blob}", "DecU64Key"),
             DecodeIndexColumns { dest, src } => {
-                let regs_str: Vec<String> = dest.iter().map(|r| format!("{}", r)).collect();
-                write!(
-                    f,
-                    "{:10} [{}], {}",
-                    "DecIdxCols".cyan().bold(),
-                    regs_str.join(", "),
-                    src
-                )
+                write!(f, "{:10} [{}], {src}", "DecIdxCols", regs_str!(dest))
             }
 
             // Control flow
-            Yield(regs) => {
-                let regs_str: Vec<String> = regs.iter().map(|r| format!("{}", r)).collect();
-                write!(f, "{:10} [{}]", "Yield".cyan().bold(), regs_str.join(", "))
-            }
-            GoTo(target) => write!(f, "{:10} {}", "GoTo".cyan().bold(), target),
-            GoToIfEqualValue(target, a, b) => {
-                write!(
-                    f,
-                    "{:10} {}, {}, {}",
-                    "GoToIfEq".cyan().bold(),
-                    target,
-                    a,
-                    b
-                )
-            }
-            GoToIfFalse(target, r) => {
-                write!(f, "{:10} {}, {}", "GoToIfNot".cyan().bold(), target, r)
-            }
-            Halt => write!(f, "{}", "Halt".cyan().bold()),
+            Yield(regs) => write!(f, "{:10} [{}]", "Yield", regs_str!(regs)),
+            GoTo(target) => write!(f, "{:10} {target}", "GoTo"),
+            GoToIfEqualValue(target, a, b) => write!(f, "{:10} {target}, {a}, {b}", "GoToIfEq"),
+            GoToIfFalse(target, r) => write!(f, "{:10} {target}, {r}", "GoToIfNot"),
+            Halt => write!(f, "Halt"),
         }
     }
 }
