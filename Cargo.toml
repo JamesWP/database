@@ -12,16 +12,14 @@ edition = "2021"
 [dependencies]
 ciborium = { version = "0.2", default-features = false, features = ["std"] }
 colored = "2"
-proptest = "1.1.0"
-rand = "0.8.5"
+probe = "0.5"
 serde = { version = "1.0.158", features = ["derive"] }
 serde_bytes = "0.11"
 tempfile = "3.24.0"
-rustyline = "17.0.2"
-ratatui = "0.30"
-crossterm = "0.28"
-ansi-to-tui = "8"
-probe = "0.5"
+
+[dev-dependencies]
+proptest = "1.1.0"
+rand = "0.8.5"
 
 [profile.release]
 debug = 1
