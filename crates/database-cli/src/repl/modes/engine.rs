@@ -1,5 +1,6 @@
 use colored::Colorize;
 
+use crate::display::{ColoredOperation, ColoredScalarValue};
 use crate::repl::{tui_debugger::TuiDebugger, CommandResult, Mode, ModeId, SharedState};
 use database::compiler::{compile, CompiledProgram};
 use database::engine::registers::RegisterValue;
@@ -64,7 +65,7 @@ impl EngineMode {
         for (i, val) in engine.registers().iter() {
             let display = match val {
                 RegisterValue::None => continue,
-                RegisterValue::ScalarValue(s) => format!("{s}"),
+                RegisterValue::ScalarValue(s) => format!("{}", ColoredScalarValue(s)),
                 RegisterValue::CursorHandle(_) => "<cursor>".to_string(),
                 RegisterValue::RowBuffer(_) => "<rowbuffer>".to_string(),
                 RegisterValue::GroupTable(_) => "<grouptable>".to_string(),
@@ -127,7 +128,11 @@ impl Mode for EngineMode {
                         p.num_registers
                     );
                     for (i, op) in p.operations.iter().enumerate() {
-                        output += &format!("{}  {}\n", format!("{:4}", i).dimmed(), op);
+                        output += &format!(
+                            "{}  {}\n",
+                            format!("{:4}", i).dimmed(),
+                            ColoredOperation(op)
+                        );
                     }
                     CommandResult::Message(output)
                 }
@@ -161,7 +166,7 @@ impl Mode for EngineMode {
                 let op = program
                     .operations
                     .get(pc)
-                    .map(|o| format!("{o}"))
+                    .map(|o| format!("{}", ColoredOperation(o)))
                     .unwrap_or_default();
                 let result = state.engine.step();
                 state.pc += 1;
@@ -174,7 +179,10 @@ impl Mode for EngineMode {
                         output += "     [halted]\n";
                     }
                     Ok(StepSuccess::Yield(values)) => {
-                        let row: Vec<String> = values.iter().map(|v| format!("{v}")).collect();
+                        let row: Vec<String> = values
+                            .iter()
+                            .map(|v| format!("{}", ColoredScalarValue(v)))
+                            .collect();
                         output += &format!("     yield: {}\n", row.join(", "));
                         output += &Self::print_registers(&state.engine);
                     }
@@ -216,7 +224,7 @@ impl Mode for EngineMode {
                     let op = program
                         .operations
                         .get(pc)
-                        .map(|o| format!("{o}"))
+                        .map(|o| format!("{}", ColoredOperation(o)))
                         .unwrap_or_default();
                     let result = state.engine.step();
                     state.pc += 1;
@@ -230,7 +238,10 @@ impl Mode for EngineMode {
                             break;
                         }
                         Ok(StepSuccess::Yield(values)) => {
-                            let row: Vec<String> = values.iter().map(|v| format!("{v}")).collect();
+                            let row: Vec<String> = values
+                                .iter()
+                                .map(|v| format!("{}", ColoredScalarValue(v)))
+                                .collect();
                             output += &format!("     yield: {}\n", row.join(", "));
                         }
                         Ok(StepSuccess::Continue) => {}
