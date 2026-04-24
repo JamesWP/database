@@ -49,6 +49,14 @@ impl NodePageStore {
         })
     }
 
+    pub fn new_in_memory() -> Self {
+        NodePageStore {
+            pager: Pager::new_in_memory(),
+            cache: HashMap::new(),
+            dirty: HashSet::new(),
+        }
+    }
+
     pub fn page_count(&self) -> u32 {
         self.pager.get_file_size_pages()
     }
