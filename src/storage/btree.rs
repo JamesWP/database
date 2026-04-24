@@ -5,7 +5,6 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-use colored::Colorize;
 use probe::probe;
 
 use crate::engine::scalarvalue::ScalarValue;
@@ -959,17 +958,12 @@ impl BTree {
             ));
         }
 
-        println!(
-            "{}",
-            format!("Page {} raw CBOR structure:", page_num)
-                .bright_cyan()
-                .bold()
-        );
-        println!("{}", "=====================================".bright_black());
+        println!("Page {} raw CBOR structure:", page_num);
+        println!("=====================================");
 
         if page_num == 0 {
             // page_read_zero fires inside get_zero_page(); no duplicate probe here
-            println!("{}: {}", "Type".yellow(), "ZeroPage".green());
+            println!("Type: ZeroPage");
             if let Some(desc) = store.zero_page_debug() {
                 println!("{}", desc);
             }
@@ -980,9 +974,9 @@ impl BTree {
             }; // borrow dropped
             match &node {
                 node::NodePage::Leaf(leaf) => {
-                    println!("{}: {}", "Type".yellow(), "LeafNodePage".green());
-                    println!("{}: {}", "Number of items".yellow(), leaf.num_items());
-                    println!("\n{}:", "Cells".bright_yellow());
+                    println!("Type: LeafNodePage");
+                    println!("Number of items: {}", leaf.num_items());
+                    println!("\nCells:");
                     for i in 0..leaf.num_items() {
                         if let Some(cell) = leaf.get_item_at_index(i) {
                             let key = cell.key();
@@ -994,28 +988,23 @@ impl BTree {
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            println!("  {}:", format!("Cell {}", i).bright_blue());
-                            println!("    {}={}", "key".cyan(), key_hex);
+                            println!("  Cell {i}:");
+                            println!("    key={key_hex}");
 
                             if let Some(cont_page) = continuation {
-                                println!(
-                                    "    {}={} {}",
-                                    "continuation".cyan(),
-                                    cont_page,
-                                    "(overflow)".bright_magenta()
-                                );
-                                println!("    {}=[]", "decoded".cyan());
+                                println!("    continuation={cont_page} (overflow)");
+                                println!("    decoded=[]");
                             } else {
-                                println!("    {}={}", "continuation".cyan(), "None".bright_black());
-                                println!("    {}={:?}", "decoded".cyan(), values);
+                                println!("    continuation=None");
+                                println!("    decoded={values:?}");
                             }
                         }
                     }
                 }
                 node::NodePage::Interior(interior) => {
-                    println!("{}: {}", "Type".yellow(), "InteriorNodePage".green());
-                    println!("{}: {}", "Number of edges".yellow(), interior.num_edges());
-                    println!("\n{}:", "Keys and child pages".bright_yellow());
+                    println!("Type: InteriorNodePage");
+                    println!("Number of edges: {}", interior.num_edges());
+                    println!("\nKeys and child pages:");
                     for i in 0..interior.num_edges() {
                         let child = interior.get_child_page_by_index(i);
                         if i > 0 {
@@ -1025,31 +1014,18 @@ impl BTree {
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            println!(
-                                "  {}: {}={}, {}={}",
-                                format!("Edge {}", i).bright_blue(),
-                                "key".cyan(),
-                                key_hex,
-                                "child_page".cyan(),
-                                child
-                            );
+                            println!("  Edge {i}: key={key_hex}, child_page={child}");
                         } else {
-                            println!(
-                                "  {}: {}, {}={}",
-                                format!("Edge {}", i).bright_blue(),
-                                "(left-most)".bright_black(),
-                                "child_page".cyan(),
-                                child
-                            );
+                            println!("  Edge {i}: (left-most), child_page={child}");
                         }
                     }
                 }
                 node::NodePage::OverflowPage(overflow) => {
-                    println!("{}: {}", "Type".yellow(), "OverflowPage".green());
+                    println!("Type: OverflowPage");
                     let data = overflow.value();
                     let continuation = overflow.continuation();
-                    println!("{}: {}", "Data length".yellow(), data.len());
-                    println!("{}: {:?}", "Continuation".yellow(), continuation);
+                    println!("Data length: {}", data.len());
+                    println!("Continuation: {continuation:?}");
                     let hex: String = data
                         .iter()
                         .take(16)
@@ -1057,7 +1033,7 @@ impl BTree {
                         .collect::<Vec<_>>()
                         .join(" ");
                     let suffix = if data.len() > 16 { "..." } else { "" };
-                    println!("{}: {}{}", "Data hex".yellow(), hex.bright_black(), suffix);
+                    println!("Data hex: {hex}{suffix}");
                 }
             }
         }
