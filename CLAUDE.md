@@ -12,8 +12,7 @@ A single-file relational database library in Rust, similar to SQLite. Implements
 cargo build --workspace              # Debug build (all crates)
 cargo build --release                # Release build (library only)
 cargo build --workspace --release    # Release build (all crates)
-cargo test                           # Run all library tests - THE BASELINE
-cargo test --workspace               # Run tests for all crates
+cargo test --workspace               # Run all tests (lib + integration + doctests) - THE BASELINE
 cargo test test_sql_                 # Run SQL integration tests
 cargo test <test_name>               # Run single test
 cargo run -p database-cli -- <db_file>  # Run interactive CLI
@@ -54,9 +53,9 @@ CREATE TABLE users (id INTEGER, name TEXT)
 ## Development Workflow
 
 **TDD Process:**
-1. Run `cargo test` before changes (establish baseline)
+1. Run `cargo test --workspace` before changes (establish baseline)
 2. Write tests alongside or before implementation
-3. Run `cargo test` after changes (verify nothing broke)
+3. Run `cargo test --workspace` after changes (verify nothing broke)
 4. Add regression tests when fixing bugs
 
 **Code Quality (before committing):**
@@ -72,7 +71,7 @@ cargo test --workspace                       # All tests must pass
 
 ## Git Hooks
 
-A pre-commit hook lives in `.githooks/pre-commit` and runs `cargo test` before each commit. Activate it once after cloning:
+A pre-commit hook lives in `.githooks/pre-commit` and runs `cargo test --workspace` before each commit. Activate it once after cloning:
 
 ```bash
 make install-hooks
