@@ -5,11 +5,11 @@ echo "Running fmt before commit..."
 cargo fmt --check
 
 echo "Checking for warnings..."
-CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0 cargo check 2>&1 | grep -q "^warning:" \
+CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0 cargo check --workspace 2>&1 | grep -q "^warning:" \
     && echo "THERE ARE WARNINGS! Go fix!" && exit 1
 
 echo "Running tests before commit..."
-output=$(cargo test --quiet 2>&1)
+output=$(cargo test --workspace --quiet 2>&1)
 echo "$output" | grep error: >/dev/null \
     && echo THERE ARE ERRORS! Go fix! && exit 1
 echo "$output" | awk '
