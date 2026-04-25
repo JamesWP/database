@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use probe::probe;
@@ -38,6 +39,7 @@ pub struct NodePageStore {
 }
 
 impl NodePageStore {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open(path: &Path) -> Result<Self, Error> {
         let path_str = path
             .to_str()
