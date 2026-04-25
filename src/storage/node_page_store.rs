@@ -7,7 +7,8 @@ use probe::probe;
 use super::error::Error;
 use super::node::NodePage;
 use super::page_id::PageId;
-use super::pager::{Pager, PAGE_SIZE};
+use super::page_storage::{PageStorage, PAGE_SIZE};
+use super::pager::Pager;
 
 /// The middle layer of the storage stack.
 ///
@@ -54,6 +55,14 @@ impl NodePageStore {
     pub fn new_in_memory() -> Self {
         NodePageStore {
             pager: Pager::new_in_memory(),
+            cache: HashMap::new(),
+            dirty: HashSet::new(),
+        }
+    }
+
+    pub fn with_storage(storage: Box<dyn PageStorage>) -> Self {
+        NodePageStore {
+            pager: Pager::with_storage(storage),
             cache: HashMap::new(),
             dirty: HashSet::new(),
         }
@@ -138,7 +147,7 @@ impl NodePageStore {
     /// Returns `Err(Error::PageFull(node))` immediately if the exact encoded size
     /// exceeds `PAGE_SIZE`, so the caller can split before retrying.
     pub fn write(&mut self, id: PageId, node: NodePage) -> Result<(), Error> {
-        if node.cbor_encoded_size() > PAGE_SIZE as usize {
+        if node.cbor_encoded_size() > PAGE_SIZE {
             return Err(Error::PageFull(node));
         }
         self.cache.insert(id, node);
@@ -249,8 +258,8 @@ fn decode_page(bytes: &[u8]) -> Result<NodePage, Error> {
 /// Returns `Err(Error::PageFull(node))` when the encoded size exceeds
 /// `PAGE_SIZE` — the node is returned to the caller so a split can be
 /// performed without a re-fetch or clone.
-fn encode_page(node: NodePage) -> Result<([u8; PAGE_SIZE as usize], NodePage), Error> {
-    let mut bytes = [0u8; PAGE_SIZE as usize];
+fn encode_page(node: NodePage) -> Result<([u8; PAGE_SIZE], NodePage), Error> {
+    let mut bytes = [0u8; PAGE_SIZE];
     probe!(database, cbor_page_encode);
     match ciborium::ser::into_writer(&node, &mut &mut bytes[..]) {
         Ok(()) => Ok((bytes, node)),
