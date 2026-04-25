@@ -94,7 +94,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **BD** | Collapse Row Encoding: Eliminate Double-CBOR | 3 | [phase-bd-collapse-row-encoding.md](completed/phase-bd-collapse-row-encoding.md) | Completed |
 | **BE** | Cache Parsed Table Schema: Eliminate DDL Re-parsing | 3 | [phase-be-schema-cache.md](completed/phase-be-schema-cache.md) | Completed |
 | **BF** | WASM Core Library Prerequisites | 3 | [phase-bf-wasm-core-prereqs.md](completed/phase-bf-wasm-core-prereqs.md) | Completed |
-| **BG** | Pluggable Storage (VFS API) | 4 | [phase-bg-pluggable-storage.md](phase-bg-pluggable-storage.md) | Planned |
+| **BG** | Pluggable Storage (VFS API) | 4 | [phase-bg-pluggable-storage.md](completed/phase-bg-pluggable-storage.md) | Completed |
 ## Sakila Compatibility
 
 Phases AJ–AV are ordered to progressively support the [sqlite-sakila-db](https://github.com/jOOQ/sakila/tree/main/sqlite-sakila-db) benchmark schema. Each phase unlocks more of the schema/data/views:
