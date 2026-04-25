@@ -101,6 +101,40 @@ impl std::fmt::Display for ExecuteError {
     }
 }
 
+/// Convenience wrapper around a `BTree` for in-memory and embedded use.
+pub struct Db {
+    btree: BTree,
+}
+
+impl Db {
+    pub fn new_in_memory() -> Self {
+        Db {
+            btree: BTree::new_in_memory(),
+        }
+    }
+
+    pub fn btree_mut(&mut self) -> &mut BTree {
+        &mut self.btree
+    }
+
+    pub fn execute(&mut self, sql: &str) -> Result<ExecuteResult, ExecuteError> {
+        execute(sql, &mut self.btree)
+    }
+
+    pub fn query_rows(&mut self, sql: &str) -> Result<Vec<Vec<ScalarValue>>, ExecuteError> {
+        match execute(sql, &mut self.btree)? {
+            ExecuteResult::Query(mut q) => {
+                let mut rows = vec![];
+                while let Some(row) = q.next() {
+                    rows.push(row);
+                }
+                Ok(rows)
+            }
+            _ => Ok(vec![]),
+        }
+    }
+}
+
 pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteError> {
     let sql_bytes = sql.as_bytes();
     probe!(
@@ -970,5 +1004,14 @@ mod tests {
             }
             _ => panic!("Expected Query result"),
         }
+    }
+
+    #[test]
+    fn test_in_memory_db_basic() {
+        let mut db = Db::new_in_memory();
+        db.execute("CREATE TABLE t (x INTEGER)").unwrap();
+        db.execute("INSERT INTO t VALUES (42)").unwrap();
+        let rows = db.query_rows("SELECT x FROM t").unwrap();
+        assert_eq!(rows[0][0], ScalarValue::Integer(42));
     }
 }

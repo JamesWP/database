@@ -64,9 +64,7 @@ impl std::fmt::Debug for Pager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.storage {
             #[cfg(not(target_arch = "wasm32"))]
-            PagerStorage::File { path, .. } => {
-                f.debug_struct("Pager").field("path", path).finish()
-            }
+            PagerStorage::File { path, .. } => f.debug_struct("Pager").field("path", path).finish(),
             PagerStorage::Memory(pages) => f
                 .debug_struct("Pager")
                 .field("pages", &pages.borrow().len())

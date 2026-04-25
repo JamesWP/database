@@ -772,6 +772,17 @@ impl BTree {
         btree
     }
 
+    pub fn new_in_memory() -> BTree {
+        let store = NodePageStore::new_in_memory();
+        let mut btree = BTree {
+            store: Arc::new(RefCell::new(store)),
+            rowid_cache: Arc::new(RefCell::new(HashMap::new())),
+            catalog_cache: RefCell::new(None),
+        };
+        btree.bootstrap_catalog();
+        btree
+    }
+
     /// Bootstrap a fresh database by creating the catalog B-tree (root page 1)
     /// and inserting the self-referencing `db_schema` entry.
     fn bootstrap_catalog(&mut self) {
