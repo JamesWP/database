@@ -785,6 +785,31 @@ impl BTree {
         btree
     }
 
+    /// Create a `BTree` backed by a custom `PageStorage` implementation.
+    ///
+    /// If the storage is empty (`page_count() == 0`), bootstraps a fresh
+    /// catalog tree. If the storage already contains data, validates the
+    /// format version.
+    pub fn with_storage(storage: impl super::page_storage::PageStorage + 'static) -> BTree {
+        let store = NodePageStore::with_storage(Box::new(storage));
+        let is_new = store.page_count() == 0;
+        let mut btree = BTree {
+            store: Arc::new(RefCell::new(store)),
+            rowid_cache: Arc::new(RefCell::new(HashMap::new())),
+            catalog_cache: RefCell::new(None),
+        };
+        if !is_new {
+            btree
+                .store
+                .borrow()
+                .validate_format_version()
+                .unwrap_or_else(|e| panic!("{e}"));
+        } else {
+            btree.bootstrap_catalog();
+        }
+        btree
+    }
+
     /// Bootstrap a fresh database by creating the catalog B-tree (root page 1)
     /// and inserting the self-referencing `db_schema` entry.
     fn bootstrap_catalog(&mut self) {
@@ -2616,5 +2641,30 @@ mod test {
             CHUNK_THRESHOLD,
             "inline_bytes must hold exactly CHUNK_THRESHOLD bytes"
         );
+    }
+
+    #[test]
+    fn with_storage_bootstraps_catalog() {
+        use crate::storage::MemoryPageStorage;
+        let mut btree = BTree::with_storage(MemoryPageStorage::new());
+        assert!(
+            btree.catalog().lookup_table_info("db_schema").is_some(),
+            "catalog should exist after bootstrap"
+        );
+    }
+
+    #[test]
+    fn with_storage_roundtrip() {
+        use crate::db::{execute, ExecuteResult};
+        use crate::storage::MemoryPageStorage;
+        let mut btree = BTree::with_storage(MemoryPageStorage::new());
+        execute("CREATE TABLE t (x INTEGER)", &mut btree).unwrap();
+        execute("INSERT INTO t VALUES (99)", &mut btree).unwrap();
+        let mut result = match execute("SELECT x FROM t", &mut btree).unwrap() {
+            ExecuteResult::Query(q) => q,
+            other => panic!("expected Query, got {:?}", other),
+        };
+        let row = result.next().unwrap();
+        assert_eq!(row[0], ScalarValue::Integer(99));
     }
 }

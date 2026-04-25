@@ -16,6 +16,11 @@ mod btree;
 mod btree_graph;
 mod btree_verify;
 
+pub use page_storage::MemoryPageStorage;
+pub use page_storage::PageStorage;
+#[cfg(not(target_arch = "wasm32"))]
+pub use page_storage::FilePageStorage;
+
 pub use btree::decode_integer_key;
 pub use btree::decode_u64_key;
 pub use btree::encode_index_value;

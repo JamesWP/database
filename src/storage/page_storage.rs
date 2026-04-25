@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub const PAGE_SIZE: usize = 4096;
 
 /// Synchronous page-I/O interface.
