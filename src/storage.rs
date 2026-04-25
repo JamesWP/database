@@ -5,6 +5,7 @@ mod error;
 mod node;
 mod node_page_store;
 mod page_id;
+mod page_storage;
 mod pager;
 
 /// Btree module heavily inspired by the fantastic article: https://cglab.ca/~abeinges/blah/rust-btree-case/
