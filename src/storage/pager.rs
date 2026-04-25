@@ -3,7 +3,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use probe::probe;
 
 use super::page_id::PageId;
-use super::page_storage::{self, FilePageStorage, MemoryPageStorage, PAGE_SIZE};
+use super::page_storage::{self, MemoryPageStorage, PAGE_SIZE};
+#[cfg(not(target_arch = "wasm32"))]
+use super::page_storage::FilePageStorage;
 
 /// Linked list page for tracking free pages
 #[derive(Serialize, Deserialize)]
