@@ -1,21 +1,9 @@
-use std::cell::RefCell;
-#[cfg(not(target_arch = "wasm32"))]
-use std::io::Write;
-
-#[cfg(not(target_arch = "wasm32"))]
-use std::{
-    fs::{File, OpenOptions},
-    io::{Read, Seek},
-    os::unix::prelude::MetadataExt,
-};
-
-use probe::probe;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-use super::page_id::PageId;
+use probe::probe;
 
-pub(super) const PAGE_SIZE: u64 = 2 << 11; // 4096 bytes
-const PAGE_SIZE_USIZE: usize = PAGE_SIZE as usize;
+use super::page_id::PageId;
+use super::page_storage::{self, FilePageStorage, MemoryPageStorage, PAGE_SIZE};
 
 /// Linked list page for tracking free pages
 #[derive(Serialize, Deserialize)]
@@ -49,29 +37,15 @@ impl Default for ZeroPage {
     }
 }
 
-enum PagerStorage {
-    #[cfg(not(target_arch = "wasm32"))]
-    File {
-        path: String,
-        file: RefCell<File>,
-    },
-    Memory(RefCell<Vec<[u8; PAGE_SIZE_USIZE]>>),
-}
-
 pub(super) struct Pager {
-    storage: PagerStorage,
+    storage: Box<dyn page_storage::PageStorage>,
 }
 
 impl std::fmt::Debug for Pager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.storage {
-            #[cfg(not(target_arch = "wasm32"))]
-            PagerStorage::File { path, .. } => f.debug_struct("Pager").field("path", path).finish(),
-            PagerStorage::Memory(pages) => f
-                .debug_struct("Pager")
-                .field("pages", &pages.borrow().len())
-                .finish(),
-        }
+        f.debug_struct("Pager")
+            .field("pages", &self.storage.page_count())
+            .finish()
     }
 }
 
@@ -84,51 +58,27 @@ impl Drop for Pager {
 impl Pager {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn new(path: &str) -> Pager {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(path)
-            .unwrap();
         Pager {
-            storage: PagerStorage::File {
-                path: path.to_owned(),
-                file: RefCell::new(file),
-            },
+            storage: Box::new(FilePageStorage::open(path.as_ref()).unwrap()),
         }
     }
 
     pub(super) fn new_in_memory() -> Pager {
         Pager {
-            storage: PagerStorage::Memory(RefCell::new(Vec::new())),
+            storage: Box::new(MemoryPageStorage::new()),
         }
+    }
+
+    pub(super) fn with_storage(storage: Box<dyn page_storage::PageStorage>) -> Pager {
+        Pager { storage }
     }
 
     pub(super) fn get_file_size_pages(&self) -> u32 {
-        match &self.storage {
-            #[cfg(not(target_arch = "wasm32"))]
-            PagerStorage::File { file, .. } => {
-                let file = file.borrow();
-                let file_size_bytes = file.metadata().unwrap().size();
-                (file_size_bytes / PAGE_SIZE) as u32
-            }
-            PagerStorage::Memory(pages) => pages.borrow().len() as u32,
-        }
+        self.storage.page_count()
     }
 
-    fn set_file_size_pages(&self, num_pages: u32) {
-        match &self.storage {
-            #[cfg(not(target_arch = "wasm32"))]
-            PagerStorage::File { file, .. } => {
-                let file = file.borrow();
-                file.set_len(PAGE_SIZE * num_pages as u64).unwrap();
-            }
-            PagerStorage::Memory(pages) => {
-                pages
-                    .borrow_mut()
-                    .resize(num_pages as usize, [0u8; PAGE_SIZE_USIZE]);
-            }
-        }
+    fn set_file_size_pages(&mut self, count: u32) {
+        self.storage.set_page_count(count);
     }
 
     #[inline(never)]
@@ -151,48 +101,26 @@ impl Pager {
 
     /// Read a raw page from disk (no cache).
     #[inline(never)]
-    pub(super) fn read_raw(&self, id: PageId) -> [u8; PAGE_SIZE_USIZE] {
+    pub(super) fn read_raw(&self, id: PageId) -> [u8; PAGE_SIZE] {
         let page_no = id.as_u32();
         probe!(database, page_read_cache_miss, page_no);
         probe!(database, page_read, page_no);
         self.read_bytes(page_no)
     }
 
-    fn read_bytes(&self, page_no: u32) -> [u8; PAGE_SIZE_USIZE] {
-        match &self.storage {
-            #[cfg(not(target_arch = "wasm32"))]
-            PagerStorage::File { file, .. } => {
-                let mut bytes = [0u8; PAGE_SIZE_USIZE];
-                let mut file = file.borrow_mut();
-                let offset = PAGE_SIZE * (page_no as u64);
-                file.seek(std::io::SeekFrom::Start(offset)).unwrap();
-                file.read_exact(&mut bytes).unwrap();
-                bytes
-            }
-            PagerStorage::Memory(pages) => pages.borrow()[page_no as usize],
-        }
+    fn read_bytes(&self, page_no: u32) -> [u8; PAGE_SIZE] {
+        self.storage.read_page(page_no)
     }
 
     /// Write raw page bytes to disk.
     #[inline(never)]
-    pub(super) fn write_raw(&mut self, id: PageId, bytes: &[u8; PAGE_SIZE_USIZE]) {
+    pub(super) fn write_raw(&mut self, id: PageId, bytes: &[u8; PAGE_SIZE]) {
         probe!(database, page_write, id.as_u32());
         self.write_bytes(id.as_u32(), bytes);
     }
 
-    fn write_bytes(&mut self, page_no: u32, bytes: &[u8; PAGE_SIZE_USIZE]) {
-        match &self.storage {
-            #[cfg(not(target_arch = "wasm32"))]
-            PagerStorage::File { file, .. } => {
-                let mut file = file.borrow_mut();
-                let offset = PAGE_SIZE * (page_no as u64);
-                file.seek(std::io::SeekFrom::Start(offset)).unwrap();
-                file.write_all(bytes).unwrap();
-            }
-            PagerStorage::Memory(pages) => {
-                pages.borrow_mut()[page_no as usize] = *bytes;
-            }
-        }
+    fn write_bytes(&mut self, page_no: u32, bytes: &[u8; PAGE_SIZE]) {
+        self.storage.write_page(page_no, bytes);
     }
 
     // ── page lifecycle ────────────────────────────────────────────────────────
@@ -219,7 +147,8 @@ impl Pager {
 
                 if let Some(page_id) = free_list_page.page_ids.pop() {
                     // Update the partially-drained free list page.
-                    let updated = cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                    let updated =
+                        cbor_encode(&free_list_page).expect("FreeListPage encode failed");
                     self.write_bytes(head_page_no, &updated);
                     probe!(database, page_write_freelist, head_page_no);
                     return PageId(page_id);
@@ -256,7 +185,8 @@ impl Pager {
 
             if free_list_page.page_ids.len() < 1000 {
                 free_list_page.page_ids.push(idx);
-                let updated = cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                let updated =
+                    cbor_encode(&free_list_page).expect("FreeListPage encode failed");
                 self.write_bytes(head_page_no, &updated);
                 return;
             }
@@ -275,23 +205,19 @@ impl Pager {
     }
 
     pub(super) fn flush(&mut self) -> std::io::Result<()> {
-        match &self.storage {
-            #[cfg(not(target_arch = "wasm32"))]
-            PagerStorage::File { file, .. } => file.borrow_mut().flush(),
-            PagerStorage::Memory(_) => Ok(()),
-        }
+        self.storage.flush()
     }
 }
 
 // ── internal CBOR helpers (ZeroPage and FreeListPage only) ───────────────────
 
-fn cbor_encode<T: Serialize>(v: &T) -> Option<[u8; PAGE_SIZE_USIZE]> {
-    let mut bytes = [0u8; PAGE_SIZE_USIZE];
+fn cbor_encode<T: Serialize>(v: &T) -> Option<[u8; PAGE_SIZE]> {
+    let mut bytes = [0u8; PAGE_SIZE];
     ciborium::ser::into_writer(v, &mut &mut bytes[..]).ok()?;
     Some(bytes)
 }
 
-fn cbor_decode<T: DeserializeOwned>(bytes: &[u8; PAGE_SIZE_USIZE]) -> T {
+fn cbor_decode<T: DeserializeOwned>(bytes: &[u8; PAGE_SIZE]) -> T {
     ciborium::de::from_reader(&bytes[..]).unwrap()
 }
 
@@ -321,12 +247,12 @@ mod test {
 
         assert_eq!(3, pager.get_file_size_pages());
 
-        let mut p1 = [0u8; PAGE_SIZE as usize];
+        let mut p1 = [0u8; PAGE_SIZE];
         p1[0] = 10;
         p1[10] = 10;
         pager.write_raw(page_one_idx, &p1);
 
-        let mut p2 = [0u8; PAGE_SIZE as usize];
+        let mut p2 = [0u8; PAGE_SIZE];
         p2[0] = 20;
         p2[20] = 20;
         pager.write_raw(page_two_idx, &p2);
@@ -388,7 +314,7 @@ mod test {
         let path = f.path().to_str().unwrap().to_string();
 
         let page_idx = pager.allocate();
-        let mut bytes = [0u8; PAGE_SIZE as usize];
+        let mut bytes = [0u8; PAGE_SIZE];
         bytes[0] = 42;
         bytes[100] = 99;
         pager.write_raw(page_idx, &bytes);
@@ -417,7 +343,7 @@ mod test {
         let page_d = pager.allocate();
         assert_eq!(page_b, page_d, "Should reuse the freed page");
 
-        let mut bytes = [0u8; PAGE_SIZE as usize];
+        let mut bytes = [0u8; PAGE_SIZE];
         bytes[0] = 123;
         pager.write_raw(page_d, &bytes);
         let r = pager.read_raw(page_d);
@@ -429,14 +355,14 @@ mod test {
         let (_f, mut pager) = open_pager();
         let page_idx = pager.allocate();
 
-        let mut bytes = [0u8; PAGE_SIZE as usize];
-        for i in 0..PAGE_SIZE as usize {
+        let mut bytes = [0u8; PAGE_SIZE];
+        for i in 0..PAGE_SIZE {
             bytes[i] = (i % 256) as u8;
         }
         pager.write_raw(page_idx, &bytes);
 
         let r = pager.read_raw(page_idx);
-        for i in 0..PAGE_SIZE as usize {
+        for i in 0..PAGE_SIZE {
             assert_eq!((i % 256) as u8, r[i]);
         }
     }
@@ -576,7 +502,7 @@ mod test {
         let p3 = pager.allocate();
 
         for (idx, page_id) in [p1, p2, p3].iter().enumerate() {
-            let mut bytes = [0u8; PAGE_SIZE as usize];
+            let mut bytes = [0u8; PAGE_SIZE];
             bytes[0] = (idx + 1) as u8;
             pager.write_raw(*page_id, &bytes);
         }

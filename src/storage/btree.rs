@@ -18,7 +18,7 @@ use super::error::Error as StorageError;
 use super::node::{self, InteriorNodePage};
 use super::node_page_store::NodePageStore;
 use super::page_id::PageId;
-use super::pager;
+use super::page_storage::PAGE_SIZE;
 use super::{btree_graph, btree_verify, CellReader};
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ const OVERFLOW_PAGE_FRAMING_BYTES: usize = 44;
 /// Maximum bytes stored in a single overflow page.
 /// Sized to fill a page while leaving room for worst-case CBOR framing overhead.
 /// With PAGE_SIZE=4096: OVERFLOW_LIMIT = 4096 - 44 = 4052.
-const OVERFLOW_LIMIT: usize = pager::PAGE_SIZE as usize - OVERFLOW_PAGE_FRAMING_BYTES;
+const OVERFLOW_LIMIT: usize = PAGE_SIZE - OVERFLOW_PAGE_FRAMING_BYTES;
 
 /// Minimum number of cells that must fit on a leaf page to maintain adequate B-tree fill
 /// factor after a split. After splitting, each half has ≥ MIN_CELLS_PER_PAGE / 2 cells,
@@ -135,7 +135,7 @@ const CELL_FRAMING_BYTES: usize = 10;
 /// Derived so that `MIN_CELLS_PER_PAGE` cells can always fit on one page.
 /// With PAGE_SIZE=4096: CHUNK_THRESHOLD = (4096 - 15) / 4 - 10 = 1010.
 /// Typical SQL rows (< 500 bytes) now store inline with no overflow pages.
-const CHUNK_THRESHOLD: usize = (pager::PAGE_SIZE as usize - LEAF_PAGE_BASE_FRAMING_BYTES)
+const CHUNK_THRESHOLD: usize = (PAGE_SIZE - LEAF_PAGE_BASE_FRAMING_BYTES)
     / MIN_CELLS_PER_PAGE
     - CELL_FRAMING_BYTES;
 
