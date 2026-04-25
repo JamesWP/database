@@ -2,6 +2,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -750,6 +751,7 @@ pub struct BTree {
 }
 
 impl BTree {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(path: &str) -> BTree {
         let store = NodePageStore::open(Path::new(path))
             .unwrap_or_else(|e| panic!("Failed to open database: {e}"));

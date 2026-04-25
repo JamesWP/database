@@ -1,4 +1,6 @@
-use std::{cell::RefCell, io::Write};
+use std::cell::RefCell;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
