@@ -41,6 +41,13 @@ impl Database {
         })
     }
 
+    /// Flush dirty pages from the write cache to the underlying storage provider.
+    pub fn flush(&mut self) -> Result<(), JsValue> {
+        self.btree
+            .flush()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     /// Execute a DDL or DML statement. Returns a status string.
     pub fn execute(&mut self, sql: &str) -> Result<String, JsValue> {
         execute(sql, &mut self.btree)
