@@ -68,7 +68,12 @@ install-hooks:
 	git config core.hooksPath .githooks
 
 wasm:
-	wasm-pack build --target web --out-dir pkg
+	wasm-pack build --target web --out-dir pkg -- --package database
+
+# Serve the webapp demo on http://localhost:8000/example/webapp/
+# (WASM modules require HTTP — cannot be opened as file://)
+serve: wasm
+	python3 -m http.server 8000
 
 PROG=target/release/database
 
