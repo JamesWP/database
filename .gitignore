@@ -1,4 +1,5 @@
 /target
+/pkg
 test.db
 test.dot
 test.svg

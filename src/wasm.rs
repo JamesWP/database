@@ -1,4 +1,4 @@
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 mod bindings {
     use js_sys::Array;
     use wasm_bindgen::prelude::*;
@@ -79,5 +79,5 @@ mod bindings {
     }
 }
 
-#[cfg(feature = "wasm")]
+#[cfg(target_arch = "wasm32")]
 pub use bindings::Database;
