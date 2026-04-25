@@ -53,7 +53,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **P** | Column Names in Query Output | 3 | [phase-p-column-names.md](completed/phase-p-column-names.md) | Completed |
 | **Q** | Bytecode Emit Ergonomics | 2 | [phase-q-program-macro.md](completed/phase-q-program-macro.md) | Completed |
 | **R** | PRIMARY KEY & UNIQUE Constraints | 6 | [phase-r-unique-constraints.md](completed/phase-r-unique-constraints.md) | Completed |
-| **S** | JavaScript / WebAssembly Bindings | 4 | [phase-s-javascript.md](phase-s-javascript.md) | Planned |
+| **S** | JavaScript / WebAssembly Bindings | 4 | [phase-s-javascript.md](completed/phase-s-javascript.md) | Completed |
 | **T** | INSERT INTO … SELECT | 3 | [phase-t-insert-select.md](completed/phase-t-insert-select.md) | Completed |
 | **U** | UPDATE Index Maintenance | 3 | [phase-u-update-index-maintenance.md](completed/phase-u-update-index-maintenance.md) | Completed |
 | **V** | README Overhaul | 2 | [phase-v-readme-overhaul.md](completed/phase-v-readme-overhaul.md) | Completed |
@@ -93,7 +93,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **BC** | Lexer Performance | 2 | [phase-bc-lexer-perf.md](completed/phase-bc-lexer-perf.md) | Completed |
 | **BD** | Collapse Row Encoding: Eliminate Double-CBOR | 3 | [phase-bd-collapse-row-encoding.md](completed/phase-bd-collapse-row-encoding.md) | Completed |
 | **BE** | Cache Parsed Table Schema: Eliminate DDL Re-parsing | 3 | [phase-be-schema-cache.md](completed/phase-be-schema-cache.md) | Completed |
-| **BF** | WASM Core Library Prerequisites | 3 | [phase-bf-wasm-core-prereqs.md](phase-bf-wasm-core-prereqs.md) | Planned |
+| **BF** | WASM Core Library Prerequisites | 3 | [phase-bf-wasm-core-prereqs.md](completed/phase-bf-wasm-core-prereqs.md) | Completed |
 ## Sakila Compatibility
 
 Phases AJ–AV are ordered to progressively support the [sqlite-sakila-db](https://github.com/jOOQ/sakila/tree/main/sqlite-sakila-db) benchmark schema. Each phase unlocks more of the schema/data/views:
