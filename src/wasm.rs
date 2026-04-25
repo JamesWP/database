@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::db::{execute, ExecuteResult};
 use crate::engine::scalarvalue::ScalarValue;
-use crate::storage::BTree;
+use crate::storage::{BTree, PageStorage, PAGE_SIZE};
 
 #[wasm_bindgen]
 pub struct Database {
@@ -17,6 +17,28 @@ impl Database {
         Database {
             btree: BTree::new_in_memory(),
         }
+    }
+
+    /// Create a Database backed by a custom JS storage provider.
+    ///
+    /// `provider` must implement the `PageStorageProvider` interface:
+    /// - `pageCount(): number`
+    /// - `setPageCount(n: number): void`
+    /// - `readPage(n: number): Uint8Array`   — exactly 4096 bytes
+    /// - `writePage(n: number, data: Uint8Array): void`
+    /// - `flush(): void`
+    ///
+    /// All methods are called synchronously. For async backends (S3, IndexedDB),
+    /// implement the provider in a Worker and use `Atomics.wait()` to block.
+    #[wasm_bindgen(js_name = withStorage)]
+    pub fn with_storage(provider: JsValue) -> Result<Database, JsValue> {
+        let obj = js_sys::Object::try_from(&provider)
+            .cloned()
+            .ok_or_else(|| JsValue::from_str("storage provider must be an object"))?;
+        let storage = JsPageStorage { provider: obj };
+        Ok(Database {
+            btree: BTree::with_storage(storage),
+        })
     }
 
     /// Execute a DDL or DML statement. Returns a status string.
@@ -46,6 +68,74 @@ impl Database {
         }
     }
 }
+
+// ── JsPageStorage ─────────────────────────────────────────────────────────────
+
+struct JsPageStorage {
+    provider: js_sys::Object,
+}
+
+impl PageStorage for JsPageStorage {
+    fn page_count(&self) -> u32 {
+        call_method_0(&self.provider, "pageCount")
+            .as_f64()
+            .unwrap_or(0.0) as u32
+    }
+
+    fn set_page_count(&mut self, count: u32) {
+        call_method_1(&self.provider, "setPageCount", JsValue::from(count));
+    }
+
+    fn read_page(&self, page_no: u32) -> [u8; PAGE_SIZE] {
+        let val = call_method_1(&self.provider, "readPage", JsValue::from(page_no));
+        let arr = js_sys::Uint8Array::from(val);
+        let mut bytes = [0u8; PAGE_SIZE];
+        arr.copy_to(&mut bytes);
+        bytes
+    }
+
+    fn write_page(&mut self, page_no: u32, bytes: &[u8; PAGE_SIZE]) {
+        let arr = js_sys::Uint8Array::new_with_length(PAGE_SIZE as u32);
+        arr.copy_from(&bytes[..]);
+        call_method_2(
+            &self.provider,
+            "writePage",
+            JsValue::from(page_no),
+            arr.into(),
+        );
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        call_method_0(&self.provider, "flush");
+        Ok(())
+    }
+}
+
+fn call_method_0(obj: &js_sys::Object, method: &str) -> JsValue {
+    js_sys::Reflect::get(obj, &JsValue::from_str(method))
+        .expect("method missing")
+        .unchecked_into::<js_sys::Function>()
+        .call0(obj)
+        .expect("call failed")
+}
+
+fn call_method_1(obj: &js_sys::Object, method: &str, arg: JsValue) -> JsValue {
+    js_sys::Reflect::get(obj, &JsValue::from_str(method))
+        .expect("method missing")
+        .unchecked_into::<js_sys::Function>()
+        .call1(obj, &arg)
+        .expect("call failed")
+}
+
+fn call_method_2(obj: &js_sys::Object, method: &str, a: JsValue, b: JsValue) -> JsValue {
+    js_sys::Reflect::get(obj, &JsValue::from_str(method))
+        .expect("method missing")
+        .unchecked_into::<js_sys::Function>()
+        .call2(obj, &a, &b)
+        .expect("call failed")
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 fn format_result(r: ExecuteResult) -> String {
     match r {
