@@ -63,6 +63,27 @@
     query(db, "SELECT * FROM users");
     query(db, "SELECT * FROM users WHERE age > 26");
     query(db, "SELECT * FROM orders WHERE user_id = 1");
+
+    // Custom JS storage provider demo
+    log('<hr><h2>Custom storage provider</h2>');
+    const provider = {
+      _pages: new Map(),
+      pageCount()        { return this._pages.size; },
+      setPageCount(n)    {
+        while (this._pages.size < n) this._pages.set(this._pages.size, new Uint8Array(4096));
+        while (this._pages.size > n) this._pages.delete(this._pages.size - 1);
+      },
+      readPage(n)        { return this._pages.get(n) ?? new Uint8Array(4096); },
+      writePage(n, data) { this._pages.set(n, data.slice()); },
+      flush()            {},
+    };
+
+    const db2 = Database.withStorage(provider);
+    exec(db2, "CREATE TABLE custom (val INTEGER)");
+    exec(db2, "INSERT INTO custom VALUES (7)");
+    exec(db2, "INSERT INTO custom VALUES (42)");
+    query(db2, "SELECT val FROM custom");
+    log(`<div class="ok">provider holds ${provider._pages.size} pages</div>`);
   </script>
 </body>
 </html>
