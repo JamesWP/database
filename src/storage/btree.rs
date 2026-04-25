@@ -1001,6 +1001,13 @@ impl BTree {
         write!(writer, "{}", self)?;
         Ok(())
     }
+
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        self.store
+            .borrow_mut()
+            .flush()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+    }
 }
 
 impl Display for BTree {
