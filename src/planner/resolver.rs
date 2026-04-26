@@ -111,6 +111,9 @@ pub(super) fn convert_expr(
             op: convert_unary_op(op),
             operand: Box::new(convert_expr(expression, resolver)?),
         }),
+        ast::Expression::In { .. } | ast::Expression::ScalarSubquery(_) => {
+            Err(PlanError::UnsupportedStatement)
+        }
         ast::Expression::FunctionCall { name, args } => {
             // Validate function name (case-insensitive)
             let name_upper = name.to_uppercase();
@@ -353,6 +356,9 @@ pub(super) fn convert_having_expr(
             _ => convert_scalar(scalar, resolver),
         },
         ast::Expression::FunctionCall { name, .. } => Err(PlanError::UnknownFunction(name.clone())),
+        ast::Expression::In { .. } | ast::Expression::ScalarSubquery(_) => {
+            Err(PlanError::UnsupportedStatement)
+        }
     }
 }
 
@@ -376,6 +382,8 @@ pub(super) fn collect_columns(expr: &ast::Expression, columns: &mut HashSet<Stri
                 collect_columns(arg, columns);
             }
         }
+        ast::Expression::In { expr, .. } => collect_columns(expr, columns),
+        ast::Expression::ScalarSubquery(_) => {}
     }
 }
 
