@@ -130,6 +130,10 @@ impl ParserInput {
                 self.advance();
                 Ok(())
             }
+            (Expect::In, lexer::Type::In) => {
+                self.advance();
+                Ok(())
+            }
             // These expectations are not used with `.expect`
             (Expect::PrimaryExpression, _) => panic!("Not implemented"),
             (Expect::Identifier, _) => panic!("Not implemented"),
@@ -176,6 +180,7 @@ pub enum Expect {
     Join,
     On,
     Key,
+    In,
 }
 
 impl lexer::Type {
@@ -987,6 +992,40 @@ impl Parser {
             }
         }
 
+        // Check for [NOT] IN (...)
+        let negated = if matches!(self.input.peek(), lexer::Type::Not) {
+            self.input.advance(); // consume NOT — must be followed by IN
+            true
+        } else {
+            false
+        };
+        if matches!(self.input.peek(), lexer::Type::In) {
+            self.input.advance(); // consume IN
+            self.input.expect(Expect::LeftParen)?;
+            let source = if matches!(self.input.peek(), lexer::Type::Select) {
+                let subquery = self.parse_select_statement()?;
+                ast::InSource::Subquery(Box::new(subquery))
+            } else {
+                let mut values = vec![self.parse_expression()?];
+                while matches!(self.input.peek(), lexer::Type::Comma) {
+                    self.input.advance();
+                    values.push(self.parse_expression()?);
+                }
+                ast::InSource::Values(values)
+            };
+            self.input.expect(Expect::RightParen)?;
+            expr = ast::Expression::In {
+                expr: Box::new(expr),
+                source,
+                negated,
+            };
+        } else if negated {
+            return Err(ParseError::UnexpectedToken(
+                Expect::In,
+                self.input.peek(),
+            ));
+        }
+
         Ok(expr)
     }
 
@@ -1179,10 +1218,15 @@ impl Parser {
             }
             lexer::Type::LeftParen => {
                 self.input.advance();
-                let expr = self.parse_expression()?;
-                self.input.expect(Expect::RightParen)?;
-
-                Ok(expr)
+                if matches!(self.input.peek(), lexer::Type::Select) {
+                    let stmt = self.parse_select_statement()?;
+                    self.input.expect(Expect::RightParen)?;
+                    Ok(ast::Expression::ScalarSubquery(Box::new(stmt)))
+                } else {
+                    let expr = self.parse_expression()?;
+                    self.input.expect(Expect::RightParen)?;
+                    Ok(expr)
+                }
             }
             t => Err(ParseError::UnexpectedToken(Expect::PrimaryExpression, t)),
         }
@@ -1721,5 +1765,58 @@ mod test {
         assert!(ct.columns[0]
             .constraints
             .contains(&ast::ColumnConstraint::Unique));
+    }
+
+    #[test]
+    fn parse_in_literal_list() {
+        let stmt = parse("SELECT id FROM users WHERE id IN (1, 2, 3)").unwrap();
+        let ast::Statement::Select(sel) = stmt else { panic!("expected select") };
+        let filter = sel.filter.unwrap();
+        match filter {
+            ast::Expression::In { negated, source: ast::InSource::Values(vals), .. } => {
+                assert!(!negated);
+                assert_eq!(vals.len(), 3);
+            }
+            _ => panic!("expected In expression"),
+        }
+    }
+
+    #[test]
+    fn parse_not_in_literal_list() {
+        let stmt = parse("SELECT id FROM users WHERE id NOT IN (10, 20)").unwrap();
+        let ast::Statement::Select(sel) = stmt else { panic!("expected select") };
+        let filter = sel.filter.unwrap();
+        match filter {
+            ast::Expression::In { negated, source: ast::InSource::Values(vals), .. } => {
+                assert!(negated);
+                assert_eq!(vals.len(), 2);
+            }
+            _ => panic!("expected In expression"),
+        }
+    }
+
+    #[test]
+    fn parse_in_subquery() {
+        let stmt = parse("SELECT id FROM users WHERE id IN (SELECT user_id FROM admins)").unwrap();
+        let ast::Statement::Select(sel) = stmt else { panic!("expected select") };
+        let filter = sel.filter.unwrap();
+        match filter {
+            ast::Expression::In { negated, source: ast::InSource::Subquery(_), .. } => {
+                assert!(!negated);
+            }
+            _ => panic!("expected In with subquery"),
+        }
+    }
+
+    #[test]
+    fn parse_scalar_subquery_in_select() {
+        let stmt = parse("SELECT (SELECT COUNT(*) FROM orders), name FROM users").unwrap();
+        let ast::Statement::Select(sel) = stmt else { panic!("expected select") };
+        match &sel.columns[0] {
+            ast::ColumnExpression::Anonyomous(expr) => {
+                assert!(matches!(**expr, ast::Expression::ScalarSubquery(_)));
+            }
+            _ => panic!("expected anonymous column expression"),
+        }
     }
 }

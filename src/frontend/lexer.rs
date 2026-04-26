@@ -79,6 +79,7 @@ pub enum Type {
     Like,
     Is,
     Not,
+    In,
     Join,
     On,
     Inner,
@@ -530,7 +531,8 @@ impl<'a> Lexer<'a> {
                     },
                     b'n' => self.match_keyword("inner", Type::Inner),
                     b'd' => self.match_keyword("index", Type::Index),
-                    _ => self.make_identifier(),
+                    // `in` is 2 chars; any non-letter byte 2 means this may be `in`
+                    _ => self.match_keyword("in", Type::In),
                 },
                 b's' => self.match_keyword("is", Type::Is),
                 _ => self.make_identifier(),
