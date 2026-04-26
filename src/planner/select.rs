@@ -29,7 +29,8 @@ pub(super) fn output_width(plan: &LogicalPlan) -> usize {
         | LogicalPlan::Limit { input, .. }
         | LogicalPlan::Distinct { input, .. }
         | LogicalPlan::Filter { input, .. }
-        | LogicalPlan::RowidLookup { input, .. } => output_width(input),
+        | LogicalPlan::RowidLookup { input, .. }
+        | LogicalPlan::Materialize { input } => output_width(input),
         LogicalPlan::Scan { columns, .. } => columns.len(),
         _ => 0,
     }

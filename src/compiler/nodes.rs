@@ -919,6 +919,75 @@ pub fn codegen_distinct(
     }
 }
 
+/// Generate bytecode for a Materialize node.
+///
+/// Materialize buffers all rows from its child into a RowBuffer, then yields them to
+/// the parent. Used for FROM subqueries, semi-join right sides, and scalar subquery
+/// preludes.
+///
+/// ```text
+/// INIT:
+///   InitRowBuffer(buffer)
+///
+/// BODY:
+///   [child] → collect_row:
+///     AppendToRowBuffer(buffer, child_regs)
+///     GoTo(child.next)
+///   yield_loop:
+///     RewindRowBuffer(buffer)
+///   yield_next:
+///     NextFromRowBuffer(output_regs, buffer, on_done)
+///     GoTo(on_tuple)
+///   mat_next:
+///     GoTo(yield_next)
+/// ```
+pub fn codegen_materialize(
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    let buffer_reg = ctx.registers.alloc();
+
+    init!(ctx; InitRowBuffer(buffer_reg));
+
+    let collect_row = ctx.body_emitter.create_label();
+    let yield_next = ctx.body_emitter.create_label();
+
+    let child_cont = NodeContinuation {
+        on_tuple: collect_row,
+        on_done: yield_next,
+    };
+
+    let child_output = codegen(input, &child_cont, ctx);
+
+    body!(ctx;
+        Bind(collect_row);
+        AppendToRowBuffer(buffer_reg, child_output.output_regs.clone());
+        GoTo(child_output.next);
+        Bind(yield_next);
+        RewindRowBuffer(buffer_reg)
+    );
+
+    let num_outputs = child_output.output_regs.len();
+    let output_regs: Vec<Reg> = (0..num_outputs).map(|_| ctx.registers.alloc()).collect();
+
+    ctx.body_emitter.emit(Operation::NextFromRowBuffer(
+        output_regs.clone(),
+        buffer_reg,
+        JumpTarget::Unresolved(cont.on_done),
+    ));
+    body!(ctx; GoTo(cont.on_tuple));
+
+    let mat_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(yield_next));
+
+    NodeOutput {
+        next: mat_next,
+        output_regs,
+        reset: None,
+    }
+}
+
 /// Generate bytecode for a Sort node.
 ///
 /// Sort materializes all rows from its child, sorts them based on sort keys,
@@ -2011,6 +2080,7 @@ pub fn codegen(
             index_col_idx,
         } => codegen_index_probe(*index_rootpage, key_expr, *index_col_idx, cont, ctx),
         LogicalPlan::Distinct { input } => codegen_distinct(input, cont, ctx),
+        LogicalPlan::Materialize { input } => codegen_materialize(input, cont, ctx),
         LogicalPlan::PopulateIndex {
             input,
             index_rootpage,

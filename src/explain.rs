@@ -105,7 +105,8 @@ fn node_output_cols(plan: &LogicalPlan, schema: &ExplainSchema) -> Vec<String> {
         | LogicalPlan::Limit { input, .. }
         | LogicalPlan::Sort { input, .. }
         | LogicalPlan::Count { input }
-        | LogicalPlan::Distinct { input } => node_output_cols(input, schema),
+        | LogicalPlan::Distinct { input }
+        | LogicalPlan::Materialize { input } => node_output_cols(input, schema),
         LogicalPlan::Project { input, columns } => {
             let input_cols = node_output_cols(input, schema);
             columns
@@ -202,7 +203,8 @@ fn collect_rows(
         | LogicalPlan::Distinct { input }
         | LogicalPlan::Insert { input, .. }
         | LogicalPlan::RowidLookup { input, .. }
-        | LogicalPlan::PopulateIndex { input, .. } => node_output_cols(input, schema),
+        | LogicalPlan::PopulateIndex { input, .. }
+        | LogicalPlan::Materialize { input } => node_output_cols(input, schema),
         LogicalPlan::Join { left, right, .. } => {
             let mut cols = node_output_cols(left, schema);
             cols.extend(node_output_cols(right, schema));
@@ -336,6 +338,7 @@ fn collect_rows(
         LogicalPlan::Sequence { start, end } => {
             format!("{indent}Sequence [{start}..{end})")
         }
+        LogicalPlan::Materialize { .. } => format!("{indent}Materialize"),
     };
 
     rows.push((id, summary));
@@ -356,7 +359,8 @@ fn plan_children(plan: &LogicalPlan) -> Vec<&LogicalPlan> {
         | LogicalPlan::Distinct { input }
         | LogicalPlan::Insert { input, .. }
         | LogicalPlan::RowidLookup { input, .. }
-        | LogicalPlan::PopulateIndex { input, .. } => vec![input],
+        | LogicalPlan::PopulateIndex { input, .. }
+        | LogicalPlan::Materialize { input } => vec![input],
         LogicalPlan::Join { left, right, .. } => vec![left, right],
         _ => vec![],
     }
