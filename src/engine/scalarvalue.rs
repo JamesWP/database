@@ -406,6 +406,190 @@ impl std::fmt::Display for ScalarValue {
 mod tests {
     use super::*;
 
+    fn cbor(v: &ScalarValue) -> Vec<u8> {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(v, &mut buf).unwrap();
+        buf
+    }
+
+    fn cbor_decode(bytes: &[u8]) -> ScalarValue {
+        ciborium::de::from_reader(bytes).unwrap()
+    }
+
+    // --- Byte-exact encoding tests (spec for compact native-CBOR format) ---
+
+    #[test]
+    fn encode_null() {
+        assert_eq!(cbor(&ScalarValue::Null), vec![0xf6]);
+    }
+
+    #[test]
+    fn encode_integer_zero() {
+        assert_eq!(cbor(&ScalarValue::Integer(0)), vec![0x00]);
+    }
+
+    #[test]
+    fn encode_integer_one() {
+        assert_eq!(cbor(&ScalarValue::Integer(1)), vec![0x01]);
+    }
+
+    #[test]
+    fn encode_integer_23() {
+        assert_eq!(cbor(&ScalarValue::Integer(23)), vec![0x17]);
+    }
+
+    #[test]
+    fn encode_integer_24() {
+        assert_eq!(cbor(&ScalarValue::Integer(24)), vec![0x18, 0x18]);
+    }
+
+    #[test]
+    fn encode_integer_255() {
+        assert_eq!(cbor(&ScalarValue::Integer(255)), vec![0x18, 0xff]);
+    }
+
+    #[test]
+    fn encode_integer_negative_one() {
+        assert_eq!(cbor(&ScalarValue::Integer(-1)), vec![0x20]);
+    }
+
+    #[test]
+    fn encode_floating_3_14() {
+        assert_eq!(
+            cbor(&ScalarValue::Floating(3.14)),
+            vec![0xfb, 0x40, 0x09, 0x1e, 0xb8, 0x51, 0xeb, 0x85, 0x1f]
+        );
+    }
+
+    #[test]
+    fn encode_boolean_true() {
+        assert_eq!(cbor(&ScalarValue::Boolean(true)), vec![0xf5]);
+    }
+
+    #[test]
+    fn encode_boolean_false() {
+        assert_eq!(cbor(&ScalarValue::Boolean(false)), vec![0xf4]);
+    }
+
+    #[test]
+    fn encode_string_empty() {
+        assert_eq!(cbor(&ScalarValue::String(String::new())), vec![0x60]);
+    }
+
+    #[test]
+    fn encode_string_hello() {
+        assert_eq!(
+            cbor(&ScalarValue::String("hello".to_string())),
+            vec![0x65, 0x68, 0x65, 0x6c, 0x6c, 0x6f]
+        );
+    }
+
+    #[test]
+    fn encode_blob_empty() {
+        assert_eq!(cbor(&ScalarValue::Blob(vec![])), vec![0x40]);
+    }
+
+    #[test]
+    fn encode_blob_three_bytes() {
+        assert_eq!(
+            cbor(&ScalarValue::Blob(vec![0x01, 0x02, 0x03])),
+            vec![0x43, 0x01, 0x02, 0x03]
+        );
+    }
+
+    // --- Round-trip tests ---
+
+    #[test]
+    fn roundtrip_null() {
+        let v = ScalarValue::Null;
+        assert_eq!(cbor_decode(&cbor(&v)), v);
+    }
+
+    #[test]
+    fn roundtrip_integer() {
+        for n in [0i64, 1, 23, 24, 255, 256, -1, -128, i64::MAX, i64::MIN] {
+            let v = ScalarValue::Integer(n);
+            assert_eq!(cbor_decode(&cbor(&v)), v, "roundtrip failed for {n}");
+        }
+    }
+
+    #[test]
+    fn roundtrip_floating() {
+        for f in [0.0f64, 3.14, f64::INFINITY, -0.0] {
+            let v = ScalarValue::Floating(f);
+            let rt = cbor_decode(&cbor(&v));
+            match rt {
+                ScalarValue::Floating(x) => {
+                    if f.is_nan() {
+                        assert!(x.is_nan())
+                    } else {
+                        assert_eq!(x.to_bits(), f.to_bits(), "roundtrip failed for {f}")
+                    }
+                }
+                other => panic!("expected Floating, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn roundtrip_boolean() {
+        assert_eq!(
+            cbor_decode(&cbor(&ScalarValue::Boolean(true))),
+            ScalarValue::Boolean(true)
+        );
+        assert_eq!(
+            cbor_decode(&cbor(&ScalarValue::Boolean(false))),
+            ScalarValue::Boolean(false)
+        );
+    }
+
+    #[test]
+    fn roundtrip_string() {
+        for s in ["", "hello", "hello world"] {
+            let v = ScalarValue::String(s.to_string());
+            assert_eq!(cbor_decode(&cbor(&v)), v);
+        }
+    }
+
+    #[test]
+    fn roundtrip_blob() {
+        for b in [vec![], vec![1u8, 2, 3]] {
+            let v = ScalarValue::Blob(b);
+            assert_eq!(cbor_decode(&cbor(&v)), v);
+        }
+    }
+
+    #[test]
+    fn roundtrip_row() {
+        let row: Vec<ScalarValue> = vec![
+            ScalarValue::Integer(1),
+            ScalarValue::String("alice".to_string()),
+            ScalarValue::Integer(30),
+            ScalarValue::Null,
+        ];
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&row, &mut buf).unwrap();
+        let rt: Vec<ScalarValue> = ciborium::de::from_reader(buf.as_slice()).unwrap();
+        assert_eq!(rt, row);
+    }
+
+    #[test]
+    fn encode_row_alice_is_10_bytes() {
+        let row: Vec<ScalarValue> = vec![
+            ScalarValue::Integer(1),
+            ScalarValue::String("alice".to_string()),
+            ScalarValue::Integer(30),
+        ];
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&row, &mut buf).unwrap();
+        assert_eq!(
+            buf.len(),
+            10,
+            "row [1, 'alice', 30] should encode to 10 bytes, got {}",
+            buf.len()
+        );
+    }
+
     #[test]
     fn test_string_equality() {
         let s1 = ScalarValue::String("hello".to_string());
