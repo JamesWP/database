@@ -75,7 +75,7 @@ wasm:
 serve: wasm
 	python3 -m http.server 8000
 
-PROG=target/release/database
+PROG=target/release/database-cli
 
 VHS=PATH="$(PWD)/.bin:$(PATH)" vhs
 
@@ -88,10 +88,10 @@ VHS=PATH="$(PWD)/.bin:$(PATH)" vhs
 	echo "enter btree\ndump $@" | $(PROG) $<
 
 # Build targets
-target/debug/database:
+target/debug/database-cli:
 	cargo build
 
-target/release/database:
+target/release/database-cli:
 	cargo build --release
 
 # Test databases
