@@ -1703,6 +1703,90 @@ pub fn codegen_join(
     }
 }
 
+/// Generate bytecode for a Semi-join (or anti-semi-join when `negated`).
+///
+/// Materialises the right side into a RowBuffer once (prelude), then for each
+/// left row probes the buffer with `RowBufferContains`. Yields only left columns.
+pub fn codegen_join_semi(
+    left: &LogicalPlan,
+    right: &LogicalPlan,
+    on_condition: &PlanExpr,
+    negated: bool,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // --- Phase 1: Materialise right side into buffer (same as Hash join prelude) ---
+    let buffer_reg = ctx.registers.alloc();
+    init!(ctx; InitRowBuffer(buffer_reg));
+
+    let mat_on_tuple = ctx.body_emitter.create_label();
+    let mat_on_done = ctx.body_emitter.create_label();
+    let right_cont = NodeContinuation {
+        on_tuple: mat_on_tuple,
+        on_done: mat_on_done,
+    };
+    let right_output = codegen(right, &right_cont, ctx);
+
+    let outer_loop_start = ctx.body_emitter.create_label();
+    body!(ctx;
+        Bind(mat_on_tuple);
+        AppendToRowBuffer(buffer_reg, right_output.output_regs.clone());
+        GoTo(right_output.next);
+        Bind(mat_on_done);
+        GoTo(outer_loop_start)
+    );
+
+    // --- Phase 2: For each left row, probe buffer ---
+    let left_on_tuple = ctx.body_emitter.create_label();
+    let left_cont = NodeContinuation {
+        on_tuple: left_on_tuple,
+        on_done: cont.on_done,
+    };
+    let left_output = codegen(left, &left_cont, ctx);
+
+    body!(ctx;
+        Bind(outer_loop_start);
+        GoTo(left_output.next)
+    );
+
+    // left_on_tuple: got a left row, probe the buffer
+    let match_reg = ctx.registers.alloc();
+    body!(ctx; Bind(left_on_tuple));
+    let key_reg = compile_expr(
+        on_condition,
+        &left_output.output_regs,
+        &mut ExprContext {
+            emitter: &mut ctx.body_emitter,
+            registers: &mut ctx.registers,
+        },
+    );
+    body!(ctx; RowBufferContains(match_reg, buffer_reg, key_reg));
+
+    if negated {
+        // Anti-semi: yield when NOT contained
+        body!(ctx;
+            GoToIfFalse(cont.on_tuple, match_reg);
+            GoTo(left_output.next)
+        );
+    } else {
+        // Semi: yield when contained
+        body!(ctx;
+            GoToIfFalse(left_output.next, match_reg);
+            GoTo(cont.on_tuple)
+        );
+    }
+
+    // semi_next: parent calls this after consuming a yielded left row
+    let semi_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(left_output.next));
+
+    NodeOutput {
+        next: semi_next,
+        output_regs: left_output.output_regs,
+        reset: None,
+    }
+}
+
 /// Generate bytecode for a NestedLoop Join node.
 ///
 /// For each left row, resets the right child (via its reset label) and iterates
@@ -2078,8 +2162,8 @@ pub fn codegen(
             crate::planner::JoinStrategy::NestedLoop => {
                 codegen_join_nested_loop(left, right, on_condition, *left_column_count, cont, ctx)
             }
-            crate::planner::JoinStrategy::Semi { .. } => {
-                todo!("codegen_join_semi not yet implemented")
+            crate::planner::JoinStrategy::Semi { negated } => {
+                codegen_join_semi(left, right, on_condition, *negated, cont, ctx)
             }
         },
         LogicalPlan::IndexProbe {
