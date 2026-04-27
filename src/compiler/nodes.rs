@@ -951,26 +951,31 @@ pub fn codegen_materialize(
     init!(ctx; InitRowBuffer(buffer_reg));
 
     let collect_row = ctx.body_emitter.create_label();
-    let yield_next = ctx.body_emitter.create_label();
+    let after_child = ctx.body_emitter.create_label();
 
     let child_cont = NodeContinuation {
         on_tuple: collect_row,
-        on_done: yield_next,
+        on_done: after_child,
     };
 
     let child_output = codegen(input, &child_cont, ctx);
 
+    // Collect phase: append each child row to the buffer.
+    // Yield phase: rewind once, then iterate — `yield_loop` is the per-row entry point.
     body!(ctx;
         Bind(collect_row);
         AppendToRowBuffer(buffer_reg, child_output.output_regs.clone());
         GoTo(child_output.next);
-        Bind(yield_next);
+        Bind(after_child);
         RewindRowBuffer(buffer_reg)
     );
 
     let num_outputs = child_output.output_regs.len();
     let output_regs: Vec<Reg> = (0..num_outputs).map(|_| ctx.registers.alloc()).collect();
 
+    // yield_loop is bound here — mat_next must jump back to this point, not to after_child,
+    // so that RewindRowBuffer is not re-executed on every iteration.
+    let yield_loop = ctx.body_emitter.label_here();
     ctx.body_emitter.emit(Operation::NextFromRowBuffer(
         output_regs.clone(),
         buffer_reg,
@@ -979,7 +984,7 @@ pub fn codegen_materialize(
     body!(ctx; GoTo(cont.on_tuple));
 
     let mat_next = ctx.body_emitter.label_here();
-    body!(ctx; GoTo(yield_next));
+    body!(ctx; GoTo(yield_loop));
 
     NodeOutput {
         next: mat_next,
