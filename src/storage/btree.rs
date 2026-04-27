@@ -135,9 +135,8 @@ const CELL_FRAMING_BYTES: usize = 10;
 /// Derived so that `MIN_CELLS_PER_PAGE` cells can always fit on one page.
 /// With PAGE_SIZE=4096: CHUNK_THRESHOLD = (4096 - 15) / 4 - 10 = 1010.
 /// Typical SQL rows (< 500 bytes) now store inline with no overflow pages.
-const CHUNK_THRESHOLD: usize = (PAGE_SIZE - LEAF_PAGE_BASE_FRAMING_BYTES)
-    / MIN_CELLS_PER_PAGE
-    - CELL_FRAMING_BYTES;
+const CHUNK_THRESHOLD: usize =
+    (PAGE_SIZE - LEAF_PAGE_BASE_FRAMING_BYTES) / MIN_CELLS_PER_PAGE - CELL_FRAMING_BYTES;
 
 /// Serialise `values` to a sink that counts bytes without allocating.
 /// Returns the exact CBOR encoded length.

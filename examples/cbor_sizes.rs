@@ -30,22 +30,14 @@ fn encode_tagged(v: &ScalarValue) -> Vec<u8> {
             Value::Integer(1.into()),
             Value::Integer(ciborium::value::Integer::try_from(*n).unwrap()),
         ]),
-        ScalarValue::Floating(f) => Value::Array(vec![
-            Value::Integer(2.into()),
-            Value::Float(*f),
-        ]),
-        ScalarValue::Boolean(b) => Value::Array(vec![
-            Value::Integer(3.into()),
-            Value::Bool(*b),
-        ]),
-        ScalarValue::String(s) => Value::Array(vec![
-            Value::Integer(4.into()),
-            Value::Text(s.clone()),
-        ]),
-        ScalarValue::Blob(b) => Value::Array(vec![
-            Value::Integer(5.into()),
-            Value::Bytes(b.clone()),
-        ]),
+        ScalarValue::Floating(f) => Value::Array(vec![Value::Integer(2.into()), Value::Float(*f)]),
+        ScalarValue::Boolean(b) => Value::Array(vec![Value::Integer(3.into()), Value::Bool(*b)]),
+        ScalarValue::String(s) => {
+            Value::Array(vec![Value::Integer(4.into()), Value::Text(s.clone())])
+        }
+        ScalarValue::Blob(b) => {
+            Value::Array(vec![Value::Integer(5.into()), Value::Bytes(b.clone())])
+        }
     };
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&cbor, &mut buf).unwrap();
@@ -53,20 +45,31 @@ fn encode_tagged(v: &ScalarValue) -> Vec<u8> {
 }
 
 fn encode_row_tagged(row: &[ScalarValue]) -> Vec<u8> {
-    let elems: Vec<ciborium::value::Value> = row.iter().map(|v| {
-        use ciborium::value::Value;
-        match v {
-            ScalarValue::Null => Value::Array(vec![Value::Integer(0.into())]),
-            ScalarValue::Integer(n) => Value::Array(vec![
-                Value::Integer(1.into()),
-                Value::Integer(ciborium::value::Integer::try_from(*n).unwrap()),
-            ]),
-            ScalarValue::Floating(f) => Value::Array(vec![Value::Integer(2.into()), Value::Float(*f)]),
-            ScalarValue::Boolean(b) => Value::Array(vec![Value::Integer(3.into()), Value::Bool(*b)]),
-            ScalarValue::String(s) => Value::Array(vec![Value::Integer(4.into()), Value::Text(s.clone())]),
-            ScalarValue::Blob(b) => Value::Array(vec![Value::Integer(5.into()), Value::Bytes(b.clone())]),
-        }
-    }).collect();
+    let elems: Vec<ciborium::value::Value> = row
+        .iter()
+        .map(|v| {
+            use ciborium::value::Value;
+            match v {
+                ScalarValue::Null => Value::Array(vec![Value::Integer(0.into())]),
+                ScalarValue::Integer(n) => Value::Array(vec![
+                    Value::Integer(1.into()),
+                    Value::Integer(ciborium::value::Integer::try_from(*n).unwrap()),
+                ]),
+                ScalarValue::Floating(f) => {
+                    Value::Array(vec![Value::Integer(2.into()), Value::Float(*f)])
+                }
+                ScalarValue::Boolean(b) => {
+                    Value::Array(vec![Value::Integer(3.into()), Value::Bool(*b)])
+                }
+                ScalarValue::String(s) => {
+                    Value::Array(vec![Value::Integer(4.into()), Value::Text(s.clone())])
+                }
+                ScalarValue::Blob(b) => {
+                    Value::Array(vec![Value::Integer(5.into()), Value::Bytes(b.clone())])
+                }
+            }
+        })
+        .collect();
     let outer = ciborium::value::Value::Array(elems);
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&outer, &mut buf).unwrap();
@@ -85,9 +88,7 @@ fn encode_native(v: &ScalarValue) -> Vec<u8> {
     use ciborium::value::Value;
     let cbor = match v {
         ScalarValue::Null => Value::Null,
-        ScalarValue::Integer(n) => {
-            Value::Integer(ciborium::value::Integer::try_from(*n).unwrap())
-        }
+        ScalarValue::Integer(n) => Value::Integer(ciborium::value::Integer::try_from(*n).unwrap()),
         ScalarValue::Floating(f) => Value::Float(*f),
         ScalarValue::Boolean(b) => Value::Bool(*b),
         ScalarValue::String(s) => Value::Text(s.clone()),
@@ -100,14 +101,19 @@ fn encode_native(v: &ScalarValue) -> Vec<u8> {
 
 fn encode_row_native(row: &[ScalarValue]) -> Vec<u8> {
     use ciborium::value::Value;
-    let elems: Vec<Value> = row.iter().map(|v| match v {
-        ScalarValue::Null => Value::Null,
-        ScalarValue::Integer(n) => Value::Integer(ciborium::value::Integer::try_from(*n).unwrap()),
-        ScalarValue::Floating(f) => Value::Float(*f),
-        ScalarValue::Boolean(b) => Value::Bool(*b),
-        ScalarValue::String(s) => Value::Text(s.clone()),
-        ScalarValue::Blob(b) => Value::Bytes(b.clone()),
-    }).collect();
+    let elems: Vec<Value> = row
+        .iter()
+        .map(|v| match v {
+            ScalarValue::Null => Value::Null,
+            ScalarValue::Integer(n) => {
+                Value::Integer(ciborium::value::Integer::try_from(*n).unwrap())
+            }
+            ScalarValue::Floating(f) => Value::Float(*f),
+            ScalarValue::Boolean(b) => Value::Bool(*b),
+            ScalarValue::String(s) => Value::Text(s.clone()),
+            ScalarValue::Blob(b) => Value::Bytes(b.clone()),
+        })
+        .collect();
     let mut buf = Vec::new();
     ciborium::ser::into_writer(&Value::Array(elems), &mut buf).unwrap();
     buf
@@ -132,7 +138,10 @@ fn main() {
         ("Boolean(true)", ScalarValue::Boolean(true)),
         ("Boolean(false)", ScalarValue::Boolean(false)),
         ("String(\"\")", ScalarValue::String(String::new())),
-        ("String(\"hello\")", ScalarValue::String("hello".to_string())),
+        (
+            "String(\"hello\")",
+            ScalarValue::String("hello".to_string()),
+        ),
         (
             "String(\"hello world\")",
             ScalarValue::String("hello world".to_string()),
