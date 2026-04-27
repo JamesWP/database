@@ -702,6 +702,7 @@ impl Parser {
             lexer::Type::LeftParen => {
                 self.input.advance();
                 let statement = self.parse_select_statement()?;
+                self.input.expect(Expect::RightParen)?;
                 Ok(ast::TupleSource::Subquery(Box::new(statement)))
             }
             _ => {
@@ -1020,10 +1021,7 @@ impl Parser {
                 negated,
             };
         } else if negated {
-            return Err(ParseError::UnexpectedToken(
-                Expect::In,
-                self.input.peek(),
-            ));
+            return Err(ParseError::UnexpectedToken(Expect::In, self.input.peek()));
         }
 
         Ok(expr)
@@ -1770,10 +1768,16 @@ mod test {
     #[test]
     fn parse_in_literal_list() {
         let stmt = parse("SELECT id FROM users WHERE id IN (1, 2, 3)").unwrap();
-        let ast::Statement::Select(sel) = stmt else { panic!("expected select") };
+        let ast::Statement::Select(sel) = stmt else {
+            panic!("expected select")
+        };
         let filter = sel.filter.unwrap();
         match filter {
-            ast::Expression::In { negated, source: ast::InSource::Values(vals), .. } => {
+            ast::Expression::In {
+                negated,
+                source: ast::InSource::Values(vals),
+                ..
+            } => {
                 assert!(!negated);
                 assert_eq!(vals.len(), 3);
             }
@@ -1784,10 +1788,16 @@ mod test {
     #[test]
     fn parse_not_in_literal_list() {
         let stmt = parse("SELECT id FROM users WHERE id NOT IN (10, 20)").unwrap();
-        let ast::Statement::Select(sel) = stmt else { panic!("expected select") };
+        let ast::Statement::Select(sel) = stmt else {
+            panic!("expected select")
+        };
         let filter = sel.filter.unwrap();
         match filter {
-            ast::Expression::In { negated, source: ast::InSource::Values(vals), .. } => {
+            ast::Expression::In {
+                negated,
+                source: ast::InSource::Values(vals),
+                ..
+            } => {
                 assert!(negated);
                 assert_eq!(vals.len(), 2);
             }
@@ -1798,10 +1808,16 @@ mod test {
     #[test]
     fn parse_in_subquery() {
         let stmt = parse("SELECT id FROM users WHERE id IN (SELECT user_id FROM admins)").unwrap();
-        let ast::Statement::Select(sel) = stmt else { panic!("expected select") };
+        let ast::Statement::Select(sel) = stmt else {
+            panic!("expected select")
+        };
         let filter = sel.filter.unwrap();
         match filter {
-            ast::Expression::In { negated, source: ast::InSource::Subquery(_), .. } => {
+            ast::Expression::In {
+                negated,
+                source: ast::InSource::Subquery(_),
+                ..
+            } => {
                 assert!(!negated);
             }
             _ => panic!("expected In with subquery"),
@@ -1811,7 +1827,9 @@ mod test {
     #[test]
     fn parse_scalar_subquery_in_select() {
         let stmt = parse("SELECT (SELECT COUNT(*) FROM orders), name FROM users").unwrap();
-        let ast::Statement::Select(sel) = stmt else { panic!("expected select") };
+        let ast::Statement::Select(sel) = stmt else {
+            panic!("expected select")
+        };
         match &sel.columns[0] {
             ast::ColumnExpression::Anonyomous(expr) => {
                 assert!(matches!(**expr, ast::Expression::ScalarSubquery(_)));
