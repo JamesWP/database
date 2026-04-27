@@ -1,12 +1,99 @@
 //TODO: maybe consider removing boolean and making this type only handle numeric types
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub enum ScalarValue {
     Integer(i64),
     Floating(f64),
     Boolean(bool),
     String(String),
-    Blob(#[serde(with = "serde_bytes")] Vec<u8>),
+    Blob(Vec<u8>),
     Null,
+}
+
+impl serde::Serialize for ScalarValue {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ScalarValue::Null => s.serialize_unit(),
+            ScalarValue::Integer(n) => s.serialize_i64(*n),
+            ScalarValue::Floating(f) => s.serialize_f64(*f),
+            ScalarValue::Boolean(b) => s.serialize_bool(*b),
+            ScalarValue::String(t) => s.serialize_str(t),
+            ScalarValue::Blob(b) => s.serialize_bytes(b),
+        }
+    }
+}
+
+struct ScalarValueVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ScalarValueVisitor {
+    type Value = ScalarValue;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a CBOR integer, float, bool, null, text, or bytes")
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::Integer(v))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<ScalarValue, E> {
+        i64::try_from(v)
+            .map(ScalarValue::Integer)
+            .map_err(|_| E::custom(format!("u64 {v} overflows i64")))
+    }
+
+    fn visit_i128<E: serde::de::Error>(self, v: i128) -> Result<ScalarValue, E> {
+        i64::try_from(v)
+            .map(ScalarValue::Integer)
+            .map_err(|_| E::custom(format!("i128 {v} overflows i64")))
+    }
+
+    fn visit_u128<E: serde::de::Error>(self, v: u128) -> Result<ScalarValue, E> {
+        i64::try_from(v)
+            .map(ScalarValue::Integer)
+            .map_err(|_| E::custom(format!("u128 {v} overflows i64")))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::Floating(v))
+    }
+
+    fn visit_f32<E: serde::de::Error>(self, v: f32) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::Floating(v as f64))
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::Boolean(v))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::String(v.to_owned()))
+    }
+
+    fn visit_string<E: serde::de::Error>(self, v: String) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::String(v))
+    }
+
+    fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::Blob(v.to_owned()))
+    }
+
+    fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::Blob(v))
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::Null)
+    }
+
+    fn visit_none<E: serde::de::Error>(self) -> Result<ScalarValue, E> {
+        Ok(ScalarValue::Null)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ScalarValue {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(ScalarValueVisitor)
+    }
 }
 
 impl Eq for ScalarValue {}
@@ -501,8 +588,8 @@ mod tests {
 
     #[test]
     fn roundtrip_null() {
-        let v = ScalarValue::Null;
-        assert_eq!(cbor_decode(&cbor(&v)), v);
+        let rt = cbor_decode(&cbor(&ScalarValue::Null));
+        assert!(matches!(rt, ScalarValue::Null), "expected Null, got {rt:?}");
     }
 
     #[test]
@@ -570,7 +657,11 @@ mod tests {
         let mut buf = Vec::new();
         ciborium::ser::into_writer(&row, &mut buf).unwrap();
         let rt: Vec<ScalarValue> = ciborium::de::from_reader(buf.as_slice()).unwrap();
-        assert_eq!(rt, row);
+        assert_eq!(rt.len(), 4);
+        assert_eq!(rt[0], ScalarValue::Integer(1));
+        assert_eq!(rt[1], ScalarValue::String("alice".to_string()));
+        assert_eq!(rt[2], ScalarValue::Integer(30));
+        assert!(matches!(rt[3], ScalarValue::Null));
     }
 
     #[test]
