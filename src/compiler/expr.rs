@@ -26,6 +26,11 @@ pub fn compile_expr(expr: &PlanExpr, input_regs: &[Reg], ctx: &mut ExprContext) 
         }
         PlanExpr::UnaryOp { op, operand } => compile_unary_op(op, operand, input_regs, ctx),
         PlanExpr::FunctionCall { name, args } => compile_function_call(name, args, input_regs, ctx),
+        PlanExpr::In {
+            expr,
+            values,
+            negated,
+        } => compile_in(expr, values, *negated, input_regs, ctx),
     }
 }
 
@@ -144,6 +149,47 @@ fn compile_function_call(
 
     ctx.emitter.emit(operation);
     dest
+}
+
+fn compile_in(
+    expr: &PlanExpr,
+    values: &[PlanExpr],
+    negated: bool,
+    input_regs: &[Reg],
+    ctx: &mut ExprContext,
+) -> Reg {
+    if values.is_empty() {
+        // IN () is always false; NOT IN () is always true
+        let dest = ctx.registers.alloc();
+        ctx.emitter
+            .emit(Operation::StoreValue(dest, ScalarValue::Boolean(negated)));
+        return dest;
+    }
+
+    let (cmp_op, combine_op) = if negated {
+        (BinaryOp::NotEquals, BinaryOp::And)
+    } else {
+        (BinaryOp::Equals, BinaryOp::Or)
+    };
+
+    // Build OR/AND chain: (expr cmp v0) combine (expr cmp v1) combine ...
+    let chain = values.iter().fold(None::<PlanExpr>, |acc, val| {
+        let cmp = PlanExpr::BinaryOp {
+            op: cmp_op.clone(),
+            left: Box::new(expr.clone()),
+            right: Box::new(val.clone()),
+        };
+        Some(match acc {
+            None => cmp,
+            Some(prev) => PlanExpr::BinaryOp {
+                op: combine_op.clone(),
+                left: Box::new(prev),
+                right: Box::new(cmp),
+            },
+        })
+    });
+
+    compile_expr(&chain.unwrap(), input_regs, ctx)
 }
 
 #[cfg(test)]

@@ -72,6 +72,32 @@ impl ColumnResolver for JoinResolver<'_> {
     }
 }
 
+/// Resolver for a FROM subquery — maps column names from the inner plan's output to indices.
+/// The alias is consumed during planning and never stored in the plan node.
+pub(super) struct MaterializeResolver<'a> {
+    pub(super) alias: &'a str,
+    pub(super) columns: &'a [String],
+}
+
+impl ColumnResolver for MaterializeResolver<'_> {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError> {
+        self.columns
+            .iter()
+            .position(|c| c == name)
+            .ok_or_else(|| PlanError::ColumnNotFound {
+                table: self.alias.to_string(),
+                column: name.to_string(),
+            })
+    }
+
+    fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError> {
+        if table != self.alias {
+            return Err(PlanError::TableNotFound(table.to_string()));
+        }
+        self.resolve_identifier(column)
+    }
+}
+
 /// No-context resolver (for INSERT VALUES - disallows column refs)
 pub(super) struct NoColumnResolver;
 
@@ -111,6 +137,25 @@ pub(super) fn convert_expr(
             op: convert_unary_op(op),
             operand: Box::new(convert_expr(expression, resolver)?),
         }),
+        ast::Expression::In {
+            expr,
+            source: ast::InSource::Values(vals),
+            negated,
+        } => {
+            let plan_expr = convert_expr(expr, resolver)?;
+            let plan_vals: Result<Vec<_>, _> =
+                vals.iter().map(|v| convert_expr(v, resolver)).collect();
+            Ok(PlanExpr::In {
+                expr: Box::new(plan_expr),
+                values: plan_vals?,
+                negated: *negated,
+            })
+        }
+        ast::Expression::In {
+            source: ast::InSource::Subquery(_),
+            ..
+        }
+        | ast::Expression::ScalarSubquery(_) => Err(PlanError::UnsupportedStatement),
         ast::Expression::FunctionCall { name, args } => {
             // Validate function name (case-insensitive)
             let name_upper = name.to_uppercase();
@@ -353,6 +398,9 @@ pub(super) fn convert_having_expr(
             _ => convert_scalar(scalar, resolver),
         },
         ast::Expression::FunctionCall { name, .. } => Err(PlanError::UnknownFunction(name.clone())),
+        ast::Expression::In { .. } | ast::Expression::ScalarSubquery(_) => {
+            Err(PlanError::UnsupportedStatement)
+        }
     }
 }
 
@@ -376,6 +424,8 @@ pub(super) fn collect_columns(expr: &ast::Expression, columns: &mut HashSet<Stri
                 collect_columns(arg, columns);
             }
         }
+        ast::Expression::In { expr, .. } => collect_columns(expr, columns),
+        ast::Expression::ScalarSubquery(_) => {}
     }
 }
 
@@ -501,6 +551,21 @@ pub(super) fn remap_column_indices(
                 args: remapped_args,
             })
         }
+        PlanExpr::In {
+            expr,
+            values,
+            negated,
+        } => {
+            let remapped_values = values
+                .iter()
+                .map(|v| remap_column_indices(v, index_map))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PlanExpr::In {
+                expr: Box::new(remap_column_indices(expr, index_map)?),
+                values: remapped_values,
+                negated: *negated,
+            })
+        }
     }
 }
 
@@ -575,6 +640,7 @@ pub(super) fn eval_constant(expr: &PlanExpr) -> Result<Literal, PlanError> {
         }
         PlanExpr::ColumnRef(_) => Err(PlanError::UnsupportedStatement),
         PlanExpr::FunctionCall { .. } => Err(PlanError::UnsupportedStatement),
+        PlanExpr::In { .. } => Err(PlanError::UnsupportedStatement),
     }
 }
 

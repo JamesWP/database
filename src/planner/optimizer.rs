@@ -78,6 +78,9 @@ pub(super) fn fuse_projects(plan: LogicalPlan) -> LogicalPlan {
             index_rootpage,
             column_idxs,
         },
+        LogicalPlan::Materialize { input } => LogicalPlan::Materialize {
+            input: Box::new(fuse_projects(*input)),
+        },
         LogicalPlan::Join {
             left,
             right,
@@ -196,6 +199,9 @@ pub(super) fn optimize(plan: LogicalPlan, catalog: &BTree) -> LogicalPlan {
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
             input: Box::new(optimize(*input, catalog)),
         },
+        LogicalPlan::Materialize { input } => LogicalPlan::Materialize {
+            input: Box::new(optimize(*input, catalog)),
+        },
         // Rule 3: RowidLookup(IndexScan) → covering IndexScan when all requested
         // columns are present in the index key. The primary B-tree lookup is elided.
         LogicalPlan::RowidLookup {
@@ -252,12 +258,16 @@ pub(super) fn optimize(plan: LogicalPlan, catalog: &BTree) -> LogicalPlan {
                 }
             }
 
-            // No index available (or strategy is already Hash): promote to Hash.
+            // Semi/Anti-semi joins keep their strategy; others promote to Hash.
+            let final_strategy = match strategy {
+                JoinStrategy::Semi { .. } => strategy,
+                _ => JoinStrategy::Hash,
+            };
             LogicalPlan::Join {
                 left: Box::new(opt_left),
                 right: Box::new(opt_right),
                 on_condition,
-                strategy: JoinStrategy::Hash,
+                strategy: final_strategy,
                 left_column_count,
             }
         }

@@ -127,6 +127,13 @@ pub enum PlanExpr {
         name: String,
         args: Vec<PlanExpr>,
     },
+    /// expr IN (val, val, ...) — kept as a plan node for clean EXPLAIN output.
+    /// The compiler desugars to an OR equality chain at codegen time.
+    In {
+        expr: Box<PlanExpr>,
+        values: Vec<PlanExpr>,
+        negated: bool,
+    },
 }
 
 /// Join execution strategy, chosen by the optimizer.
@@ -138,6 +145,9 @@ pub enum JoinStrategy {
     /// Re-drive the right child once per left row via its reset entry point.
     /// Used when an index-probe is available on the right side.
     NestedLoop,
+    /// Semi-join: retain left rows whose key appears in the (materialised) right set.
+    /// `negated: true` → anti-semi-join (NOT IN).
+    Semi { negated: bool },
 }
 
 /// Logical plan nodes - relational algebra operators
@@ -304,6 +314,11 @@ pub enum LogicalPlan {
         index_rootpage: u32,
         column_idxs: Vec<usize>,
     },
+
+    /// Buffer all rows from `input` into a RowBuffer, then yield them.
+    /// Used for: FROM subqueries, right side of semi-joins, scalar subquery preludes.
+    /// No alias field — alias is a resolver concern consumed during planning.
+    Materialize { input: Box<LogicalPlan> },
 }
 // ============================================================================
 // Schema (for column resolution)

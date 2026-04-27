@@ -153,6 +153,7 @@ impl BytecodeEmitter {
                 | Operation::AppendToRowBuffer(_, _)
                 | Operation::SortRowBuffer(_, _)
                 | Operation::RewindRowBuffer(_)
+                | Operation::RowBufferContains(_, _, _)
                 // Group table operations
                 | Operation::InitGroupTable(_)
                 | Operation::UpdateGroup(_, _, _)

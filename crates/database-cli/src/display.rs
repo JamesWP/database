@@ -254,6 +254,14 @@ impl fmt::Display for ColoredOperation<'_> {
                 r!(buf),
                 jt!(target)
             ),
+            RowBufferContains(dest, buf, val) => write!(
+                f,
+                "{:10} {}, {}, {}",
+                "RBufContains".cyan().bold(),
+                r!(dest),
+                r!(buf),
+                r!(val)
+            ),
 
             // Group table
             InitGroupTable(reg) => write!(f, "{:10} {}", "InitGrpTbl".cyan().bold(), r!(reg)),

@@ -46,6 +46,7 @@ A hobby implementation of a relational database similar to SQLite. It includes a
 
 - Unit, integration, and SQL end-to-end tests (`cargo test --workspace`)
 - Inline SQL test harness: `.sql` files with `-- >` expected-output lines
+  * `src/bin/update-sql-tests.rs` tool can help seed the expected output
 - Property-based tests for B-tree invariants (proptest)
 
 ## Quick Start
