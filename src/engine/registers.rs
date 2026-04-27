@@ -1,7 +1,7 @@
 use crate::storage::CursorHandle;
 
 use super::{program::Reg, scalarvalue::ScalarValue};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 /// Accumulator for aggregate functions
 #[derive(Clone, Debug)]
@@ -26,6 +26,39 @@ pub type GroupTable = BTreeMap<Vec<ScalarValue>, Vec<Accumulator>>;
 pub struct RowBuffer {
     pub rows: Vec<Vec<ScalarValue>>,
     pub cursor: usize,
+    /// Lazily built on first `RowBufferContains` call. Indexes `rows[i][0]`.
+    /// Cleared on `AppendToRowBuffer` to stay consistent.
+    contains_cache: Option<HashSet<ScalarValue>>,
+}
+
+impl RowBuffer {
+    pub fn new() -> Self {
+        Self {
+            rows: Vec::new(),
+            cursor: 0,
+            contains_cache: None,
+        }
+    }
+
+    /// Append a row; invalidates the contains cache.
+    pub fn append(&mut self, row: Vec<ScalarValue>) {
+        self.contains_cache = None;
+        self.rows.push(row);
+    }
+
+    /// Test whether any row has `rows[i][0] == value`.
+    /// Builds and caches a HashSet on the first call.
+    pub fn contains_first_col(&mut self, value: &ScalarValue) -> bool {
+        if self.contains_cache.is_none() {
+            let set: HashSet<ScalarValue> = self
+                .rows
+                .iter()
+                .filter_map(|r| r.first().cloned())
+                .collect();
+            self.contains_cache = Some(set);
+        }
+        self.contains_cache.as_ref().unwrap().contains(value)
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -133,6 +133,9 @@ pub enum Operation {
     /// If the read cursor is past the end, jump to target.
     /// Otherwise, copy row values into dest_regs and advance the read cursor.
     NextFromRowBuffer(Vec<Reg>, Reg, JumpTarget),
+    /// Set `dest = Boolean(true)` if any row in buffer has `row[0] == val`.
+    /// Builds and caches a HashSet on the first call (lazy evaluation).
+    RowBufferContains(Reg, Reg, Reg),
 
     // Group Table (for GROUP BY aggregation)
     InitGroupTable(Reg), // Initialize empty group table
@@ -220,6 +223,7 @@ impl Operation {
             SortRowBuffer(..) => "SortRowBuf",
             RewindRowBuffer(..) => "RewindRowBuf",
             NextFromRowBuffer(..) => "NextRowBuf",
+            RowBufferContains(..) => "RBufContains",
             InitGroupTable(..) => "InitGroupTable",
             UpdateGroup(..) => "UpdateGroup",
             YieldFromGroupTable(..) => "YieldGroup",
@@ -390,6 +394,9 @@ impl std::fmt::Display for Operation {
             RewindRowBuffer(buf) => write!(f, "{:10} {buf}", "RewindBuf"),
             NextFromRowBuffer(regs, buf, target) => {
                 write!(f, "{:10} [{}], {buf}, {target}", "NextRow", regs_str!(regs))
+            }
+            RowBufferContains(dest, buf, val) => {
+                write!(f, "{:10} {dest}, {buf}, {val}", "RBufContains")
             }
 
             // Group table operations

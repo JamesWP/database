@@ -353,10 +353,8 @@ impl Engine {
                     RegisterValue::ScalarValue(ScalarValue::Boolean(result));
             }
             InitRowBuffer(reg) => {
-                *self.registers.get_mut(reg) = RegisterValue::RowBuffer(registers::RowBuffer {
-                    rows: Vec::new(),
-                    cursor: 0,
-                });
+                *self.registers.get_mut(reg) =
+                    RegisterValue::RowBuffer(registers::RowBuffer::new());
             }
             AppendToRowBuffer(buffer_reg, value_regs) => {
                 let values: Vec<ScalarValue> = value_regs
@@ -364,7 +362,7 @@ impl Engine {
                     .map(|reg| self.registers.get(*reg).scalar().unwrap().clone())
                     .collect();
                 let buffer = self.registers.get_mut(buffer_reg).row_buffer_mut().unwrap();
-                buffer.rows.push(values);
+                buffer.append(values);
             }
             SortRowBuffer(buffer_reg, sort_keys) => {
                 let buffer = self.registers.get_mut(buffer_reg).row_buffer_mut().unwrap();
@@ -413,6 +411,17 @@ impl Engine {
                         }
                     }
                 }
+            }
+            RowBufferContains(dest, buf_reg, val_reg) => {
+                let val = self.registers.get(val_reg).scalar().unwrap().clone();
+                let result = self
+                    .registers
+                    .get_mut(buf_reg)
+                    .row_buffer_mut()
+                    .unwrap()
+                    .contains_first_col(&val);
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Boolean(result));
             }
             InitGroupTable(reg) => {
                 use std::collections::BTreeMap;
