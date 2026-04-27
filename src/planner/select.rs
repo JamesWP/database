@@ -125,13 +125,46 @@ fn plan_select_single(
         columns: &mapping.column_map,
     });
 
-    // 5. Build base plan: Scan → optional Filter
+    // 5. Build base plan: Scan → optional Filter or Semi-join
     let scan = LogicalPlan::Scan {
         rootpage: table.rootpage,
         columns: mapping.scan_columns,
         with_key: false,
     };
-    let base_plan = apply_filter(scan, select.filter.as_ref(), &resolver)?;
+    let left_column_count = mapping.column_map.len();
+    let mut select = select;
+
+    // If WHERE is exactly `expr IN (SELECT ...)`, convert to a Semi join.
+    let is_in_subquery_filter = matches!(
+        select.filter,
+        Some(ast::Expression::In {
+            source: ast::InSource::Subquery(_),
+            ..
+        })
+    );
+    let base_plan = if is_in_subquery_filter {
+        // Move the filter out — we know it's Some(In { Subquery })
+        let filter_expr = select.filter.take().unwrap();
+        let (key_expr_ast, stmt, negated) = match filter_expr {
+            ast::Expression::In {
+                expr,
+                source: ast::InSource::Subquery(stmt),
+                negated,
+            } => (expr, stmt, negated),
+            _ => unreachable!(),
+        };
+        let key_expr = convert_expr(&key_expr_ast, &resolver)?;
+        let inner_plan = plan_select(*stmt, catalog)?;
+        LogicalPlan::Join {
+            left: Box::new(scan),
+            right: Box::new(inner_plan),
+            on_condition: key_expr,
+            strategy: crate::planner::JoinStrategy::Semi { negated },
+            left_column_count,
+        }
+    } else {
+        apply_filter(scan, select.filter.as_ref(), &resolver)?
+    };
 
     // 6. Build the rest of the plan using the shared body.
     // COUNT(*) and aggregation are only available on single-table queries.
@@ -1526,5 +1559,71 @@ mod tests {
             matches!(result, LogicalPlan::Sort { .. }),
             "Expected Sort, got {result:?}"
         );
+    }
+
+    fn make_two_table_db() -> (TestDb, u32, u32) {
+        let mut test = TestDb::default();
+        let users_root = test.btree.create_tree();
+        test.btree.insert_entry(
+            "table",
+            "users",
+            "users",
+            users_root,
+            "CREATE TABLE users (id INTEGER, name TEXT)",
+        );
+        let admins_root = test.btree.create_tree();
+        test.btree.insert_entry(
+            "table",
+            "admins",
+            "admins",
+            admins_root,
+            "CREATE TABLE admins (user_id INTEGER)",
+        );
+        (test, users_root, admins_root)
+    }
+
+    #[test]
+    fn plan_in_subquery_produces_semi_join() {
+        let (test, users_root, admins_root) = make_two_table_db();
+        let stmt = parse_sql("SELECT name FROM users WHERE id IN (SELECT user_id FROM admins)");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
+
+        // Top-level: Project
+        let inner = match plan {
+            LogicalPlan::Project { input, .. } => *input,
+            other => panic!("Expected Project, got {other:?}"),
+        };
+        // Inner: Join with Semi strategy
+        match inner {
+            LogicalPlan::Join {
+                strategy: crate::planner::JoinStrategy::Semi { negated: false },
+                left,
+                ..
+            } => {
+                assert!(
+                    matches!(*left, LogicalPlan::Scan { rootpage, .. } if rootpage == users_root)
+                );
+            }
+            other => panic!("Expected Semi join, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_not_in_subquery_produces_anti_semi_join() {
+        let (test, users_root, admins_root) = make_two_table_db();
+        let stmt = parse_sql("SELECT name FROM users WHERE id NOT IN (SELECT user_id FROM admins)");
+        let plan = plan(stmt, &test.btree).expect("Planning failed");
+
+        let inner = match plan {
+            LogicalPlan::Project { input, .. } => *input,
+            other => panic!("Expected Project, got {other:?}"),
+        };
+        match inner {
+            LogicalPlan::Join {
+                strategy: crate::planner::JoinStrategy::Semi { negated: true },
+                ..
+            } => {}
+            other => panic!("Expected Anti-Semi join, got {other:?}"),
+        }
     }
 }

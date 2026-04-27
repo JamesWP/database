@@ -309,8 +309,10 @@ fn collect_rows(
             ..
         } => {
             let strategy_label = match strategy {
-                crate::planner::JoinStrategy::Hash => "Hash",
-                crate::planner::JoinStrategy::NestedLoop => "NestedLoop",
+                crate::planner::JoinStrategy::Hash => "Hash".to_string(),
+                crate::planner::JoinStrategy::NestedLoop => "NestedLoop".to_string(),
+                crate::planner::JoinStrategy::Semi { negated: false } => "Semi".to_string(),
+                crate::planner::JoinStrategy::Semi { negated: true } => "Anti-Semi".to_string(),
             };
             format!(
                 "{indent}Join [{} | {}]",

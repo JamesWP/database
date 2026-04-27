@@ -145,6 +145,9 @@ pub enum JoinStrategy {
     /// Re-drive the right child once per left row via its reset entry point.
     /// Used when an index-probe is available on the right side.
     NestedLoop,
+    /// Semi-join: retain left rows whose key appears in the (materialised) right set.
+    /// `negated: true` → anti-semi-join (NOT IN).
+    Semi { negated: bool },
 }
 
 /// Logical plan nodes - relational algebra operators

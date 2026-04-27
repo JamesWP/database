@@ -2078,6 +2078,9 @@ pub fn codegen(
             crate::planner::JoinStrategy::NestedLoop => {
                 codegen_join_nested_loop(left, right, on_condition, *left_column_count, cont, ctx)
             }
+            crate::planner::JoinStrategy::Semi { .. } => {
+                todo!("codegen_join_semi not yet implemented")
+            }
         },
         LogicalPlan::IndexProbe {
             index_rootpage,

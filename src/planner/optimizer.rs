@@ -258,12 +258,16 @@ pub(super) fn optimize(plan: LogicalPlan, catalog: &BTree) -> LogicalPlan {
                 }
             }
 
-            // No index available (or strategy is already Hash): promote to Hash.
+            // Semi/Anti-semi joins keep their strategy; others promote to Hash.
+            let final_strategy = match strategy {
+                JoinStrategy::Semi { .. } => strategy,
+                _ => JoinStrategy::Hash,
+            };
             LogicalPlan::Join {
                 left: Box::new(opt_left),
                 right: Box::new(opt_right),
                 on_condition,
-                strategy: JoinStrategy::Hash,
+                strategy: final_strategy,
                 left_column_count,
             }
         }
