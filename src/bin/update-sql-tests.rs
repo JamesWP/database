@@ -1,9 +1,9 @@
 // Binary for updating SQL test expected output
 // Usage:
-//   cargo run --bin update-sql-tests              # Update all tests
-//   cargo run --bin update-sql-tests where_clauses delete  # Update specific tests
-//   cargo run --bin update-sql-tests --migrate    # Migrate all tests to inline format
-//   cargo run --bin update-sql-tests --migrate where_clauses  # Migrate specific tests
+//   cargo run -p database --bin update-sql-tests              # Update all tests
+//   cargo run -p database --bin update-sql-tests where_clauses delete  # Update specific tests
+//   cargo run -p database --bin update-sql-tests --migrate    # Migrate all tests to inline format
+//   cargo run -p database --bin update-sql-tests --migrate where_clauses  # Migrate specific tests
 
 use database::testing::sql_runner::{get_all_sql_tests, migrate_sql_test, run_sql_test};
 use std::env;
