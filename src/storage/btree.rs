@@ -2021,11 +2021,11 @@ mod test {
         // Verify that a value whose CBOR encoding exactly equals CHUNK_THRESHOLD bytes
         // stores inline (no overflow), and one byte over triggers overflow.
         //
-        // ScalarValue uses serde's externally-tagged enum representation, so
+        // ScalarValue uses native CBOR primitives, so
         // vec![ScalarValue::String(s)] with s.len() = N (N ≥ 256) encodes as:
-        //   1 (array) + 1 (map) + 7 ("String" key) + 3 (string header) + N = N+12 bytes
-        // So for CBOR = CHUNK_THRESHOLD: N = CHUNK_THRESHOLD - 12
-        // For CBOR = CHUNK_THRESHOLD + 1: N = CHUNK_THRESHOLD - 11
+        //   1 (array header) + 3 (string header for len 256-65535) + N = N+4 bytes
+        // So for CBOR = CHUNK_THRESHOLD: N = CHUNK_THRESHOLD - 4
+        // For CBOR = CHUNK_THRESHOLD + 1: N = CHUNK_THRESHOLD - 3
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
@@ -2034,7 +2034,7 @@ mod test {
         let mut cursor = cursor_handle.open_cursor();
 
         // A string whose CBOR encoding as a single-element array = CHUNK_THRESHOLD bytes.
-        let inline_str = "x".repeat(CHUNK_THRESHOLD - 12);
+        let inline_str = "x".repeat(CHUNK_THRESHOLD - 4);
         let inline_vals = vec![ScalarValue::String(inline_str.clone())];
         cursor.insert_u64(1, inline_vals.clone());
 
@@ -2047,7 +2047,7 @@ mod test {
         assert_eq!(decoded, inline_vals, "CHUNK_THRESHOLD fits inline");
 
         // One extra byte pushes CBOR over CHUNK_THRESHOLD → overflow.
-        let overflow_str = "x".repeat(CHUNK_THRESHOLD - 11);
+        let overflow_str = "x".repeat(CHUNK_THRESHOLD - 3);
         let overflow_vals = vec![ScalarValue::String(overflow_str.clone())];
         cursor.insert_u64(2, overflow_vals.clone());
 
@@ -2065,10 +2065,9 @@ mod test {
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        // String of length OVERFLOW_LIMIT * 3 - 11 encodes as CBOR of OVERFLOW_LIMIT * 3 + 1 bytes
-        // (serde externally-tagged enum: 12 bytes overhead for 256+ char strings), spanning
-        // multiple overflow pages.
-        let large_vals = vec![ScalarValue::String("x".repeat(OVERFLOW_LIMIT * 3 - 11))];
+        // String of length OVERFLOW_LIMIT * 3 encodes as CBOR of OVERFLOW_LIMIT * 3 + 4 bytes
+        // (native CBOR: 4 bytes overhead for 256+ char strings), spanning multiple overflow pages.
+        let large_vals = vec![ScalarValue::String("x".repeat(OVERFLOW_LIMIT * 3))];
 
         {
             let mut cursor_handle = btree.open(root);
@@ -2485,14 +2484,14 @@ mod test {
 
     #[test]
     fn test_chunk_threshold_no_overflow() {
-        // vec![ScalarValue::String(s)] with s.len() ≥ 256 encodes as s.len() + 12 CBOR bytes
-        // (serde externally-tagged enum: 1 array + 1 map + 7 key + 3 string header).
+        // vec![ScalarValue::String(s)] with s.len() ≥ 256 encodes as s.len() + 4 CBOR bytes
+        // (native CBOR: 1 array header + 3 string header).
         // A value with CBOR = CHUNK_THRESHOLD should store inline — no overflow pages.
         let test = TestDb::default();
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let value = vec![ScalarValue::String("x".repeat(CHUNK_THRESHOLD - 12))];
+        let value = vec![ScalarValue::String("x".repeat(CHUNK_THRESHOLD - 4))];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
             pages_added, 0,
@@ -2514,7 +2513,7 @@ mod test {
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let value = vec![ScalarValue::String("x".repeat(CHUNK_THRESHOLD - 11))];
+        let value = vec![ScalarValue::String("x".repeat(CHUNK_THRESHOLD - 3))];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
             pages_added, 1,
@@ -2537,7 +2536,7 @@ mod test {
         let mut btree = test.btree;
         let root = btree.create_tree();
 
-        let value = vec![ScalarValue::String("x".repeat(OVERFLOW_LIMIT - 12))];
+        let value = vec![ScalarValue::String("x".repeat(OVERFLOW_LIMIT - 4))];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
             pages_added, 1,
@@ -2555,7 +2554,7 @@ mod test {
     fn test_overflow_chain_three_pages() {
         // With prefix-inline: overflow bytes = CBOR size - CHUNK_THRESHOLD.
         // For 3 overflow pages: overflow bytes > 2 * OVERFLOW_LIMIT.
-        // String length = CHUNK_THRESHOLD + OVERFLOW_LIMIT*2 - 11
+        // String length = CHUNK_THRESHOLD + OVERFLOW_LIMIT*2 - 3
         //   → CBOR = CHUNK_THRESHOLD + OVERFLOW_LIMIT*2 + 1
         //   → overflow bytes = OVERFLOW_LIMIT*2 + 1 → 3 pages.
         let test = TestDb::default();
@@ -2563,7 +2562,7 @@ mod test {
         let root = btree.create_tree();
 
         let value = vec![ScalarValue::String(
-            "x".repeat(CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 - 11),
+            "x".repeat(CHUNK_THRESHOLD + OVERFLOW_LIMIT * 2 - 3),
         )];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
@@ -2594,7 +2593,7 @@ mod test {
         // CBOR = CHUNK_THRESHOLD + OVERFLOW_LIMIT.
         // overflow bytes = OVERFLOW_LIMIT → exactly 1 overflow page.
         let value = vec![ScalarValue::String(
-            "x".repeat(CHUNK_THRESHOLD + OVERFLOW_LIMIT - 12),
+            "x".repeat(CHUNK_THRESHOLD + OVERFLOW_LIMIT - 4),
         )];
         let pages_added = overflow_pages_for(&mut btree, root, 1, value.clone());
         assert_eq!(
@@ -2623,7 +2622,7 @@ mod test {
         let root = btree.create_tree();
 
         // Any value with CBOR > CHUNK_THRESHOLD triggers the overflow path.
-        let value = vec![ScalarValue::String("x".repeat(CHUNK_THRESHOLD - 11))]; // CBOR = CHUNK_THRESHOLD + 1
+        let value = vec![ScalarValue::String("x".repeat(CHUNK_THRESHOLD - 3))]; // CBOR = CHUNK_THRESHOLD + 1
         {
             let mut cursor_handle = btree.open(root);
             let mut cursor = cursor_handle.open_cursor();
