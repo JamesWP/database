@@ -137,9 +137,25 @@ pub(super) fn convert_expr(
             op: convert_unary_op(op),
             operand: Box::new(convert_expr(expression, resolver)?),
         }),
-        ast::Expression::In { .. } | ast::Expression::ScalarSubquery(_) => {
-            Err(PlanError::UnsupportedStatement)
+        ast::Expression::In {
+            expr,
+            source: ast::InSource::Values(vals),
+            negated,
+        } => {
+            let plan_expr = convert_expr(expr, resolver)?;
+            let plan_vals: Result<Vec<_>, _> =
+                vals.iter().map(|v| convert_expr(v, resolver)).collect();
+            Ok(PlanExpr::In {
+                expr: Box::new(plan_expr),
+                values: plan_vals?,
+                negated: *negated,
+            })
         }
+        ast::Expression::In {
+            source: ast::InSource::Subquery(_),
+            ..
+        }
+        | ast::Expression::ScalarSubquery(_) => Err(PlanError::UnsupportedStatement),
         ast::Expression::FunctionCall { name, args } => {
             // Validate function name (case-insensitive)
             let name_upper = name.to_uppercase();
@@ -535,6 +551,21 @@ pub(super) fn remap_column_indices(
                 args: remapped_args,
             })
         }
+        PlanExpr::In {
+            expr,
+            values,
+            negated,
+        } => {
+            let remapped_values = values
+                .iter()
+                .map(|v| remap_column_indices(v, index_map))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PlanExpr::In {
+                expr: Box::new(remap_column_indices(expr, index_map)?),
+                values: remapped_values,
+                negated: *negated,
+            })
+        }
     }
 }
 
@@ -609,6 +640,7 @@ pub(super) fn eval_constant(expr: &PlanExpr) -> Result<Literal, PlanError> {
         }
         PlanExpr::ColumnRef(_) => Err(PlanError::UnsupportedStatement),
         PlanExpr::FunctionCall { .. } => Err(PlanError::UnsupportedStatement),
+        PlanExpr::In { .. } => Err(PlanError::UnsupportedStatement),
     }
 }
 

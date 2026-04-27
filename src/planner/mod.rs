@@ -127,6 +127,13 @@ pub enum PlanExpr {
         name: String,
         args: Vec<PlanExpr>,
     },
+    /// expr IN (val, val, ...) — kept as a plan node for clean EXPLAIN output.
+    /// The compiler desugars to an OR equality chain at codegen time.
+    In {
+        expr: Box<PlanExpr>,
+        values: Vec<PlanExpr>,
+        negated: bool,
+    },
 }
 
 /// Join execution strategy, chosen by the optimizer.
