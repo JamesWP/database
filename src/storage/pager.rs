@@ -3,9 +3,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use probe::probe;
 
 use super::page_id::PageId;
-use super::page_storage::{self, MemoryPageStorage, PAGE_SIZE};
 #[cfg(not(target_arch = "wasm32"))]
 use super::page_storage::FilePageStorage;
+use super::page_storage::{self, MemoryPageStorage, PAGE_SIZE};
 
 /// Linked list page for tracking free pages
 #[derive(Serialize, Deserialize)]
@@ -149,8 +149,7 @@ impl Pager {
 
                 if let Some(page_id) = free_list_page.page_ids.pop() {
                     // Update the partially-drained free list page.
-                    let updated =
-                        cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                    let updated = cbor_encode(&free_list_page).expect("FreeListPage encode failed");
                     self.write_bytes(head_page_no, &updated);
                     probe!(database, page_write_freelist, head_page_no);
                     return PageId(page_id);
@@ -187,8 +186,7 @@ impl Pager {
 
             if free_list_page.page_ids.len() < 1000 {
                 free_list_page.page_ids.push(idx);
-                let updated =
-                    cbor_encode(&free_list_page).expect("FreeListPage encode failed");
+                let updated = cbor_encode(&free_list_page).expect("FreeListPage encode failed");
                 self.write_bytes(head_page_no, &updated);
                 return;
             }
