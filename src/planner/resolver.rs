@@ -72,6 +72,32 @@ impl ColumnResolver for JoinResolver<'_> {
     }
 }
 
+/// Resolver for a FROM subquery — maps column names from the inner plan's output to indices.
+/// The alias is consumed during planning and never stored in the plan node.
+pub(super) struct MaterializeResolver<'a> {
+    pub(super) alias: &'a str,
+    pub(super) columns: &'a [String],
+}
+
+impl ColumnResolver for MaterializeResolver<'_> {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError> {
+        self.columns
+            .iter()
+            .position(|c| c == name)
+            .ok_or_else(|| PlanError::ColumnNotFound {
+                table: self.alias.to_string(),
+                column: name.to_string(),
+            })
+    }
+
+    fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError> {
+        if table != self.alias {
+            return Err(PlanError::TableNotFound(table.to_string()));
+        }
+        self.resolve_identifier(column)
+    }
+}
+
 /// No-context resolver (for INSERT VALUES - disallows column refs)
 pub(super) struct NoColumnResolver;
 

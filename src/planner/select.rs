@@ -11,7 +11,7 @@ use super::resolver::{
     build_column_mapping, collect_columns, collect_columns_from_column_expr, convert_aggregate,
     convert_column_expr, convert_expr, convert_having_expr, extract_limit_value,
     extract_table_info, has_aggregate, is_aggregate_function, remap_column_indices, ColumnResolver,
-    JoinResolver, SingleTableResolver,
+    JoinResolver, MaterializeResolver, SingleTableResolver,
 };
 use super::{schema, AggregateExpr, LogicalPlan, PlanError, PlanExpr, SortKey};
 
@@ -40,6 +40,7 @@ pub(super) fn output_width(plan: &LogicalPlan) -> usize {
 enum SelectResolver<'a> {
     Single(SingleTableResolver<'a>),
     Join(JoinResolver<'a>),
+    Materialize(MaterializeResolver<'a>),
 }
 
 impl ColumnResolver for SelectResolver<'_> {
@@ -47,6 +48,7 @@ impl ColumnResolver for SelectResolver<'_> {
         match self {
             Self::Single(r) => r.resolve_identifier(name),
             Self::Join(r) => r.resolve_identifier(name),
+            Self::Materialize(r) => r.resolve_identifier(name),
         }
     }
 
@@ -54,6 +56,7 @@ impl ColumnResolver for SelectResolver<'_> {
         match self {
             Self::Single(r) => r.resolve_qualified(table, column),
             Self::Join(r) => r.resolve_qualified(table, column),
+            Self::Materialize(r) => r.resolve_qualified(table, column),
         }
     }
 }
@@ -74,6 +77,11 @@ fn plan_select_single(
     select: ast::SelectStatement,
     catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
+    // If FROM is a subquery, take the Materialize path.
+    if is_from_subquery(&select.from) {
+        return plan_select_from_subquery(select, catalog);
+    }
+
     // 1. Extract table info from FROM clause
     let (table_name, table_ref) = extract_table_info(&select.from)?;
 
@@ -134,6 +142,92 @@ fn plan_select_single(
         resolver,
         wildcard_col_count,
         true, // supports_aggregation
+    )
+}
+
+fn is_from_subquery(from: &ast::NamedTupleSource) -> bool {
+    matches!(
+        from,
+        ast::NamedTupleSource::Named {
+            source: ast::TupleSource::Subquery(_),
+            ..
+        } | ast::NamedTupleSource::Anonyomous(ast::TupleSource::Subquery(_))
+    )
+}
+
+/// Plan a SELECT whose FROM clause is a subquery: `SELECT ... FROM (SELECT ...) AS alias`.
+///
+/// The inner query is planned recursively and wrapped in a `Materialize` node.
+/// A `MaterializeResolver` maps the outer query's column references to positional
+/// indices in the inner plan's output.
+fn plan_select_from_subquery(
+    select: ast::SelectStatement,
+    catalog: &BTree,
+) -> Result<LogicalPlan, PlanError> {
+    // Destructure select so we can move `from` without invalidating `select`
+    let ast::SelectStatement {
+        distinct,
+        columns,
+        from,
+        joins,
+        filter,
+        limit,
+        order_by,
+        group_by,
+        having,
+    } = select;
+
+    // Extract alias and inner statement from FROM clause
+    let (alias, inner_stmt) = match from {
+        ast::NamedTupleSource::Named {
+            alias,
+            source: ast::TupleSource::Subquery(inner),
+        } => (alias, *inner),
+        ast::NamedTupleSource::Anonyomous(ast::TupleSource::Subquery(inner)) => {
+            (String::new(), *inner)
+        }
+        _ => return Err(PlanError::UnsupportedStatement),
+    };
+
+    // Collect inner column names before consuming inner_stmt
+    let inner_col_names = crate::planner::extract_select_column_names(&inner_stmt, catalog);
+
+    // Plan the inner query and wrap in Materialize
+    let inner_plan = plan_select(inner_stmt, catalog)?;
+    let materialized = LogicalPlan::Materialize {
+        input: Box::new(inner_plan),
+    };
+
+    // Build resolver using inner plan's output column names
+    let resolver = SelectResolver::Materialize(MaterializeResolver {
+        alias: &alias,
+        columns: &inner_col_names,
+    });
+
+    // Apply WHERE filter on the materialized output (same pattern as plan_select_single)
+    let base_plan = apply_filter(materialized, filter.as_ref(), &resolver)?;
+
+    let wildcard_col_count = inner_col_names.len();
+
+    // Reconstruct the select statement (without from — it's been consumed)
+    let outer_select = ast::SelectStatement {
+        distinct,
+        columns,
+        from: ast::NamedTupleSource::Anonyomous(ast::TupleSource::Table(String::new())),
+        joins,
+        filter: None, // already applied above
+        limit,
+        order_by,
+        group_by,
+        having,
+    };
+
+    plan_select_body(
+        outer_select,
+        base_plan,
+        resolver,
+        wildcard_col_count,
+        false, // aggregation not supported on subquery sources yet
     )
 }
 
@@ -1402,6 +1496,21 @@ mod tests {
             matches!(result, LogicalPlan::Distinct { .. }),
             "Expected Distinct, got {result:?}"
         );
+    }
+
+    #[test]
+    fn plan_from_subquery_produces_materialize_node() {
+        let (test, _users_root) = make_users_db();
+        let stmt = parse_sql("SELECT name FROM (SELECT id, name FROM users) AS u WHERE u.id > 1");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+        // Should have a Filter somewhere in the top of the tree
+        let has_filter = match &result {
+            LogicalPlan::Project { input, .. } => {
+                matches!(input.as_ref(), LogicalPlan::Filter { .. })
+            }
+            _ => false,
+        };
+        assert!(has_filter, "Expected Filter under Project, got: {result:?}");
     }
 
     #[test]
