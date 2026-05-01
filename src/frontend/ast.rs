@@ -152,6 +152,7 @@ pub enum UnaryOp {
     Negate,
     IsNull,
     IsNotNull,
+    Not,
 }
 
 #[derive(Debug)]
