@@ -147,6 +147,7 @@ impl BytecodeEmitter {
                 | Operation::UpperValue(_, _)
                 | Operation::LowerValue(_, _)
                 | Operation::AbsValue(_, _)
+                | Operation::RandomValue(_)
                 | Operation::LikeValue(_, _, _)
                 // Row buffer operations
                 | Operation::InitRowBuffer(_)
