@@ -95,7 +95,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **BE** | Cache Parsed Table Schema: Eliminate DDL Re-parsing | 3 | [phase-be-schema-cache.md](completed/phase-be-schema-cache.md) | Completed |
 | **BF** | WASM Core Library Prerequisites | 3 | [phase-bf-wasm-core-prereqs.md](completed/phase-bf-wasm-core-prereqs.md) | Completed |
 | **BG** | Pluggable Storage (VFS API) | 4 | [phase-bg-pluggable-storage.md](completed/phase-bg-pluggable-storage.md) | Completed |
-| **BH** | Boolean NOT + RANDOM() | 3 | [phase-bh-not-and-random.md](phase-bh-not-and-random.md) | Planned |
+| **BH** | Boolean NOT + RANDOM() | 3 | [phase-bh-not-and-random.md](completed/phase-bh-not-and-random.md) | Completed |
 | **BI** | INTEGER PRIMARY KEY AUTOINCREMENT | 4 | [phase-bi-autoincrement.md](phase-bi-autoincrement.md) | Planned |
 | **BJ** | Compact ScalarValue Encoding: Native CBOR Primitives | 2 | [phase-bj-compact-scalar-encoding.md](completed/phase-bj-compact-scalar-encoding.md) | Completed |
 ## Sakila Compatibility
