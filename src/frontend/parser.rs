@@ -501,6 +501,10 @@ impl Parser {
                     self.input.expect(Expect::Null).ok();
                     cs.push(ast::ColumnConstraint::NotNull);
                 }
+                lexer::Type::Autoincrement => {
+                    self.input.advance();
+                    cs.push(ast::ColumnConstraint::Autoincrement);
+                }
                 lexer::Type::Default => {
                     self.input.advance(); // consume DEFAULT
                     default = match self.input.peek() {
@@ -1764,5 +1768,21 @@ mod test {
             }
             _ => panic!("Expected UnaryOp::Not"),
         }
+    }
+
+    fn test_parse_autoincrement_constraint() {
+        let stmt =
+            parse("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)").unwrap();
+        let ct = match stmt {
+            ast::Statement::CreateTable(ct) => ct,
+            _ => panic!("Expected CreateTable"),
+        };
+        assert!(ct.columns[0]
+            .constraints
+            .contains(&ast::ColumnConstraint::PrimaryKey));
+        assert!(ct.columns[0]
+            .constraints
+            .contains(&ast::ColumnConstraint::Autoincrement));
+        assert!(ct.columns[1].constraints.is_empty());
     }
 }

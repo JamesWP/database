@@ -74,6 +74,7 @@ pub enum Type {
     By,
     Asc,
     Desc,
+    Autoincrement,
     Group,
     Having,
     Like,
@@ -491,6 +492,7 @@ impl<'a> Lexer<'a> {
                     _ => self.match_keyword("as", Type::As),
                 },
                 b'n' => self.match_keyword("and", Type::And),
+                b'u' => self.match_keyword("autoincrement", Type::Autoincrement),
                 _ => self.make_identifier(),
             },
             b'b' => match self.scanner.token_byte_at(1) {

@@ -60,6 +60,7 @@ pub enum ColumnConstraint {
     PrimaryKey,
     Unique,
     NotNull,
+    Autoincrement,
 }
 
 #[derive(Debug)]
