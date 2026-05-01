@@ -96,7 +96,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **BF** | WASM Core Library Prerequisites | 3 | [phase-bf-wasm-core-prereqs.md](completed/phase-bf-wasm-core-prereqs.md) | Completed |
 | **BG** | Pluggable Storage (VFS API) | 4 | [phase-bg-pluggable-storage.md](completed/phase-bg-pluggable-storage.md) | Completed |
 | **BH** | Boolean NOT + RANDOM() | 3 | [phase-bh-not-and-random.md](completed/phase-bh-not-and-random.md) | Completed |
-| **BI** | INTEGER PRIMARY KEY AUTOINCREMENT | 4 | [phase-bi-autoincrement.md](phase-bi-autoincrement.md) | Planned |
+| **BI** | INTEGER PRIMARY KEY AUTOINCREMENT | 4 | [phase-bi-autoincrement.md](completed/phase-bi-autoincrement.md) | Completed |
 | **BJ** | Compact ScalarValue Encoding: Native CBOR Primitives | 2 | [phase-bj-compact-scalar-encoding.md](completed/phase-bj-compact-scalar-encoding.md) | Completed |
 ## Sakila Compatibility
 
@@ -127,6 +127,7 @@ Features that are currently parsed or partially handled but not fully implemente
 | UPDATE unique constraint enforcement | UPDATE does not check uniqueness on the new values — a duplicate introduced by UPDATE is silently written | TODO phase-az |
 | FOREIGN KEY constraints | Parsed and silently ignored (`skip_table_constraint`) | TODO phase-av |
 | CHECK constraints | Parsed and silently ignored (`skip_table_constraint`) | TODO phase-av |
+| AUTOINCREMENT explicit PK value | When an explicit value is supplied for the autoincrement column, it is stored in column data but the B-tree key is still the auto-assigned rowid; subsequent auto-ids do not continue from the supplied value | TODO phase-bi |
 | NOT NULL enforcement for INSERT omitted columns | Omitted columns without a DEFAULT are filled with NULL rather than rejected | TODO phase-aj |
 | Expression DEFAULTs e.g. `DEFAULT (DATETIME('now'))` | Parenthesised expression consumed and treated as no default | TODO phase-aj |
 
