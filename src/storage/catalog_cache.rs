@@ -20,6 +20,7 @@ pub struct ColumnInfo {
     pub default: Option<DefaultValue>,
     pub primary_key: bool,
     pub unique: bool,
+    pub autoincrement: bool,
 }
 
 /// Parsed table metadata stored in the catalog snapshot.
@@ -140,6 +141,7 @@ fn parse_table_info(rootpage: u32, sql: &str) -> Option<TableInfo> {
                 primary_key: col.constraints.contains(&ColumnConstraint::PrimaryKey),
                 unique: col.constraints.contains(&ColumnConstraint::Unique)
                     || col.constraints.contains(&ColumnConstraint::PrimaryKey),
+                autoincrement: col.constraints.contains(&ColumnConstraint::Autoincrement),
             })
             .collect(),
     })

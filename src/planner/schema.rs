@@ -26,6 +26,7 @@ pub struct Column {
     pub default: Option<DefaultValue>,
     pub primary_key: bool,
     pub unique: bool,
+    pub autoincrement: bool,
 }
 
 impl Schema {
@@ -111,6 +112,31 @@ mod tests {
             "Expected index creation to succeed, got: {result:?}"
         );
     }
+
+    #[test]
+    fn test_schema_loads_autoincrement_flag() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)",
+            &mut db.btree,
+        )
+        .unwrap();
+        let table = resolve_table("t", &db.btree).unwrap();
+        assert!(table.columns[0].autoincrement);
+        assert!(!table.columns[1].autoincrement);
+    }
+
+    #[test]
+    fn test_schema_non_autoincrement_table_has_no_flag() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)",
+            &mut db.btree,
+        )
+        .unwrap();
+        let table = resolve_table("t", &db.btree).unwrap();
+        assert!(!table.columns[0].autoincrement);
+    }
 }
 
 pub fn resolve_table(table_name: &str, catalog: &BTree) -> Result<Table, PlanError> {
@@ -131,6 +157,7 @@ pub fn resolve_table(table_name: &str, catalog: &BTree) -> Result<Table, PlanErr
                 default: col.default.clone(),
                 primary_key: col.primary_key,
                 unique: col.unique,
+                autoincrement: col.autoincrement,
             })
             .collect(),
     })

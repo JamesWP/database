@@ -1012,6 +1012,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "id".to_string(),
                 },
                 schema::Column {
@@ -1019,6 +1020,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "name".to_string(),
                 },
                 schema::Column {
@@ -1026,6 +1028,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "age".to_string(),
                 },
             ],
@@ -1110,6 +1113,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "id".to_string(),
                 },
                 schema::Column {
@@ -1117,6 +1121,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "name".to_string(),
                 },
                 schema::Column {
@@ -1124,6 +1129,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "dept_id".to_string(),
                 },
             ],
@@ -1138,6 +1144,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "id".to_string(),
                 },
                 schema::Column {
@@ -1145,6 +1152,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "name".to_string(),
                 },
             ],
@@ -1213,6 +1221,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "id".to_string(),
                 },
                 schema::Column {
@@ -1220,6 +1229,7 @@ mod tests {
                     default: None,
                     primary_key: false,
                     unique: false,
+                    autoincrement: false,
                     name: "dept_id".to_string(),
                 },
             ],
@@ -1233,6 +1243,7 @@ mod tests {
                 default: None,
                 primary_key: false,
                 unique: false,
+                autoincrement: false,
                 name: "id".to_string(),
             }],
         };
