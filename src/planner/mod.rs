@@ -241,6 +241,9 @@ pub enum LogicalPlan {
         table_columns: Vec<usize>,
         input: Box<LogicalPlan>,
         indexes: Vec<IndexMaintenanceInfo>,
+        /// If Some(i), column i is an autoincrement PK that was omitted from the
+        /// INSERT column list. The compiler fills it from the auto-assigned rowid.
+        fill_autoincrement_at: Option<usize>,
     },
 
     /// Update rows in a table

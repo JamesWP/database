@@ -1259,6 +1259,7 @@ pub fn codegen_insert(
     table_columns: &[usize],
     input: &LogicalPlan,
     indexes: &[crate::planner::IndexMaintenanceInfo],
+    fill_autoincrement_at: Option<usize>,
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
@@ -1313,6 +1314,16 @@ pub fn codegen_insert(
 
         reordered
     };
+    // If this table has an autoincrement PK that was omitted from the INSERT column
+    // list, fill its slot from the auto-assigned rowid register.
+    let reordered_regs = if let Some(pk_idx) = fill_autoincrement_at {
+        let mut regs = reordered_regs;
+        regs[pk_idx] = key_reg;
+        regs
+    } else {
+        reordered_regs
+    };
+
     // Index writes come before WriteCursor so uniqueness violations abort before the
     // table row is written. WriteIndex with unique=true checks for a conflicting prefix
     // before inserting. Note: if multiple unique indexes exist and a later one fails,
@@ -1969,7 +1980,16 @@ pub fn codegen(
             table_columns,
             input,
             indexes,
-        } => codegen_insert(*rootpage, table_columns, input, indexes, cont, ctx),
+            fill_autoincrement_at,
+        } => codegen_insert(
+            *rootpage,
+            table_columns,
+            input,
+            indexes,
+            *fill_autoincrement_at,
+            cont,
+            ctx,
+        ),
         LogicalPlan::Update {
             rootpage,
             table_columns,
@@ -2889,6 +2909,7 @@ mod tests {
                 ],
             }),
             indexes: vec![],
+            fill_autoincrement_at: None,
         };
 
         let (ops, num_registers) = compile_plan(&plan);
@@ -2923,6 +2944,7 @@ mod tests {
                 ],
             }),
             indexes: vec![],
+            fill_autoincrement_at: None,
         };
 
         let (ops, num_registers) = compile_plan(&insert_plan);
@@ -2966,6 +2988,7 @@ mod tests {
                 rows: vec![vec![Literal::Integer(42)]],
             }),
             indexes: vec![],
+            fill_autoincrement_at: None,
         };
 
         let (ops, num_registers) = compile_plan(&plan);
@@ -3000,6 +3023,7 @@ mod tests {
                 rows: vec![vec![Literal::Integer(42)]],
             }),
             indexes: vec![index.clone()],
+            fill_autoincrement_at: None,
         };
         let (ops, num_regs) = compile_plan(&plan);
         let yields = Engine::with_program(&ops, num_regs, &btree).run();
@@ -3013,6 +3037,7 @@ mod tests {
                 rows: vec![vec![Literal::Integer(42)]],
             }),
             indexes: vec![index],
+            fill_autoincrement_at: None,
         };
         let (ops2, num_regs2) = compile_plan(&plan2);
         let mut engine2 = Engine::with_program(&ops2, num_regs2, &btree);
@@ -3051,6 +3076,7 @@ mod tests {
                 ],
             }),
             indexes: vec![index],
+            fill_autoincrement_at: None,
         };
         let (ops, num_regs) = compile_plan(&plan);
         let mut engine = Engine::with_program(&ops, num_regs, &btree);
@@ -3081,6 +3107,7 @@ mod tests {
                 rows: vec![vec![Literal::Integer(7)], vec![Literal::Integer(7)]],
             }),
             indexes: vec![index],
+            fill_autoincrement_at: None,
         };
         let (ops, num_regs) = compile_plan(&plan);
         let mut engine = Engine::with_program(&ops, num_regs, &btree);

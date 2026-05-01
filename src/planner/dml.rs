@@ -16,20 +16,61 @@ pub(super) fn plan_insert(
     let table = resolve_table(&insert.table_name, catalog)?;
     let num_table_columns = table.columns.len();
 
+    // Find the autoincrement column index, if any
+    let autoincrement_col_idx = table
+        .columns
+        .iter()
+        .position(|c| c.autoincrement && c.primary_key);
+
     // Determine which columns we're inserting into
-    let table_columns: Vec<usize> = match &insert.columns {
-        Some(col_names) => col_names
-            .iter()
-            .map(|name| {
-                table
-                    .get_column_index(name)
-                    .ok_or_else(|| PlanError::ColumnNotFound {
-                        table: insert.table_name.clone(),
-                        column: name.clone(),
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        None => (0..num_table_columns).collect(),
+    let (table_columns, fill_autoincrement_at): (Vec<usize>, Option<usize>) = match &insert.columns
+    {
+        Some(col_names) => {
+            let cols = col_names
+                .iter()
+                .map(|name| {
+                    table
+                        .get_column_index(name)
+                        .ok_or_else(|| PlanError::ColumnNotFound {
+                            table: insert.table_name.clone(),
+                            column: name.clone(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let fill = autoincrement_col_idx.and_then(|pk_idx| {
+                if !cols.contains(&pk_idx) {
+                    Some(pk_idx)
+                } else {
+                    None
+                }
+            });
+            (cols, fill)
+        }
+        None => {
+            // No column list: if VALUES count will be one short and there's an
+            // autoincrement column, treat the positional values as non-PK columns.
+            // The actual count check is deferred to the Values loop below; here we
+            // just set up the column list to omit the PK column when appropriate.
+            // We detect the "one short" case after seeing the first value row, but
+            // we must build table_columns now. We peek at the first row length.
+            let first_row_len = match &insert.source {
+                ast::InsertSource::Values(rows) => rows.first().map(|r| r.len()),
+                ast::InsertSource::Query(_) => None,
+            };
+            if let (Some(pk_idx), Some(len)) = (autoincrement_col_idx, first_row_len) {
+                if len == num_table_columns - 1 {
+                    // User provided all non-PK columns in order; synthesise the
+                    // column list as all columns except the PK column.
+                    let cols: Vec<usize> =
+                        (0..num_table_columns).filter(|&i| i != pk_idx).collect();
+                    (cols, Some(pk_idx))
+                } else {
+                    ((0..num_table_columns).collect(), None)
+                }
+            } else {
+                ((0..num_table_columns).collect(), None)
+            }
+        }
     };
 
     // Build the input plan from the INSERT source
@@ -104,6 +145,7 @@ pub(super) fn plan_insert(
         table_columns: (0..num_table_columns).collect(),
         input: Box::new(input_plan),
         indexes,
+        fill_autoincrement_at,
     })
 }
 
@@ -339,6 +381,7 @@ mod tests {
                 ]],
             }),
             indexes: vec![],
+            fill_autoincrement_at: None,
         };
 
         assert_eq!(result, expected);
@@ -363,6 +406,7 @@ mod tests {
                 ]],
             }),
             indexes: vec![],
+            fill_autoincrement_at: None,
         };
 
         assert_eq!(result, expected);
@@ -402,6 +446,7 @@ mod tests {
                 ]],
             }),
             indexes: vec![],
+            fill_autoincrement_at: None,
         };
 
         assert_eq!(result, expected);
