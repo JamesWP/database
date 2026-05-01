@@ -210,6 +210,7 @@ impl lexer::Type {
         match self {
             lexer::Type::Plus => Some(ast::UnaryOp::Plus),
             lexer::Type::Bang => Some(ast::UnaryOp::Negate),
+            lexer::Type::Not => Some(ast::UnaryOp::Not),
             _ => None,
         }
     }
@@ -1074,7 +1075,7 @@ impl Parser {
     fn parse_unary(&mut self) -> ParseResult<ast::Expression> {
         if let Some(op) = self.input.peek().as_unary() {
             self.input.advance();
-            let expr = self.parse_cast()?;
+            let expr = self.parse_unary()?;
             Ok(ast::Expression::UnaryOp {
                 op,
                 expression: Box::new(expr),
@@ -1721,5 +1722,47 @@ mod test {
         assert!(ct.columns[0]
             .constraints
             .contains(&ast::ColumnConstraint::Unique));
+    }
+
+    #[test]
+    fn test_parse_not_boolean() {
+        let stmt = parse("SELECT id FROM t WHERE NOT (a = 1)").unwrap();
+        let sel = match stmt {
+            ast::Statement::Select(s) => s,
+            _ => panic!("Expected Select"),
+        };
+        let where_expr = sel.filter.unwrap();
+        assert!(matches!(
+            where_expr,
+            ast::Expression::UnaryOp {
+                op: ast::UnaryOp::Not,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_not_compound() {
+        let stmt = parse("SELECT id FROM t WHERE NOT (a = 1 AND b = 2)").unwrap();
+        let sel = match stmt {
+            ast::Statement::Select(s) => s,
+            _ => panic!("Expected Select"),
+        };
+        let where_expr = sel.filter.unwrap();
+        match where_expr {
+            ast::Expression::UnaryOp {
+                op: ast::UnaryOp::Not,
+                expression,
+            } => {
+                assert!(matches!(
+                    *expression,
+                    ast::Expression::BinaryOp {
+                        op: ast::BinaryOp::And,
+                        ..
+                    }
+                ));
+            }
+            _ => panic!("Expected UnaryOp::Not"),
+        }
     }
 }

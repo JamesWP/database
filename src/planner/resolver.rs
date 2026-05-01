@@ -215,6 +215,7 @@ pub(super) fn convert_unary_op(op: &ast::UnaryOp) -> UnaryOp {
         ast::UnaryOp::Negate => UnaryOp::Negate,
         ast::UnaryOp::IsNull => UnaryOp::IsNull,
         ast::UnaryOp::IsNotNull => UnaryOp::IsNotNull,
+        ast::UnaryOp::Not => UnaryOp::Not,
     }
 }
 
