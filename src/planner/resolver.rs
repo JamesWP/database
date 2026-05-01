@@ -114,13 +114,29 @@ pub(super) fn convert_expr(
         ast::Expression::FunctionCall { name, args } => {
             // Validate function name (case-insensitive)
             let name_upper = name.to_uppercase();
+
+            // RANDOM() takes zero arguments
+            if name_upper == "RANDOM" {
+                if !args.is_empty() {
+                    return Err(PlanError::InvalidFunctionArguments {
+                        function: name.clone(),
+                        expected: 0,
+                        got: args.len(),
+                    });
+                }
+                return Ok(PlanExpr::FunctionCall {
+                    name: name_upper,
+                    args: vec![],
+                });
+            }
+
             let supported_functions = ["LENGTH", "UPPER", "LOWER", "ABS"];
 
             if !supported_functions.contains(&name_upper.as_str()) {
                 return Err(PlanError::UnknownFunction(name.clone()));
             }
 
-            // For v1, all functions take exactly 1 argument
+            // For v1, all other functions take exactly 1 argument
             if args.len() != 1 {
                 return Err(PlanError::InvalidFunctionArguments {
                     function: name.clone(),

@@ -128,11 +128,16 @@ fn compile_function_call(
     input_regs: &[Reg],
     ctx: &mut ExprContext,
 ) -> Reg {
-    // All functions currently take exactly 1 argument (validated in planner)
-    assert_eq!(args.len(), 1, "Functions should have exactly 1 argument");
-
-    let arg_reg = compile_expr(&args[0], input_regs, ctx);
     let dest = ctx.registers.alloc();
+
+    if name == "RANDOM" {
+        assert!(args.is_empty(), "RANDOM takes no arguments");
+        ctx.emitter.emit(Operation::RandomValue(dest));
+        return dest;
+    }
+
+    assert_eq!(args.len(), 1, "Functions should have exactly 1 argument");
+    let arg_reg = compile_expr(&args[0], input_regs, ctx);
 
     let operation = match name {
         "LENGTH" => Operation::LengthValue(dest, arg_reg),

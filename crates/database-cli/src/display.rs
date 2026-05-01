@@ -218,6 +218,7 @@ impl fmt::Display for ColoredOperation<'_> {
             UpperValue(d, s) => write!(f, "{:10} {}, {}", "Upper".cyan().bold(), r!(d), r!(s)),
             LowerValue(d, s) => write!(f, "{:10} {}, {}", "Lower".cyan().bold(), r!(d), r!(s)),
             AbsValue(d, s) => write!(f, "{:10} {}, {}", "Abs".cyan().bold(), r!(d), r!(s)),
+            RandomValue(d) => write!(f, "{:10} {}", "Random".cyan().bold(), r!(d)),
             LikeValue(d, val, pat) => {
                 write!(
                     f,

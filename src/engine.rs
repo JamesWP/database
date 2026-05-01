@@ -345,6 +345,11 @@ impl Engine {
                 let result = src.abs();
                 *self.registers.get_mut(dest) = RegisterValue::ScalarValue(result);
             }
+            RandomValue(dest) => {
+                let val = rand::random::<i64>();
+                *self.registers.get_mut(dest) =
+                    RegisterValue::ScalarValue(ScalarValue::Integer(val));
+            }
             LikeValue(dest, value_reg, pattern_reg) => {
                 let value = self.registers.get(value_reg).scalar().unwrap();
                 let pattern = self.registers.get(pattern_reg).scalar().unwrap();

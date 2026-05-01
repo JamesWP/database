@@ -121,6 +121,7 @@ pub enum Operation {
     UpperValue(Reg, Reg),     // Reg = UPPER(Reg)
     LowerValue(Reg, Reg),     // Reg = LOWER(Reg)
     AbsValue(Reg, Reg),       // Reg = ABS(Reg)
+    RandomValue(Reg),         // Reg = random i64 (SQLite RANDOM() semantics)
     LikeValue(Reg, Reg, Reg), // Reg = Reg LIKE Reg (dest, value, pattern)
 
     // Row Buffer (for sorting)
@@ -214,6 +215,7 @@ impl Operation {
             UpperValue(..) => "Upper",
             LowerValue(..) => "Lower",
             AbsValue(..) => "Abs",
+            RandomValue(..) => "Random",
             LikeValue(..) => "Like",
             InitRowBuffer(..) => "InitRowBuf",
             AppendToRowBuffer(..) => "AppendRowBuf",
@@ -377,6 +379,7 @@ impl std::fmt::Display for Operation {
             UpperValue(d, s) => write!(f, "{:10} {d}, {s}", "Upper"),
             LowerValue(d, s) => write!(f, "{:10} {d}, {s}", "Lower"),
             AbsValue(d, s) => write!(f, "{:10} {d}, {s}", "Abs"),
+            RandomValue(d) => write!(f, "{:10} {d}", "Random"),
             LikeValue(d, val, pat) => write!(f, "{:10} {d}, {val}, {pat}", "Like"),
 
             // Row buffer operations
