@@ -73,6 +73,15 @@ pub(super) fn plan_insert(
         }
     };
 
+    let rowid_col = table.rowid_column();
+    let pk_omitted = match rowid_col {
+        Some(pk_idx) => match &insert.columns {
+            Some(cols) => !cols.iter().any(|n| n == &table.columns[pk_idx].name),
+            None => false, // positional VALUES — all columns provided
+        },
+        None => false,
+    };
+
     // Look up indexes for this table
     let index_infos = catalog
         .catalog()
@@ -104,6 +113,8 @@ pub(super) fn plan_insert(
         table_columns: (0..num_table_columns).collect(),
         input: Box::new(input_plan),
         indexes,
+        rowid_col,
+        pk_omitted,
     })
 }
 
@@ -339,6 +350,8 @@ mod tests {
                 ]],
             }),
             indexes: vec![],
+            rowid_col: None,
+            pk_omitted: false,
         };
 
         assert_eq!(result, expected);
@@ -363,6 +376,8 @@ mod tests {
                 ]],
             }),
             indexes: vec![],
+            rowid_col: None,
+            pk_omitted: false,
         };
 
         assert_eq!(result, expected);
@@ -402,6 +417,8 @@ mod tests {
                 ]],
             }),
             indexes: vec![],
+            rowid_col: None,
+            pk_omitted: false,
         };
 
         assert_eq!(result, expected);

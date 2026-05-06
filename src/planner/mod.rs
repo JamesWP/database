@@ -150,6 +150,10 @@ pub enum LogicalPlan {
         rootpage: u32,
         columns: Vec<usize>,
         with_key: bool,
+        /// Index of the INTEGER PRIMARY KEY column, if this table uses a rowid alias.
+        /// When set, the PK column is read from the B-tree key; CBOR indices for other
+        /// columns are adjusted accordingly (columns > pk_idx shift down by 1).
+        rowid_col: Option<usize>,
     },
 
     /// Scan via an index
@@ -241,6 +245,12 @@ pub enum LogicalPlan {
         table_columns: Vec<usize>,
         input: Box<LogicalPlan>,
         indexes: Vec<IndexMaintenanceInfo>,
+        /// Index of the INTEGER PRIMARY KEY column, if any. INSERT uses this value
+        /// as the B-tree key and omits it from the CBOR body.
+        rowid_col: Option<usize>,
+        /// True when the user's INSERT did not provide the PK column (it will be
+        /// auto-assigned via max(rowid)+1).
+        pk_omitted: bool,
     },
 
     /// Update rows in a table

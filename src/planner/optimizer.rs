@@ -803,6 +803,7 @@ mod tests {
                 rootpage: root,
                 columns: vec![0, 1, 2],
                 with_key: false,
+                rowid_col: None,
             }),
         };
 
@@ -875,6 +876,7 @@ mod tests {
                         rootpage: root,
                         columns: vec![0, 1, 2],
                         with_key: false,
+                        rowid_col: None,
                     }),
                 }),
             }),
@@ -895,6 +897,7 @@ mod tests {
             rootpage: 1,
             columns: vec![0, 1, 2],
             with_key: false,
+            rowid_col: None,
         };
         let inner = LogicalPlan::Project {
             input: Box::new(scan),
@@ -924,6 +927,7 @@ mod tests {
             rootpage: 1,
             columns: vec![0, 1],
             with_key: false,
+            rowid_col: None,
         };
         let project = LogicalPlan::Project {
             input: Box::new(scan),
@@ -957,6 +961,7 @@ mod tests {
             rootpage: 1,
             columns: vec![0, 1, 2, 3],
             with_key: false,
+            rowid_col: None,
         };
 
         let inner = LogicalPlan::Project {
@@ -1014,11 +1019,13 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![0, 1, 2],
                 with_key: false,
+                rowid_col: None,
             }),
             right: Box::new(LogicalPlan::Scan {
                 rootpage: orders_root,
                 columns: vec![0, 1],
                 with_key: false,
+                rowid_col: None,
             }),
             on_condition: PlanExpr::BinaryOp {
                 op: BinaryOp::Equals,
@@ -1072,11 +1079,13 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![0, 1, 2],
                 with_key: false,
+                rowid_col: None,
             }),
             right: Box::new(LogicalPlan::Scan {
                 rootpage: orders_root,
                 columns: vec![0, 1],
                 with_key: false,
+                rowid_col: None,
             }),
             on_condition: PlanExpr::BinaryOp {
                 op: BinaryOp::Equals,

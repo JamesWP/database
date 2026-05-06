@@ -509,6 +509,7 @@ mod tests {
             rootpage: 1,
             columns: vec![0, 1],
             with_key: false,
+            rowid_col: None,
         };
         let rows = format_plan(&plan, &ExplainSchema::empty());
         assert_eq!(rows.len(), 1);
@@ -523,6 +524,7 @@ mod tests {
                 rootpage: 1,
                 columns: vec![0],
                 with_key: false,
+                rowid_col: None,
             }),
             predicate: PlanExpr::Literal(Literal::Integer(1)),
         };
@@ -539,11 +541,13 @@ mod tests {
                 rootpage: 1,
                 columns: vec![0],
                 with_key: false,
+                rowid_col: None,
             }),
             right: Box::new(LogicalPlan::Scan {
                 rootpage: 2,
                 columns: vec![0],
                 with_key: false,
+                rowid_col: None,
             }),
             on_condition: PlanExpr::Literal(Literal::Integer(1)),
             strategy: crate::planner::JoinStrategy::Hash,
@@ -585,6 +589,7 @@ mod tests {
             rootpage: 1,
             columns: vec![0, 1],
             with_key: false,
+            rowid_col: None,
         };
         let rows = format_plan(&plan, &schema);
         assert!(rows[0].1.contains("Scan users"), "got: {}", rows[0].1);
@@ -607,6 +612,7 @@ mod tests {
                 rootpage: 1,
                 columns: vec![0, 1, 2],
                 with_key: false,
+                rowid_col: None,
             }),
             predicate: PlanExpr::BinaryOp {
                 op: BinaryOp::Equals,
@@ -634,6 +640,7 @@ mod tests {
                 rootpage: 1,
                 columns: vec![0, 1, 2],
                 with_key: false,
+                rowid_col: None,
             }),
             columns: vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)],
         };

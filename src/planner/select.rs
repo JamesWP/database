@@ -121,6 +121,7 @@ fn plan_select_single(
         rootpage: table.rootpage,
         columns: mapping.scan_columns,
         with_key: false,
+        rowid_col: table.rowid_column(),
     };
     let base_plan = apply_filter(scan, select.filter.as_ref(), &resolver)?;
 
@@ -187,11 +188,13 @@ fn plan_select_joined(
         rootpage: left_table.rootpage,
         columns: (0..left_col_count).collect(),
         with_key: false,
+        rowid_col: left_table.rowid_column(),
     };
     let right_scan = LogicalPlan::Scan {
         rootpage: right_table.rootpage,
         columns: (0..right_col_count).collect(),
         with_key: false,
+        rowid_col: right_table.rowid_column(),
     };
 
     // 5. Build Join plan, then optional WHERE filter
@@ -519,6 +522,7 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![0, 1], // id, name
                 with_key: false,
+                rowid_col: None,
             }),
             columns: vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)],
         };
@@ -541,6 +545,7 @@ mod tests {
                     rootpage: users_root,
                     columns: vec![1, 2], // name, age
                     with_key: false,
+                    rowid_col: None,
                 }),
                 predicate: PlanExpr::BinaryOp {
                     op: BinaryOp::GreaterThan,
@@ -569,6 +574,7 @@ mod tests {
                     rootpage: users_root,
                     columns: vec![1], // name
                     with_key: false,
+                    rowid_col: None,
                 }),
                 columns: vec![PlanExpr::ColumnRef(0)],
             }),
@@ -591,6 +597,7 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![0, 1, 2], // all columns
                 with_key: false,
+                rowid_col: None,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -623,6 +630,7 @@ mod tests {
                 rootpage: root,
                 columns: vec![0, 1, 2, 3, 4], // all 5 columns
                 with_key: false,
+                rowid_col: None,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -648,6 +656,7 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![0, 1, 2], // all columns
                 with_key: false,
+                rowid_col: None,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -672,6 +681,7 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![0, 1, 2], // all columns
                 with_key: false,
+                rowid_col: None,
             }),
             columns: vec![
                 PlanExpr::Literal(Literal::Integer(999)),
@@ -696,6 +706,7 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![0, 1, 2], // all columns
                 with_key: false,
+                rowid_col: None,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -755,6 +766,7 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![], // No columns needed from scan
                 with_key: false,
+                rowid_col: None,
             }),
             columns: vec![PlanExpr::Literal(Literal::Null)],
         };
@@ -774,6 +786,7 @@ mod tests {
                 rootpage: users_root,
                 columns: vec![0, 1], // id, name
                 with_key: false,
+                rowid_col: None,
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
