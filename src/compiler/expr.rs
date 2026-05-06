@@ -177,7 +177,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
-            rowid_reg: None,
+                rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -203,7 +203,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
-            rowid_reg: None,
+                rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -226,7 +226,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
-            rowid_reg: None,
+                rowid_reg: None,
             };
             compile_expr(&expr, &input_regs, &mut ctx)
         };
@@ -258,7 +258,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
-            rowid_reg: None,
+                rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -289,7 +289,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
-            rowid_reg: None,
+                rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -319,7 +319,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
-            rowid_reg: None,
+                rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -356,7 +356,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
-            rowid_reg: None,
+                rowid_reg: None,
             };
             compile_expr(&expr, &input_regs, &mut ctx)
         };
@@ -388,7 +388,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
-            rowid_reg: None,
+                rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx);
         }

@@ -9,9 +9,9 @@ use schema::resolve_table;
 
 use super::resolver::{
     ast_expr_uses_rowid, build_column_mapping, collect_columns, collect_columns_from_column_expr,
-    convert_aggregate, convert_column_expr, convert_expr, convert_having_expr,
-    extract_limit_value, extract_table_info, has_aggregate, is_aggregate_function,
-    remap_column_indices, ColumnResolver, JoinResolver, SingleTableResolver,
+    convert_aggregate, convert_column_expr, convert_expr, convert_having_expr, extract_limit_value,
+    extract_table_info, has_aggregate, is_aggregate_function, remap_column_indices, ColumnResolver,
+    JoinResolver, SingleTableResolver,
 };
 use super::{schema, AggregateExpr, LogicalPlan, PlanError, PlanExpr, SortKey};
 
