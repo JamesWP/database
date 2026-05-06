@@ -89,6 +89,10 @@ pub struct NodeOutput {
     pub reset: Option<Label>,
     /// Registers containing the current tuple's column values
     pub output_regs: Vec<Reg>,
+    /// Register holding the B-tree key (rowid) of the current row.
+    /// Set by Scan when with_key=true or rowid_col is set; propagated by Filter.
+    /// None for all other nodes.
+    pub rowid_reg: Option<Reg>,
 }
 
 /// Generate bytecode for a Scan node.
@@ -210,10 +214,14 @@ pub fn codegen_scan(
         GoTo(cont.on_tuple)
     );
 
+    // rowid_reg: prefer the PK register (rowid alias tables) or the with_key register.
+    let rowid_reg = pk_reg.or(key_reg);
+
     NodeOutput {
         next: check_label,
         reset: Some(reset_label),
         output_regs,
+        rowid_reg,
     }
 }
 
@@ -272,6 +280,7 @@ pub fn codegen_count(
         next: count_next,
         output_regs: vec![counter_reg],
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -309,6 +318,7 @@ pub fn codegen_values(
             next: check_label,
             output_regs: vec![],
             reset: None,
+            rowid_reg: None,
         };
     }
 
@@ -378,6 +388,7 @@ pub fn codegen_values(
         next: check_label,
         output_regs,
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -427,6 +438,7 @@ pub fn codegen_sequence(
         next: check_label,
         output_regs: vec![output_reg],
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -474,6 +486,7 @@ pub fn codegen_filter(
         let mut expr_ctx = ExprContext {
             emitter: &mut ctx.body_emitter,
             registers: &mut ctx.registers,
+            rowid_reg: child_output.rowid_reg,
         };
         compile_expr(predicate, &child_output.output_regs, &mut expr_ctx)
     };
@@ -487,8 +500,9 @@ pub fn codegen_filter(
     // Return: delegate to child for next, propagate reset, pass through output registers
     NodeOutput {
         next: child_output.next,
-        reset: child_output.reset, // propagate child's reset label unchanged
+        reset: child_output.reset,
         output_regs: child_output.output_regs,
+        rowid_reg: child_output.rowid_reg,
     }
 }
 
@@ -627,6 +641,7 @@ pub fn codegen_index_scan(
         next: index_next,
         output_regs: final_output_regs,
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -671,6 +686,7 @@ pub fn codegen_index_probe(
         &mut ExprContext {
             emitter: &mut ctx.body_emitter,
             registers: &mut ctx.registers,
+        rowid_reg: None,
         },
     );
     body!(ctx;
@@ -706,6 +722,7 @@ pub fn codegen_index_probe(
         next: index_next,
         reset: Some(reset_label),
         output_regs: vec![pk_reg],
+    rowid_reg: None,
     }
 }
 
@@ -755,6 +772,7 @@ pub fn codegen_rowid_lookup(
         next: child_output.next,
         reset: child_output.reset, // propagate child's reset label unchanged
         output_regs,
+        rowid_reg: None,
     }
 }
 
@@ -803,6 +821,7 @@ pub fn codegen_project(
             let mut expr_ctx = ExprContext {
                 emitter: &mut ctx.body_emitter,
                 registers: &mut ctx.registers,
+                rowid_reg: child_output.rowid_reg,
             };
             compile_expr(expr, &child_output.output_regs, &mut expr_ctx)
         })
@@ -816,6 +835,7 @@ pub fn codegen_project(
         next: child_output.next,
         reset: child_output.reset, // propagate child's reset label unchanged
         output_regs,
+        rowid_reg: None,
     }
 }
 
@@ -882,6 +902,7 @@ pub fn codegen_limit(
         next: child_output.next,
         output_regs: child_output.output_regs,
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -957,6 +978,7 @@ pub fn codegen_distinct(
         next: distinct_next,
         output_regs,
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -1057,6 +1079,7 @@ pub fn codegen_sort(
         next: sort_next,
         output_regs: child_output.output_regs,
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -1124,6 +1147,7 @@ pub fn codegen_aggregate(
             let mut expr_ctx = ExprContext {
                 emitter: &mut ctx.body_emitter,
                 registers: &mut ctx.registers,
+            rowid_reg: None,
             };
             compile_expr(expr, &child_output.output_regs, &mut expr_ctx)
         })
@@ -1137,6 +1161,7 @@ pub fn codegen_aggregate(
                 let mut expr_ctx = ExprContext {
                     emitter: &mut ctx.body_emitter,
                     registers: &mut ctx.registers,
+                rowid_reg: None,
                 };
                 compile_expr(expr, &child_output.output_regs, &mut expr_ctx)
             });
@@ -1174,6 +1199,7 @@ pub fn codegen_aggregate(
         let mut expr_ctx = ExprContext {
             emitter: &mut ctx.body_emitter,
             registers: &mut ctx.registers,
+        rowid_reg: None,
         };
         let cond_reg = compile_expr(pred, &output_regs, &mut expr_ctx);
         body!(ctx; GoToIfFalse(yield_from_groups, cond_reg));
@@ -1189,6 +1215,7 @@ pub fn codegen_aggregate(
         next: agg_next,
         output_regs,
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -1403,6 +1430,7 @@ pub fn codegen_insert(
         next: insert_next,
         output_regs: vec![counter_reg],
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -1464,6 +1492,7 @@ pub fn codegen_update(
             let mut expr_ctx = ExprContext {
                 emitter: &mut ctx.body_emitter,
                 registers: &mut ctx.registers,
+            rowid_reg: None,
             };
             compile_expr(filter_expr, &read_regs, &mut expr_ctx)
         };
@@ -1522,6 +1551,7 @@ pub fn codegen_update(
             let mut expr_ctx = ExprContext {
                 emitter: &mut ctx.body_emitter,
                 registers: &mut ctx.registers,
+            rowid_reg: None,
             };
             compile_expr(expr, &read_regs, &mut expr_ctx)
         };
@@ -1546,6 +1576,7 @@ pub fn codegen_update(
         next: after_yield,
         output_regs: vec![counter_reg],
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -1676,6 +1707,7 @@ pub fn codegen_join(
         &mut ExprContext {
             emitter: &mut ctx.body_emitter,
             registers: &mut ctx.registers,
+        rowid_reg: None,
         },
     );
     body!(ctx;
@@ -1691,6 +1723,7 @@ pub fn codegen_join(
         next: join_next,
         output_regs: combined_output,
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -1777,6 +1810,7 @@ pub fn codegen_join_nested_loop(
         &mut ExprContext {
             emitter: &mut ctx.body_emitter,
             registers: &mut ctx.registers,
+        rowid_reg: None,
         },
     );
     body!(ctx;
@@ -1794,6 +1828,7 @@ pub fn codegen_join_nested_loop(
         next: join_next,
         reset: None,
         output_regs: combined_output,
+    rowid_reg: None,
     }
 }
 
@@ -1848,6 +1883,7 @@ pub fn codegen_delete(
             let mut expr_ctx = ExprContext {
                 emitter: &mut ctx.body_emitter,
                 registers: &mut ctx.registers,
+            rowid_reg: None,
             };
             compile_expr(filter_expr, &read_regs, &mut expr_ctx)
         };
@@ -1914,6 +1950,7 @@ pub fn codegen_delete(
         next: after_yield,
         output_regs: vec![counter_reg],
         reset: None,
+        rowid_reg: None,
     }
 }
 
@@ -1981,6 +2018,7 @@ pub fn codegen_populate_index(
         next: scan_out.next,
         output_regs: vec![],
         reset: None,
+        rowid_reg: None,
     }
 }
 

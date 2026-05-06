@@ -8,10 +8,10 @@ use crate::storage::BTree;
 use schema::resolve_table;
 
 use super::resolver::{
-    build_column_mapping, collect_columns, collect_columns_from_column_expr, convert_aggregate,
-    convert_column_expr, convert_expr, convert_having_expr, extract_limit_value,
-    extract_table_info, has_aggregate, is_aggregate_function, remap_column_indices, ColumnResolver,
-    JoinResolver, SingleTableResolver,
+    ast_expr_uses_rowid, build_column_mapping, collect_columns, collect_columns_from_column_expr,
+    convert_aggregate, convert_column_expr, convert_expr, convert_having_expr,
+    extract_limit_value, extract_table_info, has_aggregate, is_aggregate_function,
+    remap_column_indices, ColumnResolver, JoinResolver, SingleTableResolver,
 };
 use super::{schema, AggregateExpr, LogicalPlan, PlanError, PlanExpr, SortKey};
 
@@ -117,10 +117,22 @@ fn plan_select_single(
     });
 
     // 5. Build base plan: Scan → optional Filter
+    let needs_key = select.columns.iter().any(|col| match col {
+        ast::ColumnExpression::Named { expression, .. }
+        | ast::ColumnExpression::Anonyomous(expression) => ast_expr_uses_rowid(expression),
+        ast::ColumnExpression::Wildcard => false,
+    }) || select.filter.as_ref().map_or(false, ast_expr_uses_rowid)
+        || select
+            .order_by
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .any(|c| ast_expr_uses_rowid(&c.expression));
+
     let scan = LogicalPlan::Scan {
         rootpage: table.rootpage,
         columns: mapping.scan_columns,
-        with_key: false,
+        with_key: needs_key,
         rowid_col: table.rowid_column(),
     };
     let base_plan = apply_filter(scan, select.filter.as_ref(), &resolver)?;

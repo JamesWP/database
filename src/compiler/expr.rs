@@ -9,6 +9,9 @@ use super::registers::RegisterAllocator;
 pub struct ExprContext<'a> {
     pub emitter: &'a mut BytecodeEmitter,
     pub registers: &'a mut RegisterAllocator,
+    /// Register holding the current row's B-tree key (rowid), set by Scan nodes.
+    /// Required for compiling `rowid()` function calls.
+    pub rowid_reg: Option<Reg>,
 }
 
 /// Compile a PlanExpr to bytecode.
@@ -136,6 +139,15 @@ fn compile_function_call(
         return dest;
     }
 
+    if name == "ROWID" {
+        assert!(args.is_empty(), "ROWID takes no arguments");
+        let rowid = ctx
+            .rowid_reg
+            .expect("rowid() used outside a scan context — with_key must be true");
+        ctx.emitter.emit(Operation::CopyValue(dest, rowid));
+        return dest;
+    }
+
     assert_eq!(args.len(), 1, "Functions should have exactly 1 argument");
     let arg_reg = compile_expr(&args[0], input_regs, ctx);
 
@@ -165,6 +177,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
+            rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -190,6 +203,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
+            rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -212,6 +226,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
+            rowid_reg: None,
             };
             compile_expr(&expr, &input_regs, &mut ctx)
         };
@@ -243,6 +258,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
+            rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -273,6 +289,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
+            rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -302,6 +319,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
+            rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx)
         };
@@ -338,6 +356,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
+            rowid_reg: None,
             };
             compile_expr(&expr, &input_regs, &mut ctx)
         };
@@ -369,6 +388,7 @@ mod tests {
             let mut ctx = ExprContext {
                 emitter: &mut emitter,
                 registers: &mut registers,
+            rowid_reg: None,
             };
             compile_expr(&expr, &[], &mut ctx);
         }

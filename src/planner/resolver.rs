@@ -115,8 +115,8 @@ pub(super) fn convert_expr(
             // Validate function name (case-insensitive)
             let name_upper = name.to_uppercase();
 
-            // RANDOM() takes zero arguments
-            if name_upper == "RANDOM" {
+            // RANDOM() and ROWID() take zero arguments
+            if name_upper == "RANDOM" || name_upper == "ROWID" {
                 if !args.is_empty() {
                     return Err(PlanError::InvalidFunctionArguments {
                         function: name.clone(),
@@ -429,6 +429,21 @@ pub(super) fn collect_columns_from_column_expr(
         ast::ColumnExpression::Wildcard => {
             // Wildcard is handled specially in plan_select
         }
+    }
+}
+
+/// Returns true if any sub-expression is a zero-argument `rowid()` call.
+pub(super) fn ast_expr_uses_rowid(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::FunctionCall { name, args } => {
+            (name.to_uppercase() == "ROWID" && args.is_empty())
+                || args.iter().any(ast_expr_uses_rowid)
+        }
+        ast::Expression::BinaryOp { lhs, rhs, .. } => {
+            ast_expr_uses_rowid(lhs) || ast_expr_uses_rowid(rhs)
+        }
+        ast::Expression::UnaryOp { expression, .. } => ast_expr_uses_rowid(expression),
+        ast::Expression::Value(_) => false,
     }
 }
 
