@@ -10,7 +10,7 @@ the current row for any table.
 | # | Track | Item | Depends on |
 |---|-------|------|------------|
 | BK-1 | 2 | Schema: `rowid_column: Option<usize>`; suppress `_pk_` implicit index for `INTEGER PRIMARY KEY` tables | — |
-| BK-2 | 3/4 | INSERT: use PK value as B-tree key; strip PK from CBOR array; `CheckKeyUnique` VM op | BK-1 |
+| BK-2 | 3/4 | INSERT: use PK value as B-tree key; strip PK from CBOR array; `WriteCursor` unique flag | BK-1 |
 | BK-3 | 4 | Scan: read rowid-alias PK from B-tree key; adjust CBOR column indices | BK-1 |
 | BK-4 | 1/4 | `rowid()` zero-argument function | BK-3 |
 | BK-5 | 7 | SQL integration tests; update existing tests | BK-2, BK-3, BK-4 |
@@ -40,8 +40,8 @@ After this phase:
 - **CBOR row body**: `["alice"]` — only non-PK columns
 
 The uniqueness guarantee that previously came from a `_pk_` implicit index is
-now enforced directly by the B-tree key via a `CheckKeyUnique` operation before
-each write.
+now enforced directly by `WriteCursor` with `unique = true`, using the same
+seek-and-check pattern already implemented in `WriteIndex`.
 
 ### Scope
 
@@ -61,8 +61,9 @@ each write.
 
 All SQL test files create fresh databases; no on-disk migration is needed. The
 existing `unique_constraints.sql` test creates tables with `INTEGER PRIMARY KEY`
-and expects duplicate-key errors — this continues to work because `CheckKeyUnique`
-enforces the same semantics (the mechanism changes, the observable behaviour does not).
+and expects duplicate-key errors — this continues to work because `WriteCursor`
+with `unique = true` enforces the same semantics (the mechanism changes, the
+observable behaviour does not).
 
 ---
 
@@ -170,23 +171,28 @@ fn integer_pk_does_not_create_pk_index() {
 
 ---
 
-## BK-2. INSERT: PK value as B-tree key; strip PK from CBOR; `CheckKeyUnique` (Track 3/4)
+## BK-2. INSERT: PK value as B-tree key; strip PK from CBOR; `WriteCursor` unique flag (Track 3/4)
 
 ### What Changes
 
-#### New VM operation: `CheckKeyUnique`
+#### Extend `WriteCursor` with a `unique` flag
+
+`WriteCursor` already takes `(cursor_reg, key_reg, value_regs)`. Add a `unique:
+bool` fourth parameter — the same pattern used by `WriteIndex(cursor, col_values,
+pk, unique)`, which already does a seek-and-check in the engine before writing.
 
 ```rust
-// src/engine/program.rs
-/// CheckKeyUnique(cursor_reg, key_reg):
-/// Raises ConstraintViolation if a row with the given key already exists in the
-/// B-tree under cursor_reg. No-op if the key is absent.
-CheckKeyUnique(Reg, Reg),
+// src/engine/program.rs  (existing op, signature extended)
+WriteCursor(Reg, Reg, Vec<Reg>, bool), // (cursor, key, values, unique)
 ```
 
-The engine executes this by seeking to `key_reg` in the cursor's B-tree and
-checking whether the cursor is valid (key found). If so, raise
-`ExecuteError::ConstraintViolation`.
+When `unique = true`, the engine seeks to `key_reg` in the B-tree before
+inserting. If a row with that exact key is found, it returns
+`EngineError::ConstraintViolation` before any write occurs. When `unique =
+false` (the existing non-PK path), the behaviour is unchanged.
+
+This reuses the same seek-and-check logic already present in `WriteIndex` — no
+new VM operation is needed.
 
 #### Planner changes
 
@@ -228,21 +234,23 @@ When `rowid_col = Some(pk_idx)`:
 **Case A — PK supplied by user (`pk_omitted = false`):**
 
 1. **Skip `InitRowid`** — the key comes from `reordered_regs[pk_idx]` directly.
-2. **Emit `CheckKeyUnique`** before the write.
-3. **Build `value_regs`** excluding `reordered_regs[pk_idx]`.
-4. **`WriteCursor`** with `key_reg = reordered_regs[pk_idx]` and `value_regs`.
-5. **No `IncrementValue(key_reg)`** — each explicit key stands on its own.
+2. **Build `value_regs`** excluding `reordered_regs[pk_idx]`.
+3. **`WriteCursor(cursor_reg, key_reg, value_regs, true)`** — `unique = true`
+   causes the engine to check for a duplicate key and raise `ConstraintViolation`
+   before writing.
+4. **No `IncrementValue(key_reg)`** — each explicit key stands on its own.
 
 **Case B — PK omitted (`pk_omitted = true`):**
 
 1. **Keep `InitRowid(cursor_reg, key_reg)`** — auto-assign `max(rowid) + 1`.
-2. **No `CheckKeyUnique`** — rowid cache guarantees uniqueness.
-3. **Build `value_regs`** from all columns (PK column not in the VALUES, so not
+2. **Build `value_regs`** from all columns (PK column not in the VALUES, so not
    in `reordered_regs` at all — the key register already holds the assigned value).
-4. **`WriteCursor`** with `key_reg` (assigned rowid) and `value_regs`.
-5. **`IncrementValue(key_reg)`** — advance the cache for the next row.
+3. **`WriteCursor(cursor_reg, key_reg, value_regs, false)`** — `unique = false`
+   because the rowid cache guarantees no duplicate.
+4. **`IncrementValue(key_reg)`** — advance the cache for the next row.
 
-For the non-rowid-alias path (no `rowid_col`), everything is unchanged.
+For the non-rowid-alias path (no `rowid_col`), `WriteCursor` is emitted with
+`unique = false` (unchanged behaviour).
 
 ```
 // BK INSERT codegen for rowid-alias table, PK supplied:
@@ -250,9 +258,8 @@ Open(cursor_reg, rootpage)
 [child plan...]
 child_on_tuple:
   CopyValue(key_reg, reordered_regs[pk_idx])
-  CheckKeyUnique(cursor_reg, key_reg)       // raises ConstraintViolation on dup
   [other WriteIndex calls for non-PK unique/secondary indexes]
-  WriteCursor(cursor_reg, key_reg, [non-pk column regs])
+  WriteCursor(cursor_reg, key_reg, [non-pk column regs], unique=true)  // raises ConstraintViolation on dup
   IncrementValue(counter_reg)
   GoTo(child.next)
 child_on_done:
@@ -264,7 +271,7 @@ InitRowid(cursor_reg, key_reg)             // max(rowid)+1 from cache
 [child plan...]
 child_on_tuple:
   [other WriteIndex calls]
-  WriteCursor(cursor_reg, key_reg, [all non-pk column regs])
+  WriteCursor(cursor_reg, key_reg, [all non-pk column regs], unique=false)
   IncrementValue(key_reg)                  // advance cache
   IncrementValue(counter_reg)
   GoTo(child.next)
@@ -274,11 +281,11 @@ child_on_done:
 
 ### Key Files
 
-- `src/engine/program.rs` — `CheckKeyUnique` operation + Display
-- `src/engine/mod.rs` (or `engine.rs`) — execute `CheckKeyUnique`
+- `src/engine/program.rs` — add `unique: bool` to `WriteCursor` variant + Display
+- `src/engine.rs` — execute `WriteCursor`: add seek-and-check when `unique = true`
 - `src/planner/` — `InsertPlan.rowid_col`; `InsertPlan.pk_omitted`; `plan_insert` sets both
 - `src/compiler/nodes.rs` — `codegen_insert`: two code paths (PK supplied vs. auto-assigned);
-  strip PK from `value_regs` in both cases
+  strip PK from `value_regs` in both cases; pass `unique` flag to `WriteCursor`
 
 ### Tests
 
@@ -328,18 +335,22 @@ fn insert_explicit_pk_then_auto_continues_from_max() {
 
 ### Implementation Steps (2 commits)
 
-#### Step BK-2.1 — VM: `CheckKeyUnique` operation
+#### Step BK-2.1 — VM: extend `WriteCursor` with `unique` flag
 
-Add the operation variant, Display impl, and engine execution. Add unit test.
+Add `unique: bool` as a fourth field to the `WriteCursor` variant. Update
+Display. In the engine, when `unique = true`, seek to the key before inserting
+and return `ConstraintViolation` if found. Update all existing `WriteCursor`
+emit sites to pass `false` (preserves current behaviour). Add unit test.
 
-**Commit:** `VM: add CheckKeyUnique operation for B-tree key uniqueness enforcement`
+**Commit:** `VM: extend WriteCursor with unique flag for key uniqueness enforcement`
 
 #### Step BK-2.2 — Planner + compiler: rowid-alias INSERT
 
 Add `InsertPlan.rowid_col` and `InsertPlan.pk_omitted`, set from schema. Update
-`codegen_insert` with two code paths: explicit PK (use value as key, `CheckKeyUnique`)
-and auto-assigned PK (`InitRowid`, skip `CheckKeyUnique`). Strip PK from CBOR
-value registers in both cases.
+`codegen_insert` with two code paths: explicit PK (use value as key, emit
+`WriteCursor` with `unique = true`) and auto-assigned PK (`InitRowid`, emit
+`WriteCursor` with `unique = false`). Strip PK from CBOR value registers in
+both cases.
 
 **Commit:** `Compiler: INSERT uses PK value as B-tree key for INTEGER PRIMARY KEY tables`
 
@@ -706,8 +717,8 @@ SELECT name, count FROM tags ORDER BY name
 ```
 
 **Update `tests/sql/unique_constraints.sql`** — verify the file still passes
-unchanged (duplicate PK detection still works via `CheckKeyUnique`). Run
-`cargo test test_sql_unique_constraints` to confirm.
+unchanged (duplicate PK detection still works via `WriteCursor` with `unique =
+true`). Run `cargo test test_sql_unique_constraints` to confirm.
 
 ### Implementation Steps (1 commit)
 
@@ -727,7 +738,7 @@ integer_pk_rowid_alias` to capture expected output; verify it matches the
 - [ ] `cargo fmt && cargo build --workspace 2>&1 | grep warning` — zero warnings
 - [ ] `INSERT INTO t VALUES (42, 'alice')` → B-tree key is 42
 - [ ] CBOR row body contains only non-PK columns (inspect with `btree inspect page`)
-- [ ] Duplicate PK raises `ConstraintViolation`
+- [ ] Duplicate PK raises `ConstraintViolation` (via `WriteCursor` `unique = true`)
 - [ ] `SELECT id FROM t` reads id from B-tree key, not CBOR
 - [ ] `SELECT name FROM t` reads correctly with adjusted CBOR indices
 - [ ] `rowid()` returns B-tree key; equals PK for rowid-alias tables
