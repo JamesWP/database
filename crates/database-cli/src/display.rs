@@ -306,14 +306,17 @@ impl fmt::Display for ColoredOperation<'_> {
                     r!(cursor)
                 )
             }
-            WriteCursor(cursor, key, regs) => write!(
-                f,
-                "{:10} {}, {}, [{}]",
-                "Write".cyan().bold(),
-                r!(cursor),
-                r!(key),
-                regs_str!(regs)
-            ),
+            WriteCursor(cursor, key, regs, unique) => {
+                let label = if *unique { "WriteUniq" } else { "Write" };
+                write!(
+                    f,
+                    "{:10} {}, {}, [{}]",
+                    label.cyan().bold(),
+                    r!(cursor),
+                    r!(key),
+                    regs_str!(regs)
+                )
+            }
             WriteIndex(cursor, vals, pk, unique) => {
                 let label = if *unique { "WriteIdxUniq" } else { "WriteIdx" };
                 write!(

@@ -145,7 +145,7 @@ pub enum Operation {
     MoveCursor(Reg, MoveOperation),
     ReadCursor(Vec<Reg>, Reg), // ReadCursor(dest_regs, cursor): read row values
     ReadKey(Reg, Reg),         // ReadKey(dest, cursor): read btree key as integer
-    WriteCursor(Reg, Reg, Vec<Reg>), // WriteCursor(cursor, key, values): insert row
+    WriteCursor(Reg, Reg, Vec<Reg>, bool), // WriteCursor(cursor, key, values, unique): insert row
     /// Insert a row into a secondary index B-tree.
     /// When `unique` is true, a conflict on the column-value prefix raises a
     /// `ConstraintViolation` error before any write occurs.
@@ -229,7 +229,8 @@ impl Operation {
             MoveCursor(..) => "MoveCursor",
             ReadCursor(..) => "ReadCursor",
             ReadKey(..) => "ReadKey",
-            WriteCursor(..) => "WriteCursor",
+            WriteCursor(_, _, _, true) => "WriteCursorUniq",
+            WriteCursor(_, _, _, false) => "WriteCursor",
             WriteIndex(_, _, _, true) => "WriteIdxUniq",
             WriteIndex(_, _, _, false) => "WriteIndex",
             CheckUnique(..) => "CheckUnique",
@@ -422,8 +423,9 @@ impl std::fmt::Display for Operation {
                 write!(f, "{:10} [{}], {cursor}", "ReadCursor", regs_str!(regs))
             }
             ReadKey(dest, cursor) => write!(f, "{:10} {dest}, {cursor}", "ReadKey"),
-            WriteCursor(cursor, key, regs) => {
-                write!(f, "{:10} {cursor}, {key}, [{}]", "Write", regs_str!(regs))
+            WriteCursor(cursor, key, regs, unique) => {
+                let label = if *unique { "WriteUniq" } else { "Write" };
+                write!(f, "{:10} {cursor}, {key}, [{}]", label, regs_str!(regs))
             }
             WriteIndex(cursor, vals, pk, unique) => {
                 let label = if *unique { "WriteIdxUniq" } else { "WriteIdx" };
