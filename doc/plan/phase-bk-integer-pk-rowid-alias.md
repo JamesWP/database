@@ -11,7 +11,7 @@ the current row for any table.
 |---|-------|------|------------|
 | BK-1 | 2 | Schema: `rowid_column: Option<usize>`; suppress `_pk_` implicit index for `INTEGER PRIMARY KEY` tables | — |
 | BK-2 | 3/4 | INSERT: use PK value as B-tree key; strip PK from CBOR array; `WriteCursor` unique flag | BK-1 |
-| BK-3 | 4 | Scan: read rowid-alias PK from B-tree key; adjust CBOR column indices | BK-1 |
+| BK-3 | 4 | Scan: scan-space column index convention; read PK and rowid from B-tree key | BK-1 |
 | BK-4 | 1/4 | `rowid()` zero-argument function | BK-3 |
 | BK-5 | 7 | SQL integration tests; update existing tests | BK-2, BK-3, BK-4 |
 
@@ -73,6 +73,82 @@ observable behaviour does not).
 |------|-----------|-------------|--------------|
 | `AUTOINCREMENT` keyword | Parsed and ignored; INSERT still auto-assigns `max(rowid)+1` | `TODO(phase-bk): autoincrement sequence table` | Phase BL |
 | `rowid()` in joins | Returns `PlanError::UnsupportedStatement` | `TODO(phase-bk): rowid in joins` | Phase BL or later |
+
+---
+
+## Key design: scan-space column index convention
+
+The central design decision in this phase is how `LogicalPlan::Scan` represents
+which columns to read. The convention chosen here cleanly unifies rowid aliases,
+`rowid()`, and regular columns without any special fields on the Scan node.
+
+**Scan-space column index encoding:**
+
+| Scan index | Physical meaning | Compiler action |
+|---|---|---|
+| `0` | B-tree key | `ReadKey(reg, cursor)` |
+| `k > 0` | CBOR slot `k − 1` | `ReadCursor` slot `k−1` |
+
+The `LogicalPlan::Scan` node carries only `{ rootpage, columns: Vec<usize> }` where
+every element is a scan-space index. The compiler's read logic is trivial:
+
+```rust
+// pseudocode
+for (i, &scan_idx) in columns.iter().enumerate() {
+    if scan_idx == 0 {
+        emit ReadKey(output_regs[i], cursor);
+    } else {
+        // CBOR slot = scan_idx - 1, handled via alloc_block
+    }
+}
+```
+
+No `with_key: bool`, no `rowid_col: Option<usize>`, no `rowid_reg` on `NodeOutput`
+or `ExprContext`. The compiler is completely unaware of rowid as a concept.
+
+**Planner translation (schema-space → scan-space):**
+
+The planner translates schema column indices to scan indices using
+`table.rowid_column()`:
+
+| Table type | Schema col `i` | Scan index |
+|---|---|---|
+| No alias (`rowid_col = None`) | any `i` | `i + 1` |
+| Alias at `pk` | `i == pk` | `0` |
+| Alias at `pk` | `i < pk` | `i + 1` |
+| Alias at `pk` | `i > pk` | `i` |
+| Any | rowid (virtual col N) | `0` |
+
+For a no-alias table `(name, age)` scanning columns `[name, age]`:
+- scan indices: `[1, 2]` → ReadCursor slots 0 and 1. No key read.
+
+For a rowid-alias table `(id PK, name)` scanning columns `[id, name]`:
+- `id` → scan `0` (key), `name` → scan `1` (CBOR slot 0).
+- scan indices: `[0, 1]` → ReadKey + ReadCursor slot 0.
+
+For a rowid-alias table `(a, id PK, b)` (pk at index 1) scanning `[a, id, b]`:
+- `a` → scan `1` (CBOR 0), `id` → scan `0` (key), `b` → scan `2` (CBOR 1).
+- scan indices: `[1, 0, 2]`.
+
+The CBOR layout always packs non-PK columns in their original relative order with
+no gaps. This is a storage invariant set by INSERT (BK-2) and assumed by Scan (BK-3).
+
+The same convention applies symmetrically to INSERT. The planner builds the
+`value_regs` list in insert-space order: index `0` holds the user-supplied key
+register (if the PK column is present in the VALUES), and indices `k > 0` hold
+CBOR slot `k−1`. The compiler's rule is:
+
+- Insert index `0` present → user supplied the key → `WriteCursor(key=reg[0], values=reg[1..], unique=true)`
+- Insert index `0` absent → auto-assign → `InitRowid` + `WriteCursor(unique=false)`
+
+No `rowid_col` or `pk_omitted` fields are needed on `InsertPlan`. Whether the key
+was supplied is visible directly from the values list.
+
+**rowid() in expressions:**
+
+`rowid()` is resolved by the planner to `ColumnRef` pointing to the output slot of
+scan index `0`. The planner adds `0` to the Scan's column list if not already present
+and assigns it an output position. No `PlanExpr::Rowid` variant is needed.
 
 ---
 
@@ -191,113 +267,70 @@ inserting. If a row with that exact key is found, it returns
 `EngineError::ConstraintViolation` before any write occurs. When `unique =
 false` (the existing non-PK path), the behaviour is unchanged.
 
-This reuses the same seek-and-check logic already present in `WriteIndex` — no
-new VM operation is needed.
-
 #### Planner changes
 
-The `InsertPlan` (or `LogicalPlan::Insert`) gains a `rowid_col: Option<usize>` field:
+`InsertPlan` needs no new fields. The planner applies the same `to_scan_index`
+translation used for Scan: it reorders the user-supplied value registers into
+insert-space order before handing them to the compiler.
 
-```rust
-// in src/planner/nodes.rs (or wherever Insert is)
-pub struct InsertPlan {
-    // ... existing fields ...
-    /// If Some(i), column i is the INTEGER PRIMARY KEY rowid alias.
-    /// The compiler uses its value as the B-tree key and omits it from the CBOR body.
-    pub rowid_col: Option<usize>,
-}
-```
+For `INSERT INTO t VALUES (42, 'alice')` on `(id INTEGER PK, name)`:
+- `id` (schema 0, pk) → insert index `0` (key register = 42)
+- `name` (schema 1) → insert index `1` (CBOR slot 0 = 'alice')
+- `value_regs = [reg(42), reg('alice')]`
 
-`plan_insert` sets `rowid_col` from `table.rowid_column()`.
+For `INSERT INTO t (name) VALUES ('alice')` on `(id INTEGER PK, name)`:
+- PK not supplied → insert index `0` absent
+- `name` → insert index `1`
+- `value_regs = [reg('alice')]`  (no index-0 entry)
 
-It also sets a new flag `pk_omitted: bool` when the user's column list (or
-positional VALUES count) omits the PK column — signalling the compiler to
-auto-assign instead of reading the PK from the row.
+For a non-alias table `(a, b)`:
+- `a` → insert index `1`, `b` → insert index `2`
+- `value_regs = [reg(a), reg(b)]`  (no index-0 entry → auto-assign rowid)
 
 #### Auto-assignment when PK is omitted
 
-When the PK column is absent from the INSERT, the engine auto-assigns
-`max(current rowid) + 1` using the existing `InitRowid` + rowid cache
-mechanism that already handles internal rowids. The assigned value is also
-written into the CBOR-excluded PK slot for SELECT to read back via `ReadKey`.
-
-This is identical to the current internal rowid assignment — the only change is
-that the assigned value is now the B-tree key *and* the user-visible PK column.
-
-Phase BL will change the assignment rule for tables declared with `AUTOINCREMENT`
-to `max(rowid ever seen) + 1` using a separate sequence table.
+When insert index `0` is absent from `value_regs`, the engine auto-assigns
+`max(current rowid) + 1` using the existing `InitRowid` + rowid cache mechanism.
+This covers both non-alias tables (always) and rowid-alias tables where the user
+omitted the PK column.
 
 #### Compiler changes (`codegen_insert`)
 
-When `rowid_col = Some(pk_idx)`:
+The compiler inspects only whether `value_regs[0]` exists (insert index 0):
 
-**Case A — PK supplied by user (`pk_omitted = false`):**
+**Key present (`value_regs` has an index-0 entry):**
 
-1. **Skip `InitRowid`** — the key comes from `reordered_regs[pk_idx]` directly.
-2. **Build `value_regs`** excluding `reordered_regs[pk_idx]`.
-3. **`WriteCursor(cursor_reg, key_reg, value_regs, true)`** — `unique = true`
-   causes the engine to check for a duplicate key and raise `ConstraintViolation`
-   before writing.
-4. **No `IncrementValue(key_reg)`** — each explicit key stands on its own.
+1. `key_reg = value_regs[0]`
+2. `WriteCursor(cursor_reg, key_reg, value_regs[1..], unique=true)` — raises
+   `ConstraintViolation` on duplicate key.
+3. No `IncrementValue`.
 
-**Case B — PK omitted (`pk_omitted = true`):**
+**Key absent (no index-0 entry):**
 
-1. **Keep `InitRowid(cursor_reg, key_reg)`** — auto-assign `max(rowid) + 1`.
-2. **Build `value_regs`** from all columns (PK column not in the VALUES, so not
-   in `reordered_regs` at all — the key register already holds the assigned value).
-3. **`WriteCursor(cursor_reg, key_reg, value_regs, false)`** — `unique = false`
-   because the rowid cache guarantees no duplicate.
-4. **`IncrementValue(key_reg)`** — advance the cache for the next row.
+1. `InitRowid(cursor_reg, key_reg)` — auto-assign `max(rowid) + 1`.
+2. `WriteCursor(cursor_reg, key_reg, value_regs[0..], unique=false)` — rowid
+   cache guarantees no duplicate.
+3. `IncrementValue(key_reg)` — advance the cache.
 
-For the non-rowid-alias path (no `rowid_col`), `WriteCursor` is emitted with
-`unique = false` (unchanged behaviour).
-
-```
-// BK INSERT codegen for rowid-alias table, PK supplied:
-Open(cursor_reg, rootpage)
-[child plan...]
-child_on_tuple:
-  CopyValue(key_reg, reordered_regs[pk_idx])
-  [other WriteIndex calls for non-PK unique/secondary indexes]
-  WriteCursor(cursor_reg, key_reg, [non-pk column regs], unique=true)  // raises ConstraintViolation on dup
-  IncrementValue(counter_reg)
-  GoTo(child.next)
-child_on_done:
-  GoTo(cont.on_tuple)
-
-// BK INSERT codegen for rowid-alias table, PK omitted (auto-assign):
-Open(cursor_reg, rootpage)
-InitRowid(cursor_reg, key_reg)             // max(rowid)+1 from cache
-[child plan...]
-child_on_tuple:
-  [other WriteIndex calls]
-  WriteCursor(cursor_reg, key_reg, [all non-pk column regs], unique=false)
-  IncrementValue(key_reg)                  // advance cache
-  IncrementValue(counter_reg)
-  GoTo(child.next)
-child_on_done:
-  GoTo(cont.on_tuple)
-```
+No `rowid_col`, no `pk_omitted`. The distinction is structural: is there a
+key register in the values list or not?
 
 ### Key Files
 
 - `src/engine/program.rs` — add `unique: bool` to `WriteCursor` variant + Display
-- `src/engine.rs` — execute `WriteCursor`: add seek-and-check when `unique = true`
-- `src/planner/` — `InsertPlan.rowid_col`; `InsertPlan.pk_omitted`; `plan_insert` sets both
-- `src/compiler/nodes.rs` — `codegen_insert`: two code paths (PK supplied vs. auto-assigned);
-  strip PK from `value_regs` in both cases; pass `unique` flag to `WriteCursor`
+- `src/engine.rs` — execute `WriteCursor`: seek-and-check when `unique = true`
+- `src/planner/` — `plan_insert`: apply `to_scan_index` translation to reorder value registers into insert-space order
+- `src/compiler/nodes.rs` — `codegen_insert`: key-present vs key-absent branches; no `rowid_col` or `pk_omitted`
 
 ### Tests
 
 ```rust
 #[test]
 fn insert_integer_pk_uses_pk_as_btree_key() {
-    // INSERT INTO t VALUES (42, 'alice') → B-tree key should be 42
     let mut db = TestDb::default();
     execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", &mut db.btree).unwrap();
     execute("INSERT INTO t VALUES (42, 'alice')", &mut db.btree).unwrap();
-    let key = /* first key in B-tree */ ...;
-    assert_eq!(key, 42u64);
+    // verify first B-tree key is 42
 }
 
 #[test]
@@ -315,7 +348,6 @@ fn insert_integer_pk_auto_assigned_when_omitted() {
     execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", &mut db.btree).unwrap();
     execute("INSERT INTO t (name) VALUES ('alice')", &mut db.btree).unwrap();
     execute("INSERT INTO t (name) VALUES ('bob')", &mut db.btree).unwrap();
-    // Auto-assigned IDs should be 1, 2
     let rows = query("SELECT id FROM t ORDER BY id", &mut db.btree).unwrap();
     assert_eq!(rows[0][0], ScalarValue::Integer(1));
     assert_eq!(rows[1][0], ScalarValue::Integer(2));
@@ -327,7 +359,6 @@ fn insert_explicit_pk_then_auto_continues_from_max() {
     execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", &mut db.btree).unwrap();
     execute("INSERT INTO t VALUES (100, 'alice')", &mut db.btree).unwrap();
     execute("INSERT INTO t (name) VALUES ('bob')", &mut db.btree).unwrap();
-    // Auto-assigned after explicit 100 → should be 101
     let rows = query("SELECT id FROM t ORDER BY id DESC LIMIT 1", &mut db.btree).unwrap();
     assert_eq!(rows[0][0], ScalarValue::Integer(101));
 }
@@ -337,153 +368,131 @@ fn insert_explicit_pk_then_auto_continues_from_max() {
 
 #### Step BK-2.1 — VM: extend `WriteCursor` with `unique` flag
 
-Add `unique: bool` as a fourth field to the `WriteCursor` variant. Update
-Display. In the engine, when `unique = true`, seek to the key before inserting
-and return `ConstraintViolation` if found. Update all existing `WriteCursor`
-emit sites to pass `false` (preserves current behaviour). Add unit test.
+Add `unique: bool` as a fourth field to `WriteCursor`. Update Display. In the
+engine, seek and check when `unique = true`. Update all existing `WriteCursor`
+emit sites to pass `false`.
 
 **Commit:** `VM: extend WriteCursor with unique flag for key uniqueness enforcement`
 
 #### Step BK-2.2 — Planner + compiler: rowid-alias INSERT
 
-Add `InsertPlan.rowid_col` and `InsertPlan.pk_omitted`, set from schema. Update
-`codegen_insert` with two code paths: explicit PK (use value as key, emit
-`WriteCursor` with `unique = true`) and auto-assigned PK (`InitRowid`, emit
-`WriteCursor` with `unique = false`). Strip PK from CBOR value registers in
-both cases.
+Update `plan_insert` to apply `to_scan_index` translation, placing the PK value
+at insert index 0 when supplied. Update `codegen_insert` to branch on whether
+index 0 is present (user key, `unique=true`) or absent (auto-assign, `unique=false`).
 
 **Commit:** `Compiler: INSERT uses PK value as B-tree key for INTEGER PRIMARY KEY tables`
 
 ---
 
-## BK-3. Scan: read PK column from B-tree key; adjust CBOR indices (Track 4)
+## BK-3. Scan: scan-space column indices (Track 4)
 
 ### What Changes
 
-#### `LogicalPlan::Scan` gains `rowid_col: Option<usize>`
+#### `LogicalPlan::Scan` loses `with_key` and `rowid_col`
 
 ```rust
+// Before
 Scan {
     rootpage: u32,
     columns: Vec<usize>,
     with_key: bool,
-    rowid_col: Option<usize>,  // NEW
-},
-```
-
-The planner sets this from `table.rowid_column()` when building a `Scan` node.
-
-#### CBOR index adjustment
-
-For a table with `rowid_col = Some(pk_idx)`, the CBOR row body has one fewer
-element — all non-PK columns are packed in their original relative order:
-
-```
-Table columns: [id(PK), name, age]    (indices 0, 1, 2)
-CBOR body:     [name, age]            (CBOR indices 0, 1)
-```
-
-The mapping from table column index `c` to CBOR array index:
-
-```rust
-fn cbor_index(table_col: usize, rowid_col: Option<usize>) -> usize {
-    match rowid_col {
-        Some(pk) if table_col > pk => table_col - 1,
-        _ => table_col,
-    }
+    rowid_col: Option<usize>,
 }
-```
 
-#### `codegen_scan` changes
-
-```rust
-pub fn codegen_scan(
+// After
+Scan {
     rootpage: u32,
-    columns: &[usize],
-    cont: &NodeContinuation,
-    ctx: &mut CodegenContext,
-    with_key: bool,
-    rowid_col: Option<usize>,  // NEW
-) -> NodeOutput {
-    let cursor_reg = ctx.registers.alloc();
-    let flag_reg = ctx.registers.alloc();
-
-    // Allocate a register for the PK (key) column if needed
-    let pk_reg = rowid_col.and_then(|pk_idx| {
-        if columns.contains(&pk_idx) { Some(ctx.registers.alloc()) } else { None }
-    });
-
-    // CBOR array has one fewer slot for rowid-alias tables
-    let max_cbor_idx = columns.iter()
-        .filter(|&&c| Some(c) != rowid_col)
-        .map(|&c| cbor_index(c, rowid_col))
-        .max();
-    let num_read = max_cbor_idx.map(|m| m + 1).unwrap_or(0);
-    let all_regs = ctx.registers.alloc_block(num_read);
-
-    // Build output_regs:
-    //   - PK column  → pk_reg
-    //   - other cols → all_regs[cbor_index(col, rowid_col)]
-    let mut output_regs: Vec<Reg> = columns.iter().map(|&c| {
-        if Some(c) == rowid_col {
-            pk_reg.unwrap()
-        } else {
-            all_regs[cbor_index(c, rowid_col)]
-        }
-    }).collect();
-
-    let key_reg = if with_key {
-        // with_key appends key register for index population (existing usage)
-        let r = ctx.registers.alloc();
-        output_regs.push(r);
-        Some(r)
-    } else {
-        None
-    };
-
-    // INIT / BODY (unchanged Open, MoveCursor, CanReadCursor, GoToIfFalse)
-    // ...
-
-    body!(ctx; ReadCursor(all_regs.clone(), cursor_reg));
-
-    // Read the B-tree key for the PK column (rowid alias) and/or with_key
-    if let Some(pkr) = pk_reg {
-        body!(ctx; ReadKey(pkr, cursor_reg));
-    }
-    if let Some(kr) = key_reg {
-        body!(ctx; ReadKey(kr, cursor_reg));
-    }
-
-    body!(ctx; MoveCursor(cursor_reg, MoveOperation::Next); GoTo(cont.on_tuple));
-    // ...
+    columns: Vec<usize>,  // scan-space: 0=key, k>0=CBOR[k-1]
 }
 ```
 
-When `rowid_col = Some(0)` and only `name` (index 1) is requested:
-- `pk_reg = None` (PK column not in `columns`)
-- `num_read = 1`, `all_regs = [r_name]`
-- `ReadCursor([r_name], cursor_reg)` — reads CBOR[0] into r_name
+See the "Key design" section above for the full encoding and translation rules.
 
-When `rowid_col = Some(0)` and both `id` (0) and `name` (1) are requested:
-- `pk_reg = Some(r_id)`
-- `num_read = 1`, `all_regs = [r_name]`
-- `ReadCursor([r_name], cursor_reg)` — CBOR[0] → r_name
-- `ReadKey(r_id, cursor_reg)` — B-tree key → r_id
+#### Planner: translate schema indices → scan indices when building Scan
 
-#### `RowidLookup` codegen
+The planner calls `table.rowid_column()` once when building a Scan node and uses
+it to translate the collected schema column indices to scan-space indices. This
+translation is entirely within the planner; the compiler sees only scan indices.
 
-`RowidLookup` (used by `IndexScan`) calls the table B-tree to fetch columns for a
-given rowid. For rowid-alias tables, the rowid IS the PK column — `RowidLookup`
-should pass the same `rowid_col` parameter so it reads the PK from the key and
-adjusts CBOR indices for the other columns.
+```rust
+fn to_scan_index(schema_col: usize, rowid_col: Option<usize>) -> usize {
+    match rowid_col {
+        Some(pk) if schema_col == pk => 0,         // PK column → key
+        Some(pk) if schema_col > pk => schema_col, // shift down (CBOR slot = schema_col - 1)
+        _ => schema_col + 1,                       // no alias or col before pk → shift up
+    }
+}
+```
 
-Check `codegen_rowid_lookup` and add `rowid_col: Option<usize>` in the same way.
+The virtual rowid column (schema index `N = table.columns.len()`) always maps to
+scan index `0`.
+
+#### `codegen_scan`: trivial physical read
+
+The compiler's only job is to map scan indices to read operations:
+
+```
+scan_idx == 0  →  ReadKey(reg, cursor)
+scan_idx  > 0  →  ReadCursor slot (scan_idx - 1)
+```
+
+Because `ReadCursor` reads a contiguous block of CBOR slots 0..max, the compiler
+allocates `all_regs` of size `max_cbor_slot + 1` and indexes into it. Scan index
+0 gets its own `ReadKey` call. There is no `cbor_idx` closure, no `pk_reg` /
+`key_reg` distinction, and no `rowid_reg` on `NodeOutput`.
+
+```
+// Example: Scan { columns: [0, 2] } on table (id PK, name)
+//   col 0 → ReadKey  →  r0 = id
+//   col 2 → ReadCursor slot 1  →  r1 = name (CBOR slot 1 is the 2nd non-PK col)
+//
+// Wait — for table (id PK, name), name is CBOR slot 0.
+// The planner would produce columns: [0, 1]
+//   col 0 → ReadKey  →  r0 = id
+//   col 1 → ReadCursor slot 0  →  r1 = name
+```
+
+Key register allocation in `codegen_scan`:
+
+```rust
+let key_reg = if columns.contains(&0) { Some(ctx.registers.alloc()) } else { None };
+
+let max_cbor = columns.iter().filter(|&&c| c > 0).map(|&c| c - 1).max();
+let all_regs = max_cbor.map(|m| ctx.registers.alloc_block(m + 1));
+
+// Build output_regs in column order
+let output_regs: Vec<Reg> = columns.iter().map(|&c| {
+    if c == 0 { key_reg.unwrap() }
+    else { all_regs.as_ref().unwrap()[c - 1] }
+}).collect();
+
+// Emit reads
+if let Some(kr) = key_reg { body!(ctx; ReadKey(kr, cursor_reg)); }
+if let Some(regs) = all_regs { body!(ctx; ReadCursor(regs, cursor_reg)); }
+```
+
+#### `NodeOutput`: `rowid_reg` field removed
+
+`NodeOutput` no longer carries `rowid_reg`. It was only needed to thread the key
+register through Filter and Project to expression compilation. Under the
+scan-space convention, the key is just another output register — if scan index 0
+was requested, its register is in `output_regs` at the appropriate slot. Filter
+and Project propagate `output_regs` unchanged (as they already do), so the key
+register reaches expression compilation automatically.
+
+#### `RowidLookup`: same treatment
+
+`codegen_rowid_lookup` applies identical scan-space logic. The planner translates
+schema indices to scan indices when building a `RowidLookup` node, and the
+compiler uses the same trivial read rule.
 
 ### Key Files
 
-- `src/planner/mod.rs` — `Scan.rowid_col` field; planner sets it
-- `src/compiler/nodes.rs` — `codegen_scan` signature + implementation; `codegen_rowid_lookup` (same treatment)
-- `src/explain.rs` — `Scan` display: add `[rowid-alias: col_name]` annotation when `rowid_col` is set
+- `src/planner/mod.rs` — remove `with_key` and `rowid_col` from `LogicalPlan::Scan`
+- `src/planner/select.rs` — `to_scan_index` translation; apply to all Scan construction sites
+- `src/compiler/nodes.rs` — `codegen_scan`: scan-space read logic; remove `rowid_reg` from `NodeOutput`; update `codegen_rowid_lookup`
+- `src/compiler/expr.rs` — remove `rowid_reg` from `ExprContext`
+- `src/explain.rs` — update Scan display (remove `with_key` / `rowid_col` annotations)
 
 ### Tests
 
@@ -499,7 +508,6 @@ fn select_integer_pk_reads_from_key() {
 
 #[test]
 fn select_non_pk_column_only() {
-    // Requesting only name — PK register not allocated
     let mut db = TestDb::default();
     execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", &mut db.btree).unwrap();
     execute("INSERT INTO t VALUES (42, 'alice')", &mut db.btree).unwrap();
@@ -509,7 +517,6 @@ fn select_non_pk_column_only() {
 
 #[test]
 fn select_pk_in_middle_of_schema() {
-    // Table (a TEXT, id INTEGER PRIMARY KEY, b TEXT) — PK at index 1
     let mut db = TestDb::default();
     execute("CREATE TABLE t (a TEXT, id INTEGER PRIMARY KEY, b TEXT)", &mut db.btree).unwrap();
     execute("INSERT INTO t VALUES ('x', 5, 'y')", &mut db.btree).unwrap();
@@ -524,20 +531,22 @@ fn select_pk_in_middle_of_schema() {
 
 ### Implementation Steps (2 commits)
 
-#### Step BK-3.1 — Planner: `Scan.rowid_col`; update EXPLAIN; stub codegen
+#### Step BK-3.1 — Planner: scan-space index convention; update EXPLAIN
 
-Add `rowid_col` to `LogicalPlan::Scan`. Update the planner to set it from
-`table.rowid_column()`. Update `explain.rs` to render it. Add a stub codegen arm
-that returns `Err(UnsupportedStatement)` when `rowid_col.is_some()`.
+Remove `with_key` and `rowid_col` from `LogicalPlan::Scan`. Add `to_scan_index`
+helper. Update all Scan construction sites in `select.rs` and `dml.rs`. Update
+`explain.rs`. Add a stub codegen arm returning `Err(UnsupportedStatement)` for
+tables that need a key read (scan index 0 in columns) so existing tests continue
+to pass.
 
-**Commit:** `Planner: add rowid_col to Scan node; update EXPLAIN`
+**Commit:** `Planner: scan-space column indices for Scan node; remove with_key and rowid_col`
 
-#### Step BK-3.2 — Compiler: `codegen_scan` CBOR adjustment; `codegen_rowid_lookup`
+#### Step BK-3.2 — Compiler: `codegen_scan` scan-space reads; remove `rowid_reg`
 
-Implement the full `codegen_scan` changes (CBOR index mapping, `ReadKey` for PK).
-Apply the same treatment to `codegen_rowid_lookup`. Add unit tests.
+Implement the full `codegen_scan` using scan-space logic. Remove `rowid_reg` from
+`NodeOutput` and `ExprContext`. Update `codegen_rowid_lookup`. Add unit tests.
 
-**Commit:** `Compiler: read INTEGER PRIMARY KEY from B-tree key in table scan`
+**Commit:** `Compiler: codegen_scan uses scan-space indices; remove rowid_reg`
 
 ---
 
@@ -545,100 +554,89 @@ Apply the same treatment to `codegen_rowid_lookup`. Add unit tests.
 
 ### What Changes
 
-`rowid()` returns the B-tree key of the current row in a table scan. For
-`INTEGER PRIMARY KEY` tables, this equals the PK column value. For tables
-without an INTEGER PK, it returns the internal auto-incremented rowid.
+`rowid()` returns the B-tree key of the current row. For `INTEGER PRIMARY KEY`
+tables this equals the PK column value; for other tables it returns the internal
+auto-incremented rowid.
 
 #### Lexer / Parser
 
 `rowid` is parsed as a zero-argument function call (like `random()`). No new
-lexer token is needed — the existing identifier + `()` path handles it.
+lexer token needed — the existing identifier + `()` path handles it. Phase BK
+implements `rowid()` (with parens) only; bare `rowid` as a column name can be
+added later.
 
-Alternatively, since SQLite treats `rowid` as a special column name (without
-parens), supporting both `rowid` as a bare column alias and `rowid()` as a
-function would be clean. For Phase BK, implement `rowid()` (with parens) only,
-matching the `random()` precedent. Bare `rowid` can be added later.
+#### Planner: resolve `rowid()` to a `ColumnRef`
 
-#### Planner
+There is no `PlanExpr::Rowid` variant. Instead, the planner resolves
+`FunctionCall { name: "rowid", args: [] }` to a `ColumnRef` pointing to the
+output slot that holds the B-tree key (scan index 0):
 
-A new `PlanExpr` variant:
+1. When the expression resolver encounters `rowid()`, it ensures scan index `0`
+   is included in the Scan node's `columns` list (adding it if absent).
+2. It returns `ColumnRef(output_position_of_scan_0)` — the same kind of
+   expression used for any other column reference.
 
-```rust
-pub enum PlanExpr {
-    // ... existing variants ...
-    /// rowid() — the B-tree key of the current scan row.
-    Rowid,
-}
-```
+Because scan index 0 is just another entry in `columns`, the compiler emits
+`ReadKey` for it as part of normal scan codegen. No `with_key` flag, no
+`rowid_reg`, no special expression compilation path.
 
-In the expression resolver, `Function { name: "rowid", args: [] }` → `PlanExpr::Rowid`.
+For rowid-alias tables, `rowid()` and the PK column both resolve to scan index
+`0`. If both are in the SELECT list, the planner deduplicates: both `ColumnRef`s
+point to the same output slot, and only one `ReadKey` is emitted.
 
-#### Scan must emit `ReadKey` when `rowid()` is referenced
+#### Existing `ast_expr_uses_rowid` helper
 
-The planner detects whether any expression in the output/filter references
-`PlanExpr::Rowid`. If so, it sets `with_key: true` on the `Scan` node (the
-existing mechanism already appends the key register to `output_regs`).
-
-For rowid-alias tables, `ReadKey` is already emitted for the PK register —
-`rowid()` can reuse that same register, so no double read.
-
-The compiler resolves `PlanExpr::Rowid` to the key register during codegen.
-
-#### `codegen_scan` must expose the key register
-
-The existing `with_key: true` path already allocates a key register and appends
-it to `output_regs`. The compiler for `rowid()` expressions simply needs to know
-which register index that is. Expose it via `NodeOutput`:
-
-```rust
-pub struct NodeOutput {
-    pub next: Label,
-    pub reset: Option<Label>,
-    pub output_regs: Vec<Reg>,
-    pub rowid_reg: Option<Reg>,  // NEW: key register, set when with_key or rowid_col
-}
-```
-
-The rowid expression codegen (`codegen_expr` for `PlanExpr::Rowid`) reads
-`ctx.rowid_reg` (stored in `CodegenContext` after the child scan is compiled).
+The planner already has a helper that walks an AST expression looking for
+`rowid()` calls. Under the old design this set `with_key = true` on the Scan.
+Under the new design, the expression resolver handles this inline: when it
+encounters `rowid()` it adds scan index 0 to the column set. The
+`ast_expr_uses_rowid` helper may be removed or repurposed as part of this item.
 
 ### Key Files
 
-- `src/planner/mod.rs` — `PlanExpr::Rowid`
-- `src/planner/resolver.rs` — map `Function("rowid", [])` → `PlanExpr::Rowid`; set
-  `with_key: true` on the enclosing `Scan` when `rowid()` is referenced
-- `src/compiler/nodes.rs` — `NodeOutput.rowid_reg`; `codegen_scan` sets it;
-  `codegen_expr` arm for `PlanExpr::Rowid`
-- `src/explain.rs` — render `PlanExpr::Rowid` as `rowid()`
+- `src/planner/resolver.rs` — resolve `FunctionCall("rowid", [])` to `ColumnRef`;
+  add scan index 0 to the Scan's column set; remove or repurpose `ast_expr_uses_rowid`
+- `src/explain.rs` — render the scan index 0 column as `rowid` in EXPLAIN output
 
 ### Tests
 
 ```rust
 #[test]
 fn rowid_function_returns_btree_key() {
-    // For non-PK table, rowid() returns the internal rowid
+    let mut db = TestDb::default();
+    execute("CREATE TABLE t (name TEXT)", &mut db.btree).unwrap();
+    execute("INSERT INTO t VALUES ('a')", &mut db.btree).unwrap();
+    execute("INSERT INTO t VALUES ('b')", &mut db.btree).unwrap();
+    let rows = query("SELECT rowid() FROM t ORDER BY rowid()", &mut db.btree).unwrap();
+    assert_eq!(rows[0][0], ScalarValue::Integer(1));
+    assert_eq!(rows[1][0], ScalarValue::Integer(2));
 }
 
 #[test]
 fn rowid_function_equals_pk_for_integer_pk_table() {
-    // For INTEGER PRIMARY KEY table, rowid() == id column
+    let mut db = TestDb::default();
+    execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)", &mut db.btree).unwrap();
+    execute("INSERT INTO t VALUES (42, 'alice')", &mut db.btree).unwrap();
+    let rows = query("SELECT id, rowid() FROM t", &mut db.btree).unwrap();
+    assert_eq!(rows[0][0], rows[0][1]); // id == rowid()
 }
 ```
 
 ### Implementation Steps (2 commits)
 
-#### Step BK-4.1 — Planner: `PlanExpr::Rowid`; resolver; `with_key` propagation; EXPLAIN
+#### Step BK-4.1 — Planner: resolve `rowid()` to ColumnRef; EXPLAIN
 
-Add variant, resolver arm, `with_key` auto-propagation, EXPLAIN rendering. Stub
-codegen arm. Tests pass.
+Update the expression resolver to map `rowid()` to a ColumnRef at scan index 0.
+Update EXPLAIN. Tests for `rowid()` in SELECT and WHERE.
 
-**Commit:** `Planner: add PlanExpr::Rowid; propagate with_key for rowid() references`
+**Commit:** `Planner: resolve rowid() to ColumnRef at scan index 0`
 
-#### Step BK-4.2 — Compiler: `NodeOutput.rowid_reg`; `codegen_expr` for `PlanExpr::Rowid`
+#### Step BK-4.2 — SQL-level tests for `rowid()`
 
-Implement the codegen. Add SQL-level tests with `rowid()`.
+Add SQL integration tests exercising `rowid()` on both regular and rowid-alias
+tables.
 
-**Commit:** `Compiler: implement rowid() function — returns current row B-tree key`
+**Commit:** `Tests: SQL integration tests for rowid() function`
 
 ---
 
@@ -739,9 +737,12 @@ integer_pk_rowid_alias` to capture expected output; verify it matches the
 - [ ] `INSERT INTO t VALUES (42, 'alice')` → B-tree key is 42
 - [ ] CBOR row body contains only non-PK columns (inspect with `btree inspect page`)
 - [ ] Duplicate PK raises `ConstraintViolation` (via `WriteCursor` `unique = true`)
-- [ ] `SELECT id FROM t` reads id from B-tree key, not CBOR
-- [ ] `SELECT name FROM t` reads correctly with adjusted CBOR indices
+- [ ] `SELECT id FROM t` reads id from B-tree key (scan index 0), not CBOR
+- [ ] `SELECT name FROM t` reads correctly — CBOR slot 0 despite being schema column 1
 - [ ] `rowid()` returns B-tree key; equals PK for rowid-alias tables
+- [ ] `rowid()` compiles to a ColumnRef with no special register handling
+- [ ] `LogicalPlan::Scan` has no `with_key` or `rowid_col` fields
+- [ ] `NodeOutput` and `ExprContext` have no `rowid_reg` field
 - [ ] `INSERT INTO t (name) VALUES ('x')` on rowid-alias table auto-assigns `max(rowid)+1`
 - [ ] After explicit high PK insert, next auto-assigned PK continues from `max+1`
 - [ ] `TEXT PRIMARY KEY` tables still use `_pk_` implicit index (unchanged)
