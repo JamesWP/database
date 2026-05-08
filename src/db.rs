@@ -128,11 +128,18 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
             let ddl = sql.to_string();
             catalog.insert_entry("table", name, name, root_page, &ddl);
 
-            // Create implicit unique indexes for PRIMARY KEY and UNIQUE columns
+            // Create implicit unique indexes for PRIMARY KEY and UNIQUE columns.
+            // INTEGER PRIMARY KEY is a rowid alias — uniqueness is enforced by the
+            // B-tree key directly, so no implicit index is needed for those columns.
             for col in &ct.columns {
                 let is_pk = col.constraints.contains(&ColumnConstraint::PrimaryKey);
                 let is_uq = col.constraints.contains(&ColumnConstraint::Unique);
-                if is_pk || is_uq {
+                let is_integer_pk = is_pk
+                    && !matches!(
+                        col.type_name,
+                        Some(DataType::Text) | Some(DataType::Real) | Some(DataType::Blob)
+                    );
+                if is_uq || (is_pk && !is_integer_pk) {
                     let prefix = if is_pk { "_pk_" } else { "_uq_" };
                     let index_name = format!("{}{}_{}", prefix, name, col.name);
                     let index_rootpage = catalog.create_tree();

@@ -48,6 +48,19 @@ impl Table {
             .map(|(i, col)| (col.name.clone(), i))
             .collect()
     }
+
+    /// Returns the index of the INTEGER PRIMARY KEY column, if any.
+    /// This column is stored as the B-tree key (rowid alias), not in the CBOR row body.
+    /// Columns with no explicit type or with type INTEGER qualify; TEXT, REAL, BLOB do not.
+    pub fn rowid_column(&self) -> Option<usize> {
+        self.columns.iter().position(|c| {
+            c.primary_key
+                && !matches!(
+                    c.data_type,
+                    Some(DataType::Text) | Some(DataType::Real) | Some(DataType::Blob)
+                )
+        })
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +122,70 @@ mod tests {
         assert!(
             result.is_ok(),
             "Expected index creation to succeed, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn rowid_column_integer_pk() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)",
+            &mut db.btree,
+        )
+        .unwrap();
+        let table = resolve_table("t", &db.btree).unwrap();
+        assert_eq!(table.rowid_column(), Some(0));
+    }
+
+    #[test]
+    fn rowid_column_text_pk_is_none() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE t (id TEXT PRIMARY KEY, name TEXT)",
+            &mut db.btree,
+        )
+        .unwrap();
+        let table = resolve_table("t", &db.btree).unwrap();
+        assert_eq!(table.rowid_column(), None);
+    }
+
+    #[test]
+    fn rowid_column_no_pk_is_none() {
+        let mut db = TestDb::default();
+        execute("CREATE TABLE t (id INTEGER, name TEXT)", &mut db.btree).unwrap();
+        let table = resolve_table("t", &db.btree).unwrap();
+        assert_eq!(table.rowid_column(), None);
+    }
+
+    #[test]
+    fn integer_pk_does_not_create_pk_index() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)",
+            &mut db.btree,
+        )
+        .unwrap();
+        let snap = db.btree.catalog();
+        let indexes = snap.lookup_indexes_for_table("t");
+        assert!(
+            !indexes.iter().any(|i| i.index_name == "_pk_t_id"),
+            "unexpected _pk_ index for INTEGER PRIMARY KEY"
+        );
+    }
+
+    #[test]
+    fn text_pk_still_creates_pk_index() {
+        let mut db = TestDb::default();
+        execute(
+            "CREATE TABLE t (id TEXT PRIMARY KEY, name TEXT)",
+            &mut db.btree,
+        )
+        .unwrap();
+        let snap = db.btree.catalog();
+        let indexes = snap.lookup_indexes_for_table("t");
+        assert!(
+            indexes.iter().any(|i| i.index_name == "_pk_t_id"),
+            "_pk_ index missing for TEXT PRIMARY KEY"
         );
     }
 }
