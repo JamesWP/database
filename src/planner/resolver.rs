@@ -16,12 +16,19 @@ use super::{
 pub(super) trait ColumnResolver {
     fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError>;
     fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError>;
+    /// Output position of the B-tree key (scan index 0) in the scan output, if available.
+    /// Returns None when rowid() is unsupported in this context (e.g. joins).
+    fn resolve_rowid(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Single-table resolver (for SELECT, WHERE, etc.)
 pub(super) struct SingleTableResolver<'a> {
     pub(super) table_ref: &'a str,
     pub(super) columns: &'a HashMap<String, usize>,
+    /// Output position of scan index 0 (B-tree key / rowid), if rowid() is requested.
+    pub(super) rowid_output_pos: Option<usize>,
 }
 
 impl ColumnResolver for SingleTableResolver<'_> {
@@ -40,6 +47,10 @@ impl ColumnResolver for SingleTableResolver<'_> {
             return Err(PlanError::TableNotFound(table.to_string()));
         }
         self.resolve_identifier(column)
+    }
+
+    fn resolve_rowid(&self) -> Option<usize> {
+        self.rowid_output_pos
     }
 }
 
@@ -128,6 +139,21 @@ pub(super) fn convert_expr(
                     name: name_upper,
                     args: vec![],
                 });
+            }
+
+            // ROWID() resolves to the output position of scan index 0 (B-tree key).
+            if name_upper == "ROWID" {
+                if !args.is_empty() {
+                    return Err(PlanError::InvalidFunctionArguments {
+                        function: name.clone(),
+                        expected: 0,
+                        got: args.len(),
+                    });
+                }
+                return resolver
+                    .resolve_rowid()
+                    .map(PlanExpr::ColumnRef)
+                    .ok_or(PlanError::UnsupportedStatement);
             }
 
             let supported_functions = ["LENGTH", "UPPER", "LOWER", "ABS"];
@@ -393,6 +419,27 @@ pub(super) fn collect_columns(expr: &ast::Expression, columns: &mut HashSet<Stri
                 collect_columns(arg, columns);
             }
         }
+    }
+}
+
+/// Return true if the expression tree contains a zero-argument `rowid()` call.
+pub(super) fn expr_uses_rowid(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::FunctionCall { name, args } => {
+            (name.to_uppercase() == "ROWID" && args.is_empty()) || args.iter().any(expr_uses_rowid)
+        }
+        ast::Expression::BinaryOp { lhs, rhs, .. } => expr_uses_rowid(lhs) || expr_uses_rowid(rhs),
+        ast::Expression::UnaryOp { expression, .. } => expr_uses_rowid(expression),
+        ast::Expression::Value(_) => false,
+    }
+}
+
+/// Return true if any expression in the SELECT column list uses rowid().
+pub(super) fn col_expr_uses_rowid(col_expr: &ast::ColumnExpression) -> bool {
+    match col_expr {
+        ast::ColumnExpression::Named { expression, .. } => expr_uses_rowid(expression),
+        ast::ColumnExpression::Anonyomous(expression) => expr_uses_rowid(expression),
+        ast::ColumnExpression::Wildcard => false,
     }
 }
 
@@ -679,6 +726,7 @@ mod tests {
         let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
+            rowid_output_pos: None,
         };
 
         let expr = ast::Expression::Value(ast::ScalarValue::IntegerNumber(42));
@@ -693,6 +741,7 @@ mod tests {
         let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
+            rowid_output_pos: None,
         };
 
         let expr = ast::Expression::Value(ast::ScalarValue::FloatingNumber(3.14));
@@ -707,6 +756,7 @@ mod tests {
         let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
+            rowid_output_pos: None,
         };
 
         let expr = ast::Expression::Value(ast::ScalarValue::Identifier("age".to_string()));
@@ -721,6 +771,7 @@ mod tests {
         let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
+            rowid_output_pos: None,
         };
 
         // users.name
@@ -742,6 +793,7 @@ mod tests {
         let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
+            rowid_output_pos: None,
         };
 
         // other.name - should fail because "other" != "users"
@@ -763,6 +815,7 @@ mod tests {
         let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
+            rowid_output_pos: None,
         };
 
         let expr = ast::Expression::Value(ast::ScalarValue::Identifier("nonexistent".to_string()));
@@ -783,6 +836,7 @@ mod tests {
         let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
+            rowid_output_pos: None,
         };
 
         // age > 21
@@ -811,6 +865,7 @@ mod tests {
         let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
+            rowid_output_pos: None,
         };
 
         // -age
@@ -837,6 +892,7 @@ mod tests {
         let resolver = SingleTableResolver {
             table_ref: "users",
             columns: &columns,
+            rowid_output_pos: None,
         };
 
         // (age + 1) > 21
