@@ -170,6 +170,7 @@ pub(super) fn plan_update(
     let resolver = SingleTableResolver {
         table_ref: &update.table_name,
         columns: &column_map,
+        rowid_output_pos: None,
     };
 
     // Resolve assignment column names to indices and plan their expressions
@@ -238,6 +239,7 @@ pub(super) fn plan_delete(
     let resolver = SingleTableResolver {
         table_ref: &delete.table_name,
         columns: &column_map,
+        rowid_output_pos: None,
     };
 
     // Plan the filter expression if present

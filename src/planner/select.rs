@@ -8,10 +8,10 @@ use crate::storage::BTree;
 use schema::resolve_table;
 
 use super::resolver::{
-    build_column_mapping, collect_columns, collect_columns_from_column_expr, convert_aggregate,
-    convert_column_expr, convert_expr, convert_having_expr, extract_limit_value,
-    extract_table_info, has_aggregate, is_aggregate_function, remap_column_indices, ColumnResolver,
-    JoinResolver, SingleTableResolver,
+    build_column_mapping, col_expr_uses_rowid, collect_columns, collect_columns_from_column_expr,
+    convert_aggregate, convert_column_expr, convert_expr, convert_having_expr, expr_uses_rowid,
+    extract_limit_value, extract_table_info, has_aggregate, is_aggregate_function,
+    remap_column_indices, ColumnResolver, JoinResolver, SingleTableResolver,
 };
 use super::{schema, to_scan_index, AggregateExpr, LogicalPlan, PlanError, PlanExpr, SortKey};
 
@@ -53,6 +53,13 @@ impl ColumnResolver for SelectResolver<'_> {
         match self {
             Self::Single(r) => r.resolve_qualified(table, column),
             Self::Join(r) => r.resolve_qualified(table, column),
+        }
+    }
+
+    fn resolve_rowid(&self) -> Option<usize> {
+        match self {
+            Self::Single(r) => r.resolve_rowid(),
+            Self::Join(_) => None, // rowid() in joins is out of scope (TODO phase-bk)
         }
     }
 }
@@ -111,18 +118,39 @@ fn plan_select_single(
 
     // 4. Build column mapping and resolver
     let mapping = build_column_mapping(&columns_needed, &table, &table_ref)?;
-    let resolver = SelectResolver::Single(SingleTableResolver {
-        table_ref: &table_ref,
-        columns: &mapping.column_map,
-    });
 
     // 5. Build base plan: Scan → optional Filter
     let rowid_col = table.rowid_column();
-    let scan_cols: Vec<usize> = mapping
+    let mut scan_cols: Vec<usize> = mapping
         .scan_columns
         .iter()
         .map(|&i| to_scan_index(i, rowid_col))
         .collect();
+
+    // Detect rowid() usage in SELECT, WHERE, and ORDER BY; ensure scan index 0 is included.
+    let needs_rowid = select.columns.iter().any(col_expr_uses_rowid)
+        || select.filter.as_ref().map_or(false, |f| expr_uses_rowid(f))
+        || select.order_by.as_ref().map_or(false, |ob| {
+            ob.iter().any(|c| expr_uses_rowid(&c.expression))
+        });
+    let rowid_output_pos = if needs_rowid {
+        if let Some(pos) = scan_cols.iter().position(|&c| c == 0) {
+            Some(pos)
+        } else {
+            let pos = scan_cols.len();
+            scan_cols.push(0);
+            Some(pos)
+        }
+    } else {
+        None
+    };
+
+    let resolver = SelectResolver::Single(SingleTableResolver {
+        table_ref: &table_ref,
+        columns: &mapping.column_map,
+        rowid_output_pos,
+    });
+
     let scan = LogicalPlan::Scan {
         rootpage: table.rootpage,
         columns: scan_cols,
@@ -1415,5 +1443,72 @@ mod tests {
             matches!(result, LogicalPlan::Sort { .. }),
             "Expected Sort, got {result:?}"
         );
+    }
+
+    /// rowid() on a regular table (no PK): adds scan index 0 to scan_cols.
+    #[test]
+    fn test_rowid_function_no_pk_table() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("SELECT name, rowid() FROM users");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        // scan_cols: name=schema 1→scan 2, rowid()→scan 0 (appended)
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: users_root,
+                columns: vec![2, 0], // name at scan 2, rowid at scan 0
+            }),
+            columns: vec![
+                PlanExpr::ColumnRef(0), // name (output pos 0)
+                PlanExpr::ColumnRef(1), // rowid() (output pos 1)
+            ],
+        };
+        assert_eq!(result, expected);
+    }
+
+    /// rowid() on a rowid-alias table: PK column and rowid() share scan index 0.
+    #[test]
+    fn test_rowid_function_pk_table() {
+        let mut test = TestDb::default();
+        let root = test.btree.create_tree();
+        test.btree.insert_entry(
+            "table",
+            "t",
+            "t",
+            root,
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)",
+        );
+        let stmt = parse_sql("SELECT id, rowid() FROM t");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        // id is rowid alias → scan 0; rowid() also maps to scan 0 (same slot, deduped)
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: root,
+                columns: vec![0], // id = rowid alias → scan index 0 only
+            }),
+            columns: vec![
+                PlanExpr::ColumnRef(0), // id
+                PlanExpr::ColumnRef(0), // rowid() — same position as id
+            ],
+        };
+        assert_eq!(result, expected);
+    }
+
+    /// rowid() only (no other columns): scan just reads the key.
+    #[test]
+    fn test_rowid_function_only() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("SELECT rowid() FROM users");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        let expected = LogicalPlan::Project {
+            input: Box::new(LogicalPlan::Scan {
+                rootpage: users_root,
+                columns: vec![0], // only the B-tree key
+            }),
+            columns: vec![PlanExpr::ColumnRef(0)],
+        };
+        assert_eq!(result, expected);
     }
 }
