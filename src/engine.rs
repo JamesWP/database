@@ -813,7 +813,7 @@ impl Engine {
                 *self.registers.get_mut(dest) =
                     RegisterValue::ScalarValue(ScalarValue::Integer(key as i64));
             }
-            WriteCursor(cursor_reg, key_reg, value_regs) => {
+            WriteCursor(cursor_reg, key_reg, value_regs, unique) => {
                 probe!(database, engine_write_cursor);
                 // Read key value
                 let key = match self.registers.get(key_reg).scalar().unwrap() {
@@ -831,6 +831,18 @@ impl Engine {
                 let cursor = self.registers.get_mut(cursor_reg).cursor_mut().unwrap();
                 let rootpage = cursor.root_page();
                 let mut c = cursor.open_cursor();
+
+                if unique {
+                    c.find_u64(key);
+                    if let Some(entry) = c.get_entry() {
+                        if entry.key() == storage::encode_u64_key(key).as_slice() {
+                            return StepResult::Err(EngineError::ConstraintViolation(
+                                "unique constraint violated".to_string(),
+                            ));
+                        }
+                    }
+                }
+
                 c.insert_u64(key, scalar_values);
                 drop(c);
 
@@ -1767,7 +1779,7 @@ mod test {
                 Operation::StoreValue(r_key, ScalarValue::Integer(1)), // 1
                 Operation::StoreValue(r_val1, ScalarValue::Integer(42)), // 2
                 Operation::StoreValue(r_val2, ScalarValue::String("hello".to_string())), // 3
-                Operation::WriteCursor(r_cursor, r_key, vec![r_val1, r_val2]), // 4
+                Operation::WriteCursor(r_cursor, r_key, vec![r_val1, r_val2], false), // 4
                 // Read it back
                 Operation::MoveCursor(r_cursor, MoveOperation::First), // 5
                 Operation::CanReadCursor(r_flag, r_cursor),            // 6
@@ -1843,7 +1855,7 @@ mod test {
                 Operation::Open(r_cursor, root),
                 Operation::StoreValue(r_key, ScalarValue::Integer(1)),
                 Operation::StoreValue(r_val, ScalarValue::Integer(999)),
-                Operation::WriteCursor(r_cursor, r_key, vec![r_val]),
+                Operation::WriteCursor(r_cursor, r_key, vec![r_val], false),
                 // Read back the key
                 Operation::MoveCursor(r_cursor, MoveOperation::First),
                 Operation::ReadKey(r_readkey, r_cursor),

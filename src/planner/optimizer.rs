@@ -2,7 +2,7 @@
 
 use crate::storage::BTree;
 
-use super::{BinaryOp, JoinStrategy, Literal, LogicalPlan, PlanExpr, UnaryOp};
+use super::{from_scan_index, BinaryOp, JoinStrategy, Literal, LogicalPlan, PlanExpr, UnaryOp};
 
 /// Collapse consecutive Project(Project(inner, inner_cols), outer_cols) into a single Project.
 ///
@@ -284,11 +284,16 @@ fn try_index_scan_plan(
     }
 
     // extract_index_bounds returns a scan-output column index (ColumnRef position).
-    // We remap it to the table column index via scan_columns.
+    // Remap to scan-space via scan_columns, then convert to schema index for catalog lookup.
     let (scan_out_idx, lower_bound, upper_bound) = extract_index_bounds(predicate)?;
-    let table_col_idx = *scan_columns.get(scan_out_idx)?;
+    let scan_space_idx = *scan_columns.get(scan_out_idx)?;
+    let rowid_col = catalog
+        .catalog()
+        .lookup_table_info(&table_name)
+        .and_then(|info| info.rowid_column());
+    let schema_col_idx = from_scan_index(scan_space_idx, rowid_col)?;
 
-    // Find an index whose first column (by TABLE column index) matches table_col_idx.
+    // Find an index whose first column (by schema column index) matches schema_col_idx.
     let index = indexes.iter().find(|idx| {
         idx.column_names
             .first()
@@ -298,12 +303,13 @@ fn try_index_scan_plan(
                     .and_then(|info| info.columns.iter().position(|c| c.name == *col_name))
             })
             .unwrap_or(usize::MAX)
-            == table_col_idx
+            == schema_col_idx
     })?;
 
+    // Store scan-space index in index_col_idx for use in can_elide_sort comparisons.
     let index_scan = LogicalPlan::IndexScan {
         index_rootpage: index.rootpage,
-        index_col_idx: table_col_idx,
+        index_col_idx: scan_space_idx,
         lower_bound,
         upper_bound,
         output_columns: None,
@@ -357,12 +363,20 @@ fn try_index_probe_plan(
         return None;
     }
 
-    // Extract equi-join pairs: (left_col_idx, right_table_col_idx) from the ON condition.
-    // right_col_in_combined = left_column_count + right_table_col_position_in_scan
+    // Extract equi-join pairs: (left_col_idx, right_scan_pos) from the ON condition.
     let equi_pairs = extract_equi_join_pairs(on_condition, left_column_count, &right_columns);
 
-    for (left_col_idx, right_table_col_idx) in &equi_pairs {
-        // Find an index whose first column matches right_table_col_idx
+    let rowid_col = catalog
+        .catalog()
+        .lookup_table_info(&table_name)
+        .and_then(|info| info.rowid_column());
+
+    for (left_col_idx, right_scan_pos) in &equi_pairs {
+        // Convert right scan-space index to schema index for catalog lookup.
+        let right_scan_space = *right_columns.get(*right_scan_pos)?;
+        let right_schema_idx = from_scan_index(right_scan_space, rowid_col)?;
+
+        // Find an index whose first column (schema index) matches right_schema_idx.
         let index = indexes.iter().find(|idx| {
             idx.column_names
                 .first()
@@ -372,7 +386,7 @@ fn try_index_probe_plan(
                         .and_then(|info| info.columns.iter().position(|c| c.name == *col_name))
                 })
                 .unwrap_or(usize::MAX)
-                == *right_table_col_idx
+                == right_schema_idx
         });
 
         if let Some(index) = index {
@@ -380,18 +394,17 @@ fn try_index_probe_plan(
                 input: Box::new(LogicalPlan::IndexProbe {
                     index_rootpage: index.rootpage,
                     key_expr: PlanExpr::ColumnRef(*left_col_idx),
-                    index_col_idx: *right_table_col_idx,
+                    index_col_idx: right_scan_space, // scan-space, for can_elide_sort
                 }),
                 table_rootpage: right_rootpage,
                 columns: right_columns,
             };
 
-            // Remove the matched equality from on_condition; leave residual as Literal(true)
-            // if it was the only condition.
+            // Remove the matched equality from on_condition.
             let residual = remove_equi_condition(
                 on_condition,
                 *left_col_idx,
-                left_column_count + *right_table_col_idx,
+                left_column_count + right_scan_pos, // combined output index
             );
 
             return Some((new_right, residual));
@@ -401,9 +414,8 @@ fn try_index_probe_plan(
     None
 }
 
-/// Extract equi-join pairs (left_col_idx, right_table_col_idx) from on_condition.
-/// right_table_col_idx = combined_col_idx - left_column_count, after mapping
-/// through right_scan_columns (which maps scan output position → table column index).
+/// Extract equi-join pairs (left_col_idx, right_scan_pos) from on_condition.
+/// right_scan_pos is the position in the right scan's output_regs (NOT the scan-space index).
 fn extract_equi_join_pairs(
     condition: &PlanExpr,
     left_column_count: usize,
@@ -438,11 +450,11 @@ fn collect_equi_pairs(
                     } else {
                         return;
                     };
-                // right_combined is the index in combined output; subtract left_column_count
-                // to get the right-side scan output position, then map to table column index
+                // Store (left_col, right_scan_pos) where right_scan_pos is the position
+                // in the right scan's output_regs (also its index in right_columns).
                 let right_scan_pos = right_combined - left_column_count;
-                if let Some(&right_table_col_idx) = right_columns.get(right_scan_pos) {
-                    pairs.push((left_col, right_table_col_idx));
+                if right_scan_pos < right_columns.len() {
+                    pairs.push((left_col, right_scan_pos));
                 }
             }
         }
@@ -659,12 +671,13 @@ fn try_covering_index_scan(
         _ => return None,
     };
 
-    // Look up the table's column names to map table-col-idx → name.
+    // Look up the table's column names to map schema-col-idx → name.
     let table_name = catalog.catalog().lookup_table_by_rootpage(table_rootpage)?;
-    let table_cols: Vec<String> = {
+    let (table_cols, rowid_col): (Vec<String>, Option<usize>) = {
         let snap = catalog.catalog();
         let info = snap.lookup_table_info(&table_name)?;
-        info.columns.iter().map(|c| c.name.clone()).collect()
+        let rc = info.rowid_column();
+        (info.columns.iter().map(|c| c.name.clone()).collect(), rc)
     };
 
     // Look up the index's column names.
@@ -672,10 +685,11 @@ fn try_covering_index_scan(
     let index = indexes.iter().find(|idx| idx.rootpage == index_rootpage)?;
     let index_cols = &index.column_names;
 
-    // For each requested scan column, find its position in the index key.
+    // For each requested scan column (scan-space), convert to schema, then find in index key.
     let mut output_columns: Vec<usize> = Vec::with_capacity(scan_columns.len());
-    for &table_col in scan_columns {
-        let col_name = table_cols.get(table_col)?;
+    for &scan_col in scan_columns {
+        let schema_col = from_scan_index(scan_col, rowid_col)?;
+        let col_name = table_cols.get(schema_col)?;
         let idx_pos = index_cols.iter().position(|n| n == col_name)?;
         output_columns.push(idx_pos);
     }
@@ -792,7 +806,7 @@ mod tests {
         // Build Filter(age=30, Scan) manually, call optimize(), assert IndexScan+RowidLookup.
         let (db, root) = make_users_db_with_age_index();
 
-        // col index 2 = age (users: id=0, name=1, age=2)
+        // users has no PK → scan-space [1,2,3]; ColumnRef(2) = output pos 2 = age (scan idx 3)
         let naive = LogicalPlan::Filter {
             predicate: PlanExpr::BinaryOp {
                 op: BinaryOp::Equals,
@@ -801,8 +815,7 @@ mod tests {
             },
             input: Box::new(LogicalPlan::Scan {
                 rootpage: root,
-                columns: vec![0, 1, 2],
-                with_key: false,
+                columns: vec![1, 2, 3],
             }),
         };
 
@@ -873,8 +886,7 @@ mod tests {
                     },
                     input: Box::new(LogicalPlan::Scan {
                         rootpage: root,
-                        columns: vec![0, 1, 2],
-                        with_key: false,
+                        columns: vec![1, 2, 3],
                     }),
                 }),
             }),
@@ -894,7 +906,6 @@ mod tests {
         let scan = LogicalPlan::Scan {
             rootpage: 1,
             columns: vec![0, 1, 2],
-            with_key: false,
         };
         let inner = LogicalPlan::Project {
             input: Box::new(scan),
@@ -923,7 +934,6 @@ mod tests {
         let scan = LogicalPlan::Scan {
             rootpage: 1,
             columns: vec![0, 1],
-            with_key: false,
         };
         let project = LogicalPlan::Project {
             input: Box::new(scan),
@@ -956,7 +966,6 @@ mod tests {
         let scan = LogicalPlan::Scan {
             rootpage: 1,
             columns: vec![0, 1, 2, 3],
-            with_key: false,
         };
 
         let inner = LogicalPlan::Project {
@@ -1009,16 +1018,16 @@ mod tests {
 
         // Join { NestedLoop, Scan(users), Scan(orders), on: users.id = orders.user_id }
         // No index on orders.user_id → optimizer should promote to Hash.
+        // Scan-space: users [1,2,3], orders [1,2]; left_column_count=3
+        // ColumnRef(3) = left_count(3) + right_scan_pos(0) = orders first column
         let plan = LogicalPlan::Join {
             left: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
-                columns: vec![0, 1, 2],
-                with_key: false,
+                columns: vec![1, 2, 3],
             }),
             right: Box::new(LogicalPlan::Scan {
                 rootpage: orders_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             }),
             on_condition: PlanExpr::BinaryOp {
                 op: BinaryOp::Equals,
@@ -1067,16 +1076,16 @@ mod tests {
             "CREATE INDEX idx_orders_user ON orders (user_id)",
         );
 
+        // Scan-space: users [1,2,3], orders [1,2]; left_column_count=3
+        // ColumnRef(3) = left_count(3) + right_scan_pos(0) = orders.user_id
         let plan = LogicalPlan::Join {
             left: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
-                columns: vec![0, 1, 2],
-                with_key: false,
+                columns: vec![1, 2, 3],
             }),
             right: Box::new(LogicalPlan::Scan {
                 rootpage: orders_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             }),
             on_condition: PlanExpr::BinaryOp {
                 op: BinaryOp::Equals,

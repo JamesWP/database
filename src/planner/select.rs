@@ -13,7 +13,7 @@ use super::resolver::{
     extract_table_info, has_aggregate, is_aggregate_function, remap_column_indices, ColumnResolver,
     JoinResolver, SingleTableResolver,
 };
-use super::{schema, AggregateExpr, LogicalPlan, PlanError, PlanExpr, SortKey};
+use super::{schema, to_scan_index, AggregateExpr, LogicalPlan, PlanError, PlanExpr, SortKey};
 
 pub(super) fn output_width(plan: &LogicalPlan) -> usize {
     match plan {
@@ -117,10 +117,15 @@ fn plan_select_single(
     });
 
     // 5. Build base plan: Scan → optional Filter
+    let rowid_col = table.rowid_column();
+    let scan_cols: Vec<usize> = mapping
+        .scan_columns
+        .iter()
+        .map(|&i| to_scan_index(i, rowid_col))
+        .collect();
     let scan = LogicalPlan::Scan {
         rootpage: table.rootpage,
-        columns: mapping.scan_columns,
-        with_key: false,
+        columns: scan_cols,
     };
     let base_plan = apply_filter(scan, select.filter.as_ref(), &resolver)?;
 
@@ -183,15 +188,19 @@ fn plan_select_joined(
     });
 
     // 4. Build scan plans (read ALL columns from each table)
+    let left_rowid_col = left_table.rowid_column();
+    let right_rowid_col = right_table.rowid_column();
     let left_scan = LogicalPlan::Scan {
         rootpage: left_table.rootpage,
-        columns: (0..left_col_count).collect(),
-        with_key: false,
+        columns: (0..left_col_count)
+            .map(|i| to_scan_index(i, left_rowid_col))
+            .collect(),
     };
     let right_scan = LogicalPlan::Scan {
         rootpage: right_table.rootpage,
-        columns: (0..right_col_count).collect(),
-        with_key: false,
+        columns: (0..right_col_count)
+            .map(|i| to_scan_index(i, right_rowid_col))
+            .collect(),
     };
 
     // 5. Build Join plan, then optional WHERE filter
@@ -517,8 +526,7 @@ mod tests {
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
-                columns: vec![0, 1], // id, name
-                with_key: false,
+                columns: vec![1, 2], // id, name (scan-space: no rowid alias → +1)
             }),
             columns: vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)],
         };
@@ -539,8 +547,7 @@ mod tests {
             input: Box::new(LogicalPlan::Filter {
                 input: Box::new(LogicalPlan::Scan {
                     rootpage: users_root,
-                    columns: vec![1, 2], // name, age
-                    with_key: false,
+                    columns: vec![2, 3], // name, age (scan-space)
                 }),
                 predicate: PlanExpr::BinaryOp {
                     op: BinaryOp::GreaterThan,
@@ -567,8 +574,7 @@ mod tests {
             input: Box::new(LogicalPlan::Project {
                 input: Box::new(LogicalPlan::Scan {
                     rootpage: users_root,
-                    columns: vec![1], // name
-                    with_key: false,
+                    columns: vec![2], // name (scan-space)
                 }),
                 columns: vec![PlanExpr::ColumnRef(0)],
             }),
@@ -589,8 +595,7 @@ mod tests {
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
-                columns: vec![0, 1, 2], // all columns
-                with_key: false,
+                columns: vec![1, 2, 3], // all columns (scan-space)
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -621,8 +626,7 @@ mod tests {
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: root,
-                columns: vec![0, 1, 2, 3, 4], // all 5 columns
-                with_key: false,
+                columns: vec![1, 2, 3, 4, 5], // all 5 columns (scan-space, no PK)
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -646,8 +650,7 @@ mod tests {
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
-                columns: vec![0, 1, 2], // all columns
-                with_key: false,
+                columns: vec![1, 2, 3], // all columns (scan-space)
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -670,8 +673,7 @@ mod tests {
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
-                columns: vec![0, 1, 2], // all columns
-                with_key: false,
+                columns: vec![1, 2, 3], // all columns (scan-space)
             }),
             columns: vec![
                 PlanExpr::Literal(Literal::Integer(999)),
@@ -694,8 +696,7 @@ mod tests {
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
-                columns: vec![0, 1, 2], // all columns
-                with_key: false,
+                columns: vec![1, 2, 3], // all columns (scan-space)
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),
@@ -754,7 +755,6 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
                 columns: vec![], // No columns needed from scan
-                with_key: false,
             }),
             columns: vec![PlanExpr::Literal(Literal::Null)],
         };
@@ -772,8 +772,7 @@ mod tests {
         let expected = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: users_root,
-                columns: vec![0, 1], // id, name
-                with_key: false,
+                columns: vec![1, 2], // id, name (scan-space)
             }),
             columns: vec![
                 PlanExpr::ColumnRef(0),

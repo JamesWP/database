@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::planner::{BinaryOp, Literal, LogicalPlan, PlanExpr, SortKey, UnaryOp};
+use crate::planner::{from_scan_index, BinaryOp, Literal, LogicalPlan, PlanExpr, SortKey, UnaryOp};
 
 // ============================================================================
 // Schema metadata (for name resolution)
@@ -17,7 +17,8 @@ use crate::planner::{BinaryOp, Literal, LogicalPlan, PlanExpr, SortKey, UnaryOp}
 
 pub struct TableMeta {
     pub name: String,
-    pub columns: Vec<String>, // ordered by column index
+    pub columns: Vec<String>,     // ordered by schema column index
+    pub rowid_col: Option<usize>, // schema index of INTEGER PRIMARY KEY column, if any
 }
 
 pub struct IndexMeta {
@@ -45,12 +46,22 @@ impl ExplainSchema {
             .unwrap_or_else(|| format!("table@{rootpage}"))
     }
 
-    pub fn column_name(&self, rootpage: u32, idx: usize) -> String {
+    /// Return the column name for a scan-space index at the given table rootpage.
+    pub fn column_name(&self, rootpage: u32, scan_idx: usize) -> String {
         self.tables
             .get(&rootpage)
-            .and_then(|m| m.columns.get(idx))
+            .and_then(|m| {
+                let schema_idx = from_scan_index(scan_idx, m.rowid_col)?;
+                m.columns.get(schema_idx)
+            })
             .cloned()
-            .unwrap_or_else(|| format!("col:{idx}"))
+            .unwrap_or_else(|| {
+                if scan_idx == 0 {
+                    "rowid".to_string()
+                } else {
+                    format!("col:{scan_idx}")
+                }
+            })
     }
 
     pub fn index_name(&self, rootpage: u32) -> String {
@@ -508,7 +519,6 @@ mod tests {
         let plan = LogicalPlan::Scan {
             rootpage: 1,
             columns: vec![0, 1],
-            with_key: false,
         };
         let rows = format_plan(&plan, &ExplainSchema::empty());
         assert_eq!(rows.len(), 1);
@@ -522,7 +532,6 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: 1,
                 columns: vec![0],
-                with_key: false,
             }),
             predicate: PlanExpr::Literal(Literal::Integer(1)),
         };
@@ -538,12 +547,10 @@ mod tests {
             left: Box::new(LogicalPlan::Scan {
                 rootpage: 1,
                 columns: vec![0],
-                with_key: false,
             }),
             right: Box::new(LogicalPlan::Scan {
                 rootpage: 2,
                 columns: vec![0],
-                with_key: false,
             }),
             on_condition: PlanExpr::Literal(Literal::Integer(1)),
             strategy: crate::planner::JoinStrategy::Hash,
@@ -578,13 +585,14 @@ mod tests {
             1,
             TableMeta {
                 name: "users".to_string(),
+                rowid_col: None,
                 columns: vec!["id".to_string(), "age".to_string()],
             },
         );
+        // No PK: scan-space 1→id, 2→age (scan-space 0 is hidden rowid)
         let plan = LogicalPlan::Scan {
             rootpage: 1,
-            columns: vec![0, 1],
-            with_key: false,
+            columns: vec![1, 2],
         };
         let rows = format_plan(&plan, &schema);
         assert!(rows[0].1.contains("Scan users"), "got: {}", rows[0].1);
@@ -599,18 +607,19 @@ mod tests {
             1,
             TableMeta {
                 name: "users".to_string(),
+                rowid_col: None,
                 columns: vec!["id".to_string(), "name".to_string(), "age".to_string()],
             },
         );
+        // No PK: scan-space 1→id, 2→name, 3→age (output positions 0,1,2)
         let plan = LogicalPlan::Filter {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: 1,
-                columns: vec![0, 1, 2],
-                with_key: false,
+                columns: vec![1, 2, 3],
             }),
             predicate: PlanExpr::BinaryOp {
                 op: BinaryOp::Equals,
-                left: Box::new(PlanExpr::ColumnRef(2)),
+                left: Box::new(PlanExpr::ColumnRef(2)), // output pos 2 = "age"
                 right: Box::new(PlanExpr::Literal(Literal::Integer(30))),
             },
         };
@@ -626,14 +635,15 @@ mod tests {
             1,
             TableMeta {
                 name: "users".to_string(),
+                rowid_col: None,
                 columns: vec!["id".to_string(), "name".to_string(), "age".to_string()],
             },
         );
+        // No PK: scan-space 1→id, 2→name, 3→age (output positions 0,1,2)
         let plan = LogicalPlan::Project {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: 1,
-                columns: vec![0, 1, 2],
-                with_key: false,
+                columns: vec![1, 2, 3],
             }),
             columns: vec![PlanExpr::ColumnRef(0), PlanExpr::ColumnRef(1)],
         };

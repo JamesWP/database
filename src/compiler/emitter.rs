@@ -162,7 +162,7 @@ impl BytecodeEmitter {
                 | Operation::MoveCursor(_, _)
                 | Operation::ReadCursor(_, _)
                 | Operation::ReadKey(_, _)
-                | Operation::WriteCursor(_, _, _)
+                | Operation::WriteCursor(_, _, _, _)
                 | Operation::WriteIndex(_, _, _, _)
                 | Operation::CheckUnique(_, _)
                 | Operation::InitRowid(_, _)

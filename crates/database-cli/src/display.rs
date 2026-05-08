@@ -306,7 +306,7 @@ impl fmt::Display for ColoredOperation<'_> {
                     r!(cursor)
                 )
             }
-            WriteCursor(cursor, key, regs) => write!(
+            WriteCursor(cursor, key, regs, _unique) => write!(
                 f,
                 "{:10} {}, {}, [{}]",
                 "Write".cyan().bold(),
