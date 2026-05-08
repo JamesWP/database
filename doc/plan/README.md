@@ -97,7 +97,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **BG** | Pluggable Storage (VFS API) | 4 | [phase-bg-pluggable-storage.md](completed/phase-bg-pluggable-storage.md) | Completed |
 | **BH** | Boolean NOT + RANDOM() | 3 | [phase-bh-not-and-random.md](completed/phase-bh-not-and-random.md) | Completed |
 | **BJ** | Compact ScalarValue Encoding: Native CBOR Primitives | 2 | [phase-bj-compact-scalar-encoding.md](completed/phase-bj-compact-scalar-encoding.md) | Completed |
-| **BK** | INTEGER PRIMARY KEY as Rowid Alias | 5 | [phase-bk-integer-pk-rowid-alias.md](phase-bk-integer-pk-rowid-alias.md) | Planned |
+| **BK** | INTEGER PRIMARY KEY as Rowid Alias | 5 | [phase-bk-integer-pk-rowid-alias.md](completed/phase-bk-integer-pk-rowid-alias.md) | Completed |
 ## Sakila Compatibility
 
 Phases AJ–AV are ordered to progressively support the [sqlite-sakila-db](https://github.com/jOOQ/sakila/tree/main/sqlite-sakila-db) benchmark schema. Each phase unlocks more of the schema/data/views:
@@ -129,6 +129,8 @@ Features that are currently parsed or partially handled but not fully implemente
 | CHECK constraints | Parsed and silently ignored (`skip_table_constraint`) | TODO phase-av |
 | NOT NULL enforcement for INSERT omitted columns | Omitted columns without a DEFAULT are filled with NULL rather than rejected | TODO phase-aj |
 | Expression DEFAULTs e.g. `DEFAULT (DATETIME('now'))` | Parenthesised expression consumed and treated as no default | TODO phase-aj |
+| AUTOINCREMENT keyword | Parsed and ignored; INSERT still auto-assigns `max(rowid)+1` (same as plain INTEGER PRIMARY KEY) | TODO phase-bk |
+| rowid() in join queries | Returns `UnsupportedStatement` error | TODO phase-bk |
 
 ## Future
 
