@@ -29,6 +29,20 @@ pub struct TableInfo {
     pub columns: Vec<ColumnInfo>,
 }
 
+impl TableInfo {
+    /// Returns the schema column index of the INTEGER PRIMARY KEY column, if any.
+    /// TEXT, REAL, and BLOB primary keys are not rowid aliases and return None.
+    pub fn rowid_column(&self) -> Option<usize> {
+        self.columns.iter().position(|c| {
+            c.primary_key
+                && !matches!(
+                    c.data_type,
+                    Some(DataType::Text) | Some(DataType::Real) | Some(DataType::Blob)
+                )
+        })
+    }
+}
+
 /// Index metadata extracted from the catalog B-tree.
 #[derive(Debug, Clone)]
 pub struct IndexInfo {
