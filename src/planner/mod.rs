@@ -18,6 +18,38 @@ use optimizer::{fuse_projects, optimize};
 use resolver::ast_expr_name;
 
 // ============================================================================
+// Scan/Insert-space column index convention
+// ============================================================================
+
+/// Translate a schema column index to a scan-space (also insert-space) index.
+///
+/// Scan-space encoding:
+///   index 0   = B-tree key (the rowid-alias INTEGER PRIMARY KEY column)
+///   index k>0 = CBOR row body slot k-1
+///
+/// For tables without a rowid alias (rowid_col = None), all columns are stored
+/// in the CBOR row body: schema col i → scan index i+1.
+pub(crate) fn to_scan_index(schema_col: usize, rowid_col: Option<usize>) -> usize {
+    match rowid_col {
+        Some(pk) if schema_col == pk => 0,
+        Some(pk) if schema_col > pk => schema_col, // CBOR slot = schema_col - 1
+        _ => schema_col + 1,                       // CBOR slot = schema_col
+    }
+}
+
+/// Inverse of `to_scan_index`: convert a scan-space index back to a schema column index.
+/// Returns `None` for scan index 0 on a table without a rowid alias (hidden auto-rowid).
+pub(crate) fn from_scan_index(scan_col: usize, rowid_col: Option<usize>) -> Option<usize> {
+    match rowid_col {
+        Some(pk) if scan_col == 0 => Some(pk), // key → schema PK column
+        Some(pk) if scan_col > pk => Some(scan_col), // above PK: schema = scan
+        Some(_) => Some(scan_col - 1),         // below PK (scan k, k>0): schema = k-1
+        None if scan_col > 0 => Some(scan_col - 1), // no alias: schema = scan - 1
+        None => None,                          // scan 0 on non-alias table = hidden rowid
+    }
+}
+
+// ============================================================================
 // Operators
 // ============================================================================
 
@@ -143,14 +175,9 @@ pub enum JoinStrategy {
 /// Logical plan nodes - relational algebra operators
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalPlan {
-    /// Scan rows from a table (leaf node, no inputs)
-    /// rootpage: the B-tree root page number for this table
-    /// columns: indices of columns to read from the table schema
-    Scan {
-        rootpage: u32,
-        columns: Vec<usize>,
-        with_key: bool,
-    },
+    /// Scan rows from a table (leaf node, no inputs).
+    /// `columns` uses scan-space encoding: 0 = B-tree key, k>0 = CBOR row body slot k-1.
+    Scan { rootpage: u32, columns: Vec<usize> },
 
     /// Scan via an index
     /// Scan via an index — handles both equality and range predicates.

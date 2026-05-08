@@ -117,53 +117,65 @@ pub fn codegen_scan(
     columns: &[usize],
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
-    with_key: bool,
 ) -> NodeOutput {
-    // Allocate registers for cursor, flag, and output columns
+    // Scan-space encoding: index 0 = B-tree key (ReadKey), index k>0 = CBOR body slot k-1.
     let cursor_reg = ctx.registers.alloc();
     let flag_reg = ctx.registers.alloc();
 
-    // Compute num_read: need to read up to max(columns) + 1 values
-    let num_read = columns.iter().max().map(|&m| m + 1).unwrap_or(0);
-    let all_regs = ctx.registers.alloc_block(num_read);
+    // Separate key column (scan index 0) from CBOR columns (scan index k>0).
+    let needs_key = columns.contains(&0);
+    // CBOR slot indices = scan_index - 1 for each column with scan_index > 0
+    let cbor_slot_max = columns.iter().filter(|&&k| k > 0).map(|&k| k - 1).max();
+    let num_cbor = cbor_slot_max.map(|m| m + 1).unwrap_or(0);
+    let cbor_regs = ctx.registers.alloc_block(num_cbor);
 
-    // Map output_regs to only the needed columns; optionally append key register
-    let mut output_regs: Vec<Reg> = columns.iter().map(|&i| all_regs[i]).collect();
-    let key_reg = if with_key {
-        let r = ctx.registers.alloc();
-        output_regs.push(r);
-        Some(r)
+    let key_reg = if needs_key {
+        Some(ctx.registers.alloc())
     } else {
         None
     };
 
-    // INIT (init_emitter): Open cursor and move to first row for standalone callers.
+    // output_regs[i] = register for columns[i]
+    let output_regs: Vec<Reg> = columns
+        .iter()
+        .map(|&col| {
+            if col == 0 {
+                key_reg.unwrap()
+            } else {
+                cbor_regs[col - 1]
+            }
+        })
+        .collect();
+
+    // INIT: Open cursor and move to first row for standalone callers.
     // NestedLoop join jumps to the reset label in the body instead.
     init!(ctx;
         Open(cursor_reg, rootpage);
         MoveCursor(cursor_reg, MoveOperation::First)
     );
 
-    // BODY (body_emitter):
+    // BODY:
     // RESET: jumped to by NestedLoop join once per left row to restart the scan.
-    // Standalone callers use the init MoveCursor(First) above and never jump here.
     let reset_label = ctx.body_emitter.label_here();
     body!(ctx; MoveCursor(cursor_reg, MoveOperation::First));
 
-    // CHECK: Label for iteration entry point (also falls through from RESET)
+    // CHECK: entry point for iteration
     let check_label = ctx.body_emitter.label_here();
     body!(ctx;
         CanReadCursor(flag_reg, cursor_reg);
-        GoToIfFalse(cont.on_done, flag_reg);
-        ReadCursor(all_regs.clone(), cursor_reg)
+        GoToIfFalse(cont.on_done, flag_reg)
     );
 
-    // KEY (optional): Read row key before advancing so callers can use it
+    // Read CBOR body if any CBOR columns are needed
+    if !cbor_regs.is_empty() {
+        body!(ctx; ReadCursor(cbor_regs.clone(), cursor_reg));
+    }
+
+    // Read B-tree key if scan index 0 is needed
     if let Some(kr) = key_reg {
         body!(ctx; ReadKey(kr, cursor_reg));
     }
 
-    // ADVANCE: Move cursor to next row (makes next row "pending")
     body!(ctx;
         MoveCursor(cursor_reg, MoveOperation::Next);
         GoTo(cont.on_tuple)
@@ -679,15 +691,28 @@ pub fn codegen_rowid_lookup(
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
+    // columns uses scan-space: 0 = B-tree key, k>0 = CBOR body slot k-1.
     let table_cursor_reg = ctx.registers.alloc();
 
-    // Allocate enough registers to cover all requested columns by their table
-    // position. ReadCursor fills registers sequentially from column 0, so we
-    // need at least max(columns)+1 registers even if we only output a subset.
-    let max_col = columns.iter().copied().max().unwrap_or(0);
-    let read_regs = ctx.registers.alloc_block(max_col + 1);
-    // Output registers are the specific requested columns, in request order.
-    let output_regs: Vec<Reg> = columns.iter().map(|&c| read_regs[c]).collect();
+    let needs_key = columns.contains(&0);
+    let cbor_slot_max = columns.iter().filter(|&&k| k > 0).map(|&k| k - 1).max();
+    let num_cbor = cbor_slot_max.map(|m| m + 1).unwrap_or(0);
+    let cbor_regs = ctx.registers.alloc_block(num_cbor);
+    let key_reg = if needs_key {
+        Some(ctx.registers.alloc())
+    } else {
+        None
+    };
+    let output_regs: Vec<Reg> = columns
+        .iter()
+        .map(|&col| {
+            if col == 0 {
+                key_reg.unwrap()
+            } else {
+                cbor_regs[col - 1]
+            }
+        })
+        .collect();
 
     // INIT: Open the table cursor
     init!(ctx; Open(table_cursor_reg, table_rootpage));
@@ -703,16 +728,21 @@ pub fn codegen_rowid_lookup(
 
     // LOOKUP: child yielded a rowid in child_output.output_regs[0]
     ctx.body_emitter.bind_here(lookup);
-    let pk_reg = child_output.output_regs[0];
+    let rowid_reg = child_output.output_regs[0];
     body!(ctx;
-        MoveCursor(table_cursor_reg, MoveOperation::Find(pk_reg));
-        ReadCursor(read_regs, table_cursor_reg);
-        GoTo(cont.on_tuple)
+        MoveCursor(table_cursor_reg, MoveOperation::Find(rowid_reg))
     );
+    if !cbor_regs.is_empty() {
+        body!(ctx; ReadCursor(cbor_regs, table_cursor_reg));
+    }
+    if let Some(kr) = key_reg {
+        body!(ctx; ReadKey(kr, table_cursor_reg));
+    }
+    body!(ctx; GoTo(cont.on_tuple));
 
     NodeOutput {
         next: child_output.next,
-        reset: child_output.reset, // propagate child's reset label unchanged
+        reset: child_output.reset,
         output_regs,
     }
 }
@@ -1262,25 +1292,32 @@ pub fn codegen_insert(
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
-    // Allocate registers
+    // `table_columns` uses insert-space encoding:
+    //   index 0   → B-tree key (explicit PK value)
+    //   index k>0 → CBOR slot k-1
+    //
+    // If 0 is present in table_columns: the user supplied the key.
+    //   - Use value at insert-space slot 0 as the key.
+    //   - WriteCursor with unique=true enforces uniqueness without a separate index.
+    //   - No IncrementValue (key is user-supplied, not from the rowid cache).
+    //
+    // If 0 is absent: auto-assign the key from the rowid cache.
+    //   - InitRowid → WriteCursor(unique=false) → IncrementValue.
+    let has_user_key = table_columns.contains(&0);
+
     let cursor_reg = ctx.registers.alloc();
     let key_reg = ctx.registers.alloc();
     let counter_reg = ctx.registers.alloc();
 
-    // Allocate registers for index cursors
     let index_cursor_regs = open_index_cursors(indexes, ctx);
 
-    // INIT: Open cursor and discover next key via shared rowid cache.
-    // InitRowid replaces the 8-instruction seek-to-last sequence: on a cache hit
-    // it returns the next rowid with no page I/O; on a miss it falls back to
-    // seeking to the last entry and populates the cache.
-    init!(ctx;
-        Open(cursor_reg, rootpage);
-        InitRowid(cursor_reg, key_reg);
-        StoreValue(counter_reg, ScalarValue::Integer(0))
-    );
+    // INIT: open cursor; if auto-assigning, initialise the rowid cache.
+    init!(ctx; Open(cursor_reg, rootpage));
+    if !has_user_key {
+        init!(ctx; InitRowid(cursor_reg, key_reg));
+    }
+    init!(ctx; StoreValue(counter_reg, ScalarValue::Integer(0)));
 
-    // Create labels for child's continuations
     let child_on_tuple = ctx.body_emitter.create_label();
     let child_on_done = ctx.body_emitter.create_label();
     let child_cont = NodeContinuation {
@@ -1288,49 +1325,48 @@ pub fn codegen_insert(
         on_done: child_on_done,
     };
 
-    // Compile child
     let child_output = codegen(input, &child_cont, ctx);
 
-    // child_on_tuple: write row, increment key and counter, get next
     ctx.body_emitter.bind_here(child_on_tuple);
 
-    // Reorder child output registers to match table column order
-    // If table has columns [id, name, age] and user wrote INSERT(age,id,name)
-    // then table_columns=[2,0,1] and child outputs are in [age,id,name] order
-    // We need to reorder them to [id,name,age] order for writing
-    let reordered_regs: Vec<Reg> = if table_columns.iter().enumerate().all(|(i, &col)| i == col) {
-        // Fast path: columns are already in order, no reordering needed
-        child_output.output_regs.clone()
+    // Reorder child outputs into insert-space: alloc_block(max+1), copy each
+    // child value to its insert-space slot.  Slot 0 is the key (if supplied);
+    // slots k>0 are CBOR values.  Unused slot 0 is never read when has_user_key=false.
+    let num_slots = table_columns.iter().max().map(|&m| m + 1).unwrap_or(0);
+    let reordered = ctx.registers.alloc_block(num_slots);
+    for (i, &slot) in table_columns.iter().enumerate() {
+        body!(ctx; CopyValue(reordered[slot], child_output.output_regs[i]));
+    }
+
+    // Extract key and CBOR value registers.
+    let cbor_regs: Vec<Reg> = reordered.iter().skip(1).copied().collect();
+
+    if has_user_key {
+        // User-supplied PK: extract from slot 0, enforce uniqueness via WriteCursor.
+        body!(ctx; CopyValue(key_reg, reordered[0]));
+        // Index writes first so a uniqueness violation aborts before any table write.
+        // TODO(phase-az): roll back partial index writes on uniqueness failure.
+        emit_index_writes(&index_cursor_regs, &reordered, key_reg, ctx);
+        body!(ctx; WriteCursor(cursor_reg, key_reg, cbor_regs.clone(), true));
+        body!(ctx;
+            IncrementValue(counter_reg);
+            GoTo(child_output.next);
+            Bind(child_on_done);
+            GoTo(cont.on_tuple)
+        );
     } else {
-        // Need to reorder: allocate new registers and copy values
-        let num_table_columns = table_columns.iter().max().map(|&m| m + 1).unwrap_or(0);
-        let reordered = ctx.registers.alloc_block(num_table_columns);
+        // Auto-assign key from rowid cache.
+        emit_index_writes(&index_cursor_regs, &reordered, key_reg, ctx);
+        body!(ctx; WriteCursor(cursor_reg, key_reg, cbor_regs.clone(), false));
+        body!(ctx;
+            IncrementValue(key_reg);
+            IncrementValue(counter_reg);
+            GoTo(child_output.next);
+            Bind(child_on_done);
+            GoTo(cont.on_tuple)
+        );
+    }
 
-        // Copy each value to its correct position
-        for (i, &col_idx) in table_columns.iter().enumerate() {
-            body!(ctx; CopyValue(reordered[col_idx], child_output.output_regs[i]));
-        }
-
-        reordered
-    };
-    // Index writes come before WriteCursor so uniqueness violations abort before the
-    // table row is written. WriteIndex with unique=true checks for a conflicting prefix
-    // before inserting. Note: if multiple unique indexes exist and a later one fails,
-    // earlier index writes are not rolled back (no transaction support yet).
-    // TODO(phase-az): roll back partial index writes on uniqueness failure.
-    emit_index_writes(&index_cursor_regs, &reordered_regs, key_reg, ctx);
-
-    body!(ctx; WriteCursor(cursor_reg, key_reg, reordered_regs.clone()));
-
-    body!(ctx;
-        IncrementValue(key_reg);
-        IncrementValue(counter_reg);
-        GoTo(child_output.next);
-        Bind(child_on_done);
-        GoTo(cont.on_tuple)
-    );
-
-    // insert_next: after yielding count, we're done
     let insert_next = ctx.body_emitter.label_here();
     body!(ctx; GoTo(cont.on_done));
 
@@ -1467,7 +1503,7 @@ pub fn codegen_update(
     emit_write_indexes(&index_cursor_regs, &new_values, key_reg, ctx);
 
     body!(ctx;
-        WriteCursor(cursor_reg, key_reg, new_values);
+        WriteCursor(cursor_reg, key_reg, new_values, false);
         GoTo(update_loop);
         Bind(update_done);
         GoTo(cont.on_tuple)
@@ -1894,14 +1930,16 @@ pub fn codegen_populate_index(
         on_done: child_on_done,
     };
 
-    // Compile the child (expected: Scan with with_key=true).
-    // output_regs = [col_0, ..., col_N-1, pk_key]
+    // Compile the child (Scan with scan index 0 = key included).
+    // output_regs are ordered by the scan's columns slice; index 0 = key register.
+    // column_idxs hold scan-space indices; scan columns are [0,1,...,n] so
+    // output_regs[scan_space_idx] gives the correct register directly.
     let scan_out = codegen(input, &child_cont, ctx);
     let col_regs: Vec<_> = column_idxs
         .iter()
         .map(|&idx| scan_out.output_regs[idx])
         .collect();
-    let pk_reg = *scan_out.output_regs.last().expect("key reg");
+    let pk_reg = scan_out.output_regs[0]; // scan index 0 = B-tree key
 
     // child_on_tuple: write one index entry, then advance to next row
     body!(ctx;
@@ -1927,11 +1965,7 @@ pub fn codegen(
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
     match plan {
-        LogicalPlan::Scan {
-            rootpage,
-            columns,
-            with_key,
-        } => codegen_scan(*rootpage, columns, cont, ctx, *with_key),
+        LogicalPlan::Scan { rootpage, columns } => codegen_scan(*rootpage, columns, cont, ctx),
         LogicalPlan::IndexScan {
             index_rootpage,
             index_col_idx: _,
@@ -2087,7 +2121,7 @@ mod tests {
         let on_done = ctx.body_emitter.create_label();
         let cont = NodeContinuation { on_tuple, on_done };
 
-        let output = codegen_scan(42, &[0, 1], &cont, &mut ctx, false);
+        let output = codegen_scan(42, &[0, 1], &cont, &mut ctx);
 
         // Check that we got 2 output registers
         assert_eq!(output.output_regs.len(), 2);
@@ -2117,7 +2151,6 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: root,
                 columns: vec![0, 1],
-                with_key: false,
             }),
         };
 
@@ -2144,7 +2177,6 @@ mod tests {
             input: Box::new(LogicalPlan::Scan {
                 rootpage: root,
                 columns: vec![0],
-                with_key: false,
             }),
         };
 
@@ -2174,10 +2206,10 @@ mod tests {
             c.insert_u64(1, vec![ScalarValue::Integer(30), ScalarValue::Integer(40)]);
         }
 
+        // Scan-space: col 1 = CBOR slot 0, col 2 = CBOR slot 1
         let plan = LogicalPlan::Scan {
             rootpage: root,
-            columns: vec![0, 1],
-            with_key: false,
+            columns: vec![1, 2],
         };
 
         let (ops, num_registers) = compile_plan(&plan);
@@ -2873,7 +2905,7 @@ mod tests {
 
         let plan = LogicalPlan::Insert {
             rootpage: root,
-            table_columns: vec![0, 1, 2],
+            table_columns: vec![1, 2, 3],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![
                     vec![
@@ -2911,7 +2943,7 @@ mod tests {
         // First: INSERT
         let insert_plan = LogicalPlan::Insert {
             rootpage: root,
-            table_columns: vec![0, 1],
+            table_columns: vec![1, 2],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![
                     vec![Literal::Integer(100), Literal::String("alice".to_string())],
@@ -2929,11 +2961,10 @@ mod tests {
         let insert_yields = Engine::with_program(&ops, num_registers, &btree).run();
         assert_eq!(insert_yields[0][0], ScalarValue::Integer(3));
 
-        // Second: SCAN to read back
+        // Second: SCAN to read back (scan-space: 1=CBOR slot 0, 2=CBOR slot 1)
         let scan_plan = LogicalPlan::Scan {
             rootpage: root,
-            columns: vec![0, 1],
-            with_key: false,
+            columns: vec![1, 2],
         };
 
         let (ops, num_registers) = compile_plan(&scan_plan);
@@ -2961,7 +2992,7 @@ mod tests {
 
         let plan = LogicalPlan::Insert {
             rootpage: root,
-            table_columns: vec![0],
+            table_columns: vec![1],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![vec![Literal::Integer(42)]],
             }),
@@ -2988,14 +3019,14 @@ mod tests {
 
         let index = IndexMaintenanceInfo {
             rootpage: index_root,
-            column_idxs: vec![0],
+            column_idxs: vec![1],
             unique: true,
         };
 
         // First insert (value=42) must succeed.
         let plan = LogicalPlan::Insert {
             rootpage: table_root,
-            table_columns: vec![0],
+            table_columns: vec![1],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![vec![Literal::Integer(42)]],
             }),
@@ -3008,7 +3039,7 @@ mod tests {
         // Second insert with the same indexed value must fail.
         let plan2 = LogicalPlan::Insert {
             rootpage: table_root,
-            table_columns: vec![0],
+            table_columns: vec![1],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![vec![Literal::Integer(42)]],
             }),
@@ -3036,13 +3067,13 @@ mod tests {
 
         let index = IndexMaintenanceInfo {
             rootpage: index_root,
-            column_idxs: vec![0],
+            column_idxs: vec![1],
             unique: true,
         };
 
         let plan = LogicalPlan::Insert {
             rootpage: table_root,
-            table_columns: vec![0],
+            table_columns: vec![1],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![
                     vec![Literal::Integer(1)],
@@ -3070,13 +3101,13 @@ mod tests {
 
         let index = IndexMaintenanceInfo {
             rootpage: index_root,
-            column_idxs: vec![0],
+            column_idxs: vec![1],
             unique: false,
         };
 
         let plan = LogicalPlan::Insert {
             rootpage: table_root,
-            table_columns: vec![0],
+            table_columns: vec![1],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![vec![Literal::Integer(7)], vec![Literal::Integer(7)]],
             }),
@@ -3194,7 +3225,7 @@ mod tests {
         // Test DELETE with no filter (delete all)
         let plan = LogicalPlan::Delete {
             rootpage: root,
-            table_columns: vec![0],
+            table_columns: vec![1],
             filter: None,
             indexes: vec![],
         };
@@ -3274,13 +3305,11 @@ mod tests {
         let plan = nlj(
             LogicalPlan::Scan {
                 rootpage: left_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             },
             LogicalPlan::Scan {
                 rootpage: right_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             },
             on_eq_col0_col2(),
         );
@@ -3336,15 +3365,13 @@ mod tests {
             },
             input: Box::new(LogicalPlan::Scan {
                 rootpage: right_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             }),
         };
         let plan = nlj(
             LogicalPlan::Scan {
                 rootpage: left_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             },
             right,
             on_eq_col0_col2(),
@@ -3369,13 +3396,11 @@ mod tests {
         let plan = nlj(
             LogicalPlan::Scan {
                 rootpage: left_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             },
             LogicalPlan::Scan {
                 rootpage: right_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             },
             on_true(),
         );
@@ -3396,13 +3421,11 @@ mod tests {
         let plan = nlj(
             LogicalPlan::Scan {
                 rootpage: left_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             },
             LogicalPlan::Scan {
                 rootpage: right_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             },
             on_true(),
         );
@@ -3468,8 +3491,7 @@ mod tests {
         let plan = LogicalPlan::Join {
             left: Box::new(LogicalPlan::Scan {
                 rootpage: left_root,
-                columns: vec![0, 1],
-                with_key: false,
+                columns: vec![1, 2],
             }),
             right: Box::new(LogicalPlan::RowidLookup {
                 input: Box::new(LogicalPlan::IndexProbe {
@@ -3478,7 +3500,7 @@ mod tests {
                     index_col_idx: 0,
                 }),
                 table_rootpage: right_root,
-                columns: vec![0, 1],
+                columns: vec![1, 2],
             }),
             on_condition: on_true(),
             strategy: crate::planner::JoinStrategy::NestedLoop,

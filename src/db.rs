@@ -4,7 +4,7 @@ use crate::engine::Engine;
 use crate::explain::{ExplainSchema, IndexMeta, TableMeta};
 use crate::frontend::ast::{ColumnConstraint, DataType, Statement};
 use crate::frontend::{parse, ParseError};
-use crate::planner::{self, LogicalPlan, PlanError};
+use crate::planner::{self, to_scan_index, LogicalPlan, PlanError};
 use crate::storage::BTree;
 use probe::probe;
 
@@ -235,15 +235,30 @@ pub fn execute(sql: &str, catalog: &mut BTree) -> Result<ExecuteResult, ExecuteE
             // 5. Create the index B-tree
             let index_rootpage = catalog.create_tree();
 
-            // 6. Populate index by running a PopulateIndex plan via the engine
+            // 6. Populate index by running a PopulateIndex plan via the engine.
+            // The scan must include the B-tree key (scan index 0) so codegen_populate_index
+            // can read it from output_regs[0]. column_idxs are converted to scan-space.
+            let rowid_col = table_info.rowid_column();
+            let mut scan_cols: Vec<usize> = (0..table_info.columns.len())
+                .map(|i| to_scan_index(i, rowid_col))
+                .collect();
+            // Key (scan index 0) must be present; add it if not already there.
+            if !scan_cols.contains(&0) {
+                scan_cols.push(0);
+            }
+            scan_cols.sort();
+            scan_cols.dedup();
+            let scan_col_idxs: Vec<usize> = column_idxs
+                .iter()
+                .map(|&i| to_scan_index(i, rowid_col))
+                .collect();
             let plan = LogicalPlan::PopulateIndex {
                 input: Box::new(LogicalPlan::Scan {
                     rootpage: table_rootpage,
-                    columns: (0..table_info.columns.len()).collect(),
-                    with_key: true,
+                    columns: scan_cols,
                 }),
                 index_rootpage,
-                column_idxs,
+                column_idxs: scan_col_idxs,
             };
             let compiled = compiler::compile(&plan);
             Engine::with_program(compiled.operations(), compiled.num_registers(), catalog).run();
@@ -303,6 +318,7 @@ pub fn build_explain_schema(catalog: &BTree) -> ExplainSchema {
             TableMeta {
                 name: name.clone(),
                 columns,
+                rowid_col: info.rowid_column(),
             },
         );
     }

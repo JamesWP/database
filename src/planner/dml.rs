@@ -7,7 +7,9 @@ use schema::resolve_table;
 
 use super::resolver::{convert_expr, eval_constant, NoColumnResolver, SingleTableResolver};
 use super::select::output_width;
-use super::{schema, IndexMaintenanceInfo, Literal, LogicalPlan, PlanError, PlanExpr};
+use super::{
+    schema, to_scan_index, IndexMaintenanceInfo, Literal, LogicalPlan, PlanError, PlanExpr,
+};
 
 pub(super) fn plan_insert(
     insert: ast::InsertStatement,
@@ -15,9 +17,10 @@ pub(super) fn plan_insert(
 ) -> Result<LogicalPlan, PlanError> {
     let table = resolve_table(&insert.table_name, catalog)?;
     let num_table_columns = table.columns.len();
+    let rowid_col = table.rowid_column();
 
-    // Determine which columns we're inserting into
-    let table_columns: Vec<usize> = match &insert.columns {
+    // user_to_schema: user-column-position → schema-column-index
+    let user_to_schema: Vec<usize> = match &insert.columns {
         Some(col_names) => col_names
             .iter()
             .map(|name| {
@@ -32,15 +35,19 @@ pub(super) fn plan_insert(
         None => (0..num_table_columns).collect(),
     };
 
+    // For rowid-alias tables: is the PK column in the user-provided column list?
+    // If not, it should be auto-assigned and excluded from insert-space index 0.
+    let pk_in_user_cols = rowid_col.map_or(false, |pk| user_to_schema.contains(&pk));
+
     // Build the input plan from the INSERT source
-    let input_plan = match insert.source {
+    let (input_plan, insert_table_cols) = match insert.source {
         ast::InsertSource::Values(value_rows) => {
             let no_resolver = NoColumnResolver;
             let mut rows = Vec::new();
             for value_row in &value_rows {
-                if value_row.len() != table_columns.len() {
+                if value_row.len() != user_to_schema.len() {
                     return Err(PlanError::ColumnCountMismatch {
-                        expected: table_columns.len(),
+                        expected: user_to_schema.len(),
                         got: value_row.len(),
                     });
                 }
@@ -50,45 +57,74 @@ pub(super) fn plan_insert(
                     .map(|(i, expr)| {
                         let plan_expr = convert_expr(expr, &no_resolver)?;
                         let lit = eval_constant(&plan_expr)?;
-                        let target_type = table.columns[table_columns[i]].data_type.as_ref();
+                        let target_type = table.columns[user_to_schema[i]].data_type.as_ref();
                         let lit = coerce_literal(lit, target_type)?;
-                        Ok((table_columns[i], lit))
+                        Ok((user_to_schema[i], lit))
                     })
                     .collect::<Result<Vec<_>, PlanError>>()?;
-                let full_row = make_full_row(&provided, &table.columns);
-                rows.push(full_row);
+
+                // make_full_row produces values in schema order (0..N).
+                let full_schema_row = make_full_row(&provided, &table.columns);
+
+                // Build the Values row in schema order, excluding the rowid-alias PK column
+                // when it was not explicitly provided (auto-assign case).
+                let values_row: Vec<Literal> = (0..num_table_columns)
+                    .filter(|&sc| should_include_schema_col(sc, rowid_col, pk_in_user_cols))
+                    .map(|sc| full_schema_row[sc].clone())
+                    .collect();
+                rows.push(values_row);
             }
-            LogicalPlan::Values { rows }
+
+            // table_cols for Values rows: schema-col position in the row → insert-space index.
+            // Values rows are in schema order with the PK column omitted when not provided.
+            let cols: Vec<usize> = (0..num_table_columns)
+                .filter(|&sc| should_include_schema_col(sc, rowid_col, pk_in_user_cols))
+                .map(|sc| to_scan_index(sc, rowid_col))
+                .collect();
+
+            (LogicalPlan::Values { rows }, cols)
         }
         ast::InsertSource::Query(select) => {
             let input = super::plan_select(*select, catalog)?;
             let produced = output_width(&input);
-            if produced != table_columns.len() {
+            let expected = user_to_schema
+                .iter()
+                .filter(|&&sc| should_include_schema_col(sc, rowid_col, pk_in_user_cols))
+                .count();
+            if produced != expected {
                 return Err(PlanError::ColumnCountMismatch {
-                    expected: table_columns.len(),
+                    expected,
                     got: produced,
                 });
             }
-            input
+            // Query output is in user-specified order; map each user col to insert-space.
+            let cols: Vec<usize> = user_to_schema
+                .iter()
+                .filter(|&&sc| should_include_schema_col(sc, rowid_col, pk_in_user_cols))
+                .map(|&sc| to_scan_index(sc, rowid_col))
+                .collect();
+            (input, cols)
         }
     };
 
-    // Look up indexes for this table
+    // Look up indexes for this table.
+    // column_idxs are stored in insert-space (0=key, k>0=CBOR[k-1]) so that
+    // codegen_insert can index directly into the reordered insert-space register array.
     let index_infos = catalog
         .catalog()
         .lookup_indexes_for_table(&insert.table_name);
     let mut indexes = Vec::new();
     for index_info in index_infos {
-        // Find column indexes
         let column_idxs = index_info
             .column_names
             .iter()
             .map(|name| {
-                table
+                let schema_col = table
                     .columns
                     .iter()
                     .position(|col| &col.name == name)
-                    .expect("Index column not found in table")
+                    .expect("Index column not found in table");
+                to_scan_index(schema_col, rowid_col)
             })
             .collect();
 
@@ -101,10 +137,24 @@ pub(super) fn plan_insert(
 
     Ok(LogicalPlan::Insert {
         rootpage: table.rootpage,
-        table_columns: (0..num_table_columns).collect(),
+        table_columns: insert_table_cols,
         input: Box::new(input_plan),
         indexes,
     })
+}
+
+/// Whether to include a schema column in the insert-space Values row.
+/// For rowid-alias tables, the PK column is excluded when not explicitly provided
+/// (it will be auto-assigned from the rowid cache).
+fn should_include_schema_col(
+    schema_col: usize,
+    rowid_col: Option<usize>,
+    pk_in_user_cols: bool,
+) -> bool {
+    match rowid_col {
+        Some(pk) if schema_col == pk => pk_in_user_cols,
+        _ => true,
+    }
 }
 
 pub(super) fn plan_update(
@@ -330,7 +380,7 @@ mod tests {
 
         let expected = LogicalPlan::Insert {
             rootpage: users_root,
-            table_columns: vec![0, 1, 2],
+            table_columns: vec![1, 2, 3],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![vec![
                     Literal::Integer(1),
@@ -354,7 +404,7 @@ mod tests {
         // After item 114: omitted columns are filled with NULL; table_columns is always full-width.
         let expected = LogicalPlan::Insert {
             rootpage: users_root,
-            table_columns: vec![0, 1, 2], // all columns
+            table_columns: vec![1, 2, 3], // all columns
             input: Box::new(LogicalPlan::Values {
                 rows: vec![vec![
                     Literal::Null,                        // id (omitted, no default)
@@ -393,7 +443,7 @@ mod tests {
 
         let expected = LogicalPlan::Insert {
             rootpage: users_root,
-            table_columns: vec![0, 1, 2],
+            table_columns: vec![1, 2, 3],
             input: Box::new(LogicalPlan::Values {
                 rows: vec![vec![
                     Literal::Integer(2),
