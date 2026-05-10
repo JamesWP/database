@@ -331,6 +331,10 @@ pub enum LogicalPlan {
         index_rootpage: u32,
         column_idxs: Vec<usize>,
     },
+
+    /// Buffer all rows from `input` into a RowBuffer, then yield them.
+    /// Used for: FROM subqueries, right side of semi-joins, scalar subquery preludes.
+    Materialize { input: Box<LogicalPlan> },
 }
 // ============================================================================
 // Schema (for column resolution)

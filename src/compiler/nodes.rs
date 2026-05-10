@@ -2050,6 +2050,9 @@ pub fn codegen(
             index_rootpage,
             column_idxs,
         } => codegen_populate_index(input, *index_rootpage, column_idxs, cont, ctx),
+        LogicalPlan::Materialize { .. } => {
+            panic!("codegen_materialize not yet implemented")
+        }
     }
 }
 
