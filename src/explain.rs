@@ -318,17 +318,25 @@ fn collect_rows(
             on_condition,
             strategy,
             ..
-        } => {
-            let strategy_label = match strategy {
-                crate::planner::JoinStrategy::Hash => "Hash",
-                crate::planner::JoinStrategy::NestedLoop => "NestedLoop",
-            };
-            format!(
-                "{indent}Join [{} | {}]",
-                strategy_label,
-                format_expr_with_names(on_condition, &input_cols)
-            )
-        }
+        } => match strategy {
+            crate::planner::JoinStrategy::Semi { negated } => {
+                let prefix = if *negated { "Anti-Semi" } else { "Semi" };
+                let key = format_expr_with_names(on_condition, &input_cols);
+                format!("{indent}Join [{prefix}] on {key}")
+            }
+            strategy => {
+                let strategy_label = match strategy {
+                    crate::planner::JoinStrategy::Hash => "Hash",
+                    crate::planner::JoinStrategy::NestedLoop => "NestedLoop",
+                    crate::planner::JoinStrategy::Semi { .. } => unreachable!(),
+                };
+                format!(
+                    "{indent}Join [{} | {}]",
+                    strategy_label,
+                    format_expr_with_names(on_condition, &input_cols)
+                )
+            }
+        },
         LogicalPlan::Distinct { .. } => format!("{indent}Distinct"),
         LogicalPlan::Insert { rootpage, .. } => {
             format!("{indent}Insert [{}]", schema.table_name(*rootpage))

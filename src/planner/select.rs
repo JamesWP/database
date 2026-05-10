@@ -13,7 +13,10 @@ use super::resolver::{
     extract_limit_value, extract_table_info, has_aggregate, is_aggregate_function,
     remap_column_indices, ColumnResolver, JoinResolver, SingleTableResolver,
 };
-use super::{schema, to_scan_index, AggregateExpr, LogicalPlan, PlanError, PlanExpr, SortKey};
+use super::{
+    schema, to_scan_index, AggregateExpr, BinaryOp, JoinStrategy, LogicalPlan, PlanError, PlanExpr,
+    SortKey,
+};
 
 pub(super) fn output_width(plan: &LogicalPlan) -> usize {
     match plan {
@@ -194,7 +197,7 @@ fn plan_select_from_subquery(
     });
 
     // Outer query: wrap Materialize in Filter if needed.
-    let base_plan = apply_filter(mat_plan, filter.as_ref(), &resolver)?;
+    let base_plan = apply_filter(mat_plan, filter.as_ref(), &resolver, catalog)?;
 
     // Build a minimal SelectStatement view for apply_project.
     // Pass order_by through so apply_order_by correctly extends the projection
@@ -303,7 +306,7 @@ fn plan_select_single(
         rootpage: table.rootpage,
         columns: scan_cols,
     };
-    let base_plan = apply_filter(scan, select.filter.as_ref(), &resolver)?;
+    let base_plan = apply_filter(scan, select.filter.as_ref(), &resolver, catalog)?;
 
     // 6. Build the rest of the plan using the shared body.
     // COUNT(*) and aggregation are only available on single-table queries.
@@ -388,7 +391,7 @@ fn plan_select_joined(
         strategy: crate::planner::JoinStrategy::NestedLoop,
         left_column_count: left_col_count,
     };
-    let base_plan = apply_filter(join_plan, select.filter.as_ref(), &resolver)?;
+    let base_plan = apply_filter(join_plan, select.filter.as_ref(), &resolver, catalog)?;
 
     // 6. Build the rest of the plan using the shared body.
     let wildcard_col_count = left_col_count + right_col_count;
@@ -478,15 +481,53 @@ fn apply_filter(
     plan: LogicalPlan,
     filter: Option<&ast::Expression>,
     resolver: &impl ColumnResolver,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
-    if let Some(expr) = filter {
-        Ok(LogicalPlan::Filter {
-            input: Box::new(plan),
-            predicate: convert_expr(expr, resolver)?,
-        })
-    } else {
-        Ok(plan)
+    let Some(expr) = filter else {
+        return Ok(plan);
+    };
+    // Top-level IN (subquery): convert to a semi-join.
+    if let ast::Expression::In {
+        expr: key_expr,
+        source: ast::InSource::Subquery(inner_stmt),
+        negated,
+    } = expr
+    {
+        return plan_in_subquery_semi_join(plan, key_expr, inner_stmt, *negated, resolver, catalog);
     }
+    Ok(LogicalPlan::Filter {
+        input: Box::new(plan),
+        predicate: convert_expr(expr, resolver)?,
+    })
+}
+
+/// Convert `WHERE key IN (SELECT ...)` / `WHERE key NOT IN (SELECT ...)` to a semi-join.
+fn plan_in_subquery_semi_join(
+    left: LogicalPlan,
+    key_expr: &ast::Expression,
+    inner_stmt: &ast::SelectStatement,
+    negated: bool,
+    resolver: &impl ColumnResolver,
+    catalog: &BTree,
+) -> Result<LogicalPlan, PlanError> {
+    let left_column_count = output_width(&left);
+    let key = convert_expr(key_expr, resolver)?;
+    let inner_plan = plan_select(inner_stmt.clone(), catalog)?;
+    let right_col_idx = left_column_count; // first right-side column in combined registers
+    let on_condition = PlanExpr::BinaryOp {
+        op: BinaryOp::Equals,
+        left: Box::new(key),
+        right: Box::new(PlanExpr::ColumnRef(right_col_idx)),
+    };
+    Ok(LogicalPlan::Join {
+        left: Box::new(left),
+        right: Box::new(LogicalPlan::Materialize {
+            input: Box::new(inner_plan),
+        }),
+        on_condition,
+        strategy: JoinStrategy::Semi { negated },
+        left_column_count,
+    })
 }
 
 /// Build the Aggregate + Project plan for GROUP BY / aggregate-function queries.
@@ -669,7 +710,7 @@ fn apply_order_by(
 #[cfg(test)]
 mod tests {
     use crate::frontend::{ast, parse};
-    use crate::planner::{plan, BinaryOp, Literal, LogicalPlan, PlanError, PlanExpr};
+    use crate::planner::{plan, BinaryOp, JoinStrategy, Literal, LogicalPlan, PlanError, PlanExpr};
     use crate::test::TestDb;
 
     /// Create a test database with a "users" table (id, name, age) registered in the catalog.
@@ -1218,6 +1259,72 @@ mod tests {
 
                 // ON condition should be a binary operation
                 assert!(matches!(on_condition, PlanExpr::BinaryOp { .. }));
+            } else {
+                panic!("Expected Join node");
+            }
+        } else {
+            panic!("Expected Project node");
+        }
+    }
+
+    // ========================================================================
+    // Semi-join Plan Tests (IN subquery)
+    // ========================================================================
+
+    fn make_two_table_db() -> (TestDb, u32, u32) {
+        let mut test = TestDb::default();
+        let users_root = test.btree.create_tree();
+        test.btree.insert_entry(
+            "table",
+            "users",
+            "users",
+            users_root,
+            "CREATE TABLE users (id INTEGER, name TEXT)",
+        );
+        let admins_root = test.btree.create_tree();
+        test.btree.insert_entry(
+            "table",
+            "admins",
+            "admins",
+            admins_root,
+            "CREATE TABLE admins (user_id INTEGER)",
+        );
+        (test, users_root, admins_root)
+    }
+
+    #[test]
+    fn plan_in_subquery_produces_semi_join() {
+        let (test, _, _) = make_two_table_db();
+        let stmt = parse_sql("SELECT name FROM users WHERE id IN (SELECT user_id FROM admins)");
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
+        // Expected: Project { Join[Semi] { Scan(users), Materialize(Scan(admins)) } }
+        if let LogicalPlan::Project { input, .. } = plan {
+            if let LogicalPlan::Join {
+                strategy,
+                right,
+                left_column_count,
+                ..
+            } = *input
+            {
+                assert_eq!(strategy, JoinStrategy::Semi { negated: false });
+                assert_eq!(left_column_count, 2, "users has 2 columns");
+                assert!(matches!(*right, LogicalPlan::Materialize { .. }));
+            } else {
+                panic!("Expected Join node, got something else");
+            }
+        } else {
+            panic!("Expected Project node");
+        }
+    }
+
+    #[test]
+    fn plan_not_in_subquery_produces_anti_semi_join() {
+        let (test, _, _) = make_two_table_db();
+        let stmt = parse_sql("SELECT name FROM users WHERE id NOT IN (SELECT user_id FROM admins)");
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
+        if let LogicalPlan::Project { input, .. } = plan {
+            if let LogicalPlan::Join { strategy, .. } = *input {
+                assert_eq!(strategy, JoinStrategy::Semi { negated: true });
             } else {
                 panic!("Expected Join node");
             }

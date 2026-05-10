@@ -1860,6 +1860,103 @@ pub fn codegen_join_nested_loop(
     }
 }
 
+/// Generate bytecode for a semi-join (IN / NOT IN subquery).
+///
+/// The right side must be a Materialize node. The buffer is filled during INIT.
+/// For each left row: rewind right buffer, iterate rows, exit on first match (semi)
+/// or on exhaustion without match (anti-semi). Only left columns are yielded.
+pub fn codegen_join_semi(
+    left: &LogicalPlan,
+    right: &LogicalPlan,
+    on_condition: &PlanExpr,
+    left_column_count: usize,
+    negated: bool,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // BODY entry point labels for the right Materialize block.
+    let left_on_tuple = ctx.body_emitter.create_label();
+    let right_on_tuple = ctx.body_emitter.create_label();
+    let right_done = ctx.body_emitter.create_label();
+
+    // --- Compile left first ---
+    let left_cont = NodeContinuation {
+        on_tuple: left_on_tuple,
+        on_done: cont.on_done,
+    };
+    let left_output = codegen(left, &left_cont, ctx);
+
+    // --- Compile right (Materialize) ---
+    // right_cont.on_tuple → RIGHT_ON_TUPLE, right_cont.on_done → RIGHT_DONE
+    let right_cont = NodeContinuation {
+        on_tuple: right_on_tuple,
+        on_done: right_done,
+    };
+    let right_output = codegen(right, &right_cont, ctx);
+    let right_reset = right_output
+        .reset
+        .expect("right of semi-join must be Materialize");
+
+    // --- Build combined registers for on_condition evaluation ---
+    let combined_regs: Vec<_> = left_output
+        .output_regs
+        .iter()
+        .copied()
+        .chain(right_output.output_regs.iter().copied())
+        .collect();
+
+    // LEFT_ON_TUPLE: rewind right buffer and start iterating
+    ctx.body_emitter.bind_here(left_on_tuple);
+    body!(ctx; GoTo(right_reset));
+
+    // RIGHT_ON_TUPLE: evaluate on_condition over combined registers
+    ctx.body_emitter.bind_here(right_on_tuple);
+    let match_reg = {
+        let mut expr_ctx = ExprContext {
+            emitter: &mut ctx.body_emitter,
+            registers: &mut ctx.registers,
+        };
+        compile_expr(on_condition, &combined_regs, &mut expr_ctx)
+    };
+
+    if !negated {
+        // Semi: match → yield left row; no match → next right row
+        body!(ctx;
+            GoToIfFalse(right_output.next, match_reg);  // no match → try next right
+            GoTo(cont.on_tuple)                         // match → yield
+        );
+    } else {
+        // Anti-semi: match found → skip this left row entirely
+        body!(ctx;
+            GoToIfFalse(right_output.next, match_reg);  // no match → try next right
+            GoTo(left_output.next)                      // match found → skip left row
+        );
+    }
+
+    // RIGHT_DONE: right buffer exhausted for this left row
+    ctx.body_emitter.bind_here(right_done);
+    if !negated {
+        // Semi: no match found → skip left row
+        body!(ctx; GoTo(left_output.next));
+    } else {
+        // Anti-semi: no match found → yield left row
+        body!(ctx; GoTo(cont.on_tuple));
+    }
+
+    // semi_next: parent requests next left row
+    let semi_next = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_here(semi_next);
+    body!(ctx; GoTo(left_output.next));
+
+    let _ = left_column_count; // used for documentation clarity
+
+    NodeOutput {
+        next: semi_next,
+        reset: None,
+        output_regs: left_output.output_regs,
+    }
+}
+
 /// Generate bytecode for a Delete node.
 ///
 /// Delete uses a two-phase collect-then-mutate pattern:
@@ -2130,6 +2227,15 @@ pub fn codegen(
             crate::planner::JoinStrategy::NestedLoop => {
                 codegen_join_nested_loop(left, right, on_condition, *left_column_count, cont, ctx)
             }
+            crate::planner::JoinStrategy::Semi { negated } => codegen_join_semi(
+                left,
+                right,
+                on_condition,
+                *left_column_count,
+                *negated,
+                cont,
+                ctx,
+            ),
         },
         LogicalPlan::IndexProbe {
             index_rootpage,

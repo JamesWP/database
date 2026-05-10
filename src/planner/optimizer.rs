@@ -258,6 +258,24 @@ pub(super) fn optimize(plan: LogicalPlan, catalog: &BTree) -> LogicalPlan {
                 }
             }
 
+            // Semi-joins are emitted by the planner as-is (already have Materialize on right).
+            if matches!(strategy, JoinStrategy::Semi { .. }) {
+                let right_materialized = if matches!(opt_right, LogicalPlan::Materialize { .. }) {
+                    opt_right
+                } else {
+                    LogicalPlan::Materialize {
+                        input: Box::new(opt_right),
+                    }
+                };
+                return LogicalPlan::Join {
+                    left: Box::new(opt_left),
+                    right: Box::new(right_materialized),
+                    on_condition,
+                    strategy,
+                    left_column_count,
+                };
+            }
+
             // No index available (or strategy is already Hash): promote to Hash.
             // Wrap right side in Materialize so the join body can start at the left scan
             // and use right_output.reset per left row (fill happens in init section).
