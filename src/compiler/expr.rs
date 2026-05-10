@@ -26,6 +26,11 @@ pub fn compile_expr(expr: &PlanExpr, input_regs: &[Reg], ctx: &mut ExprContext) 
         }
         PlanExpr::UnaryOp { op, operand } => compile_unary_op(op, operand, input_regs, ctx),
         PlanExpr::FunctionCall { name, args } => compile_function_call(name, args, input_regs, ctx),
+        PlanExpr::In {
+            expr,
+            values,
+            negated,
+        } => compile_in_list(expr, values, *negated, input_regs, ctx),
     }
 }
 
@@ -120,6 +125,53 @@ fn compile_unary_op(
 
     ctx.emitter.emit(operation);
     dest
+}
+
+/// Compile `expr IN (v1, v2, ...)` by desugaring to an OR-equality chain.
+/// For empty value lists: IN → false, NOT IN → true.
+/// For `NOT IN`, negates the final result.
+fn compile_in_list(
+    expr: &PlanExpr,
+    values: &[PlanExpr],
+    negated: bool,
+    input_regs: &[Reg],
+    ctx: &mut ExprContext,
+) -> Reg {
+    if values.is_empty() {
+        let dest = ctx.registers.alloc();
+        ctx.emitter.emit(Operation::StoreValue(
+            dest,
+            ScalarValue::Boolean(negated), // IN () → false, NOT IN () → true
+        ));
+        return dest;
+    }
+
+    let expr_reg = compile_expr(expr, input_regs, ctx);
+
+    // Build OR-equality chain: (expr=v1) OR (expr=v2) OR ...
+    // acc holds the running boolean result.
+    let first_val = compile_expr(&values[0], input_regs, ctx);
+    let mut acc = ctx.registers.alloc();
+    ctx.emitter
+        .emit(Operation::EqualsValue(acc, expr_reg, first_val));
+
+    for val in &values[1..] {
+        let val_reg = compile_expr(val, input_regs, ctx);
+        let eq_reg = ctx.registers.alloc();
+        ctx.emitter
+            .emit(Operation::EqualsValue(eq_reg, expr_reg, val_reg));
+        let or_reg = ctx.registers.alloc();
+        ctx.emitter.emit(Operation::OrValue(or_reg, acc, eq_reg));
+        acc = or_reg;
+    }
+
+    if negated {
+        let not_reg = ctx.registers.alloc();
+        ctx.emitter.emit(Operation::NotValue(not_reg, acc));
+        not_reg
+    } else {
+        acc
+    }
 }
 
 fn compile_function_call(

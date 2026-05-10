@@ -180,6 +180,20 @@ pub(super) fn convert_expr(
                 args: plan_args?,
             })
         }
+        ast::Expression::In {
+            expr,
+            source: ast::InSource::Values(vals),
+            negated,
+        } => {
+            let plan_expr = convert_expr(expr, resolver)?;
+            let plan_values: Result<Vec<_>, _> =
+                vals.iter().map(|v| convert_expr(v, resolver)).collect();
+            Ok(PlanExpr::In {
+                expr: Box::new(plan_expr),
+                values: plan_values?,
+                negated: *negated,
+            })
+        }
         ast::Expression::In { .. } => Err(PlanError::UnsupportedStatement),
         ast::Expression::ScalarSubquery(_) => Err(PlanError::UnsupportedStatement),
     }
@@ -574,6 +588,21 @@ pub(super) fn remap_column_indices(
                 args: remapped_args,
             })
         }
+        PlanExpr::In {
+            expr,
+            values,
+            negated,
+        } => {
+            let remapped_values = values
+                .iter()
+                .map(|v| remap_column_indices(v, index_map))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PlanExpr::In {
+                expr: Box::new(remap_column_indices(expr, index_map)?),
+                values: remapped_values,
+                negated: *negated,
+            })
+        }
     }
 }
 
@@ -648,6 +677,7 @@ pub(super) fn eval_constant(expr: &PlanExpr) -> Result<Literal, PlanError> {
         }
         PlanExpr::ColumnRef(_) => Err(PlanError::UnsupportedStatement),
         PlanExpr::FunctionCall { .. } => Err(PlanError::UnsupportedStatement),
+        PlanExpr::In { .. } => Err(PlanError::UnsupportedStatement),
     }
 }
 

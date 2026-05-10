@@ -1614,14 +1614,17 @@ pub fn codegen_materialize(
 
     // Bind collect_row: append row to buffer and request next child row.
     ctx.init_emitter.bind_here(collect_row_in_init);
-    ctx.init_emitter
-        .emit(Operation::AppendToRowBuffer(buffer_reg, child_output.output_regs.clone()));
+    ctx.init_emitter.emit(Operation::AppendToRowBuffer(
+        buffer_reg,
+        child_output.output_regs.clone(),
+    ));
     ctx.init_emitter
         .emit(Operation::GoTo(JumpTarget::Unresolved(child_next_in_init)));
 
     // Bind fill_done: rewind buffer so the yield loop starts from the first row.
     ctx.init_emitter.bind_here(fill_done_in_init);
-    ctx.init_emitter.emit(Operation::RewindRowBuffer(buffer_reg));
+    ctx.init_emitter
+        .emit(Operation::RewindRowBuffer(buffer_reg));
     // finalize() will append GoTo(body_start) here automatically.
 
     // Body: yield loop only (fill is complete by the time body starts).
@@ -1710,8 +1713,8 @@ pub fn codegen_join(
     // Materialize fills the buffer in init and provides reset + next for per-row iteration.
     let inner_check = ctx.body_emitter.create_label();
     let right_cont = NodeContinuation {
-        on_tuple: inner_check,         // after reset: yield right row here
-        on_done: left_output.next,     // right buffer exhausted → advance left
+        on_tuple: inner_check,     // after reset: yield right row here
+        on_done: left_output.next, // right buffer exhausted → advance left
     };
     let right_output = codegen(right, &right_cont, ctx);
     let right_reset = right_output

@@ -423,6 +423,19 @@ pub fn format_expr_with_names(expr: &PlanExpr, col_names: &[String]) -> String {
                 .collect();
             format!("{name}({})", a.join(", "))
         }
+        PlanExpr::In {
+            expr,
+            values,
+            negated,
+        } => {
+            let e = format_expr_with_names(expr, col_names);
+            let vs: Vec<_> = values
+                .iter()
+                .map(|v| format_expr_with_names(v, col_names))
+                .collect();
+            let keyword = if *negated { "NOT IN" } else { "IN" };
+            format!("{e} {keyword} ({})", vs.join(", "))
+        }
     }
 }
 
