@@ -407,7 +407,7 @@ EXPLAIN SELECT name FROM (SELECT id, name FROM users) AS u
 -- > 2, "    Scan users [cols: id, name]"
 ```
 
-### Implementation Steps (3 commits)
+### Implementation Steps (4 commits)
 
 #### Step 104.1 — Planner: `LogicalPlan::Materialize`; update EXPLAIN; stub compiler arm
 
@@ -430,6 +430,48 @@ Implement `codegen_materialize` with fill in the init section and yield loop in 
 section. Set `reset: Some(reset_label)` in `NodeOutput`. Add `tests/sql/subquery_from.sql`.
 
 **Commit:** `Compiler: codegen_materialize — fill in init section, yield loop in body`
+
+#### Step 104.4 — Refactor: `codegen_join` (Hash) uses `Materialize` as right child
+
+This step validates the fill-in-init + reset contract on a well-tested code path before
+the semi-join depends on it.
+
+The planner wraps the right side of every `JoinStrategy::Hash` plan in
+`Materialize { input: right }`. `codegen_join` is updated to:
+
+- Compile **left first, right second** (body starts at left scan, not the fill loop)
+- Drop the inline `InitRowBuffer` / `AppendToRowBuffer` / `GoTo` fill phase — Materialize
+  handles this in the init section
+- Call `right_output.reset` on `LEFT_ON_TUPLE` instead of emitting `RewindRowBuffer`
+  directly
+- Use `right_output.next` to advance through right rows as before
+- Set `right_cont.on_done` to `left_output.next` (right buffer exhausted → get next left
+  row)
+
+No behaviour change. All existing hash join SQL tests pass unchanged. EXPLAIN gains a
+`Materialize` child under each `Join [Hash]`, which is more accurate (the right side is
+now visibly buffered in the plan tree).
+
+```
+// Before (104.3):
+EXPLAIN SELECT ...
+  0, "Join [Hash] on ..."
+  1, "  Scan left"
+  2, "  Scan right"
+
+// After (104.4):
+EXPLAIN SELECT ...
+  0, "Join [Hash] on ..."
+  1, "  Scan left"
+  2, "  Materialize"
+  3, "    Scan right"
+```
+
+Key files: `src/planner/select.rs` (or wherever Hash join plans are built) — wrap right in
+`Materialize`; `src/compiler/nodes.rs` — simplify `codegen_join`, remove inline fill loop,
+use `right_output.reset`.
+
+**Commit:** `Compiler: codegen_join — right side via Materialize node and reset`
 
 ---
 
