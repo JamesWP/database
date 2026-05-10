@@ -180,6 +180,8 @@ pub(super) fn convert_expr(
                 args: plan_args?,
             })
         }
+        ast::Expression::In { .. } => Err(PlanError::UnsupportedStatement),
+        ast::Expression::ScalarSubquery(_) => Err(PlanError::UnsupportedStatement),
     }
 }
 
@@ -396,6 +398,9 @@ pub(super) fn convert_having_expr(
             _ => convert_scalar(scalar, resolver),
         },
         ast::Expression::FunctionCall { name, .. } => Err(PlanError::UnknownFunction(name.clone())),
+        ast::Expression::In { .. } | ast::Expression::ScalarSubquery(_) => {
+            Err(PlanError::UnsupportedStatement)
+        }
     }
 }
 
@@ -419,6 +424,8 @@ pub(super) fn collect_columns(expr: &ast::Expression, columns: &mut HashSet<Stri
                 collect_columns(arg, columns);
             }
         }
+        ast::Expression::In { expr, .. } => collect_columns(expr, columns),
+        ast::Expression::ScalarSubquery(_) => {}
     }
 }
 
@@ -431,6 +438,8 @@ pub(super) fn expr_uses_rowid(expr: &ast::Expression) -> bool {
         ast::Expression::BinaryOp { lhs, rhs, .. } => expr_uses_rowid(lhs) || expr_uses_rowid(rhs),
         ast::Expression::UnaryOp { expression, .. } => expr_uses_rowid(expression),
         ast::Expression::Value(_) => false,
+        ast::Expression::In { expr, .. } => expr_uses_rowid(expr),
+        ast::Expression::ScalarSubquery(_) => false,
     }
 }
 

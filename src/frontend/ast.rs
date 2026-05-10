@@ -179,6 +179,12 @@ pub enum BinaryOp {
 }
 
 #[derive(Debug)]
+pub enum InSource {
+    Values(Vec<Expression>),
+    Subquery(Box<SelectStatement>),
+}
+
+#[derive(Debug)]
 pub enum Expression {
     UnaryOp {
         op: UnaryOp,
@@ -194,6 +200,12 @@ pub enum Expression {
         args: Vec<Expression>,
     },
     Value(ScalarValue),
+    In {
+        expr: Box<Expression>,
+        source: InSource,
+        negated: bool,
+    },
+    ScalarSubquery(Box<SelectStatement>),
 }
 
 #[derive(Debug)]
@@ -258,6 +270,8 @@ impl Expression {
                 }
                 refs
             }
+            Expression::In { expr, .. } => expr.get_column_references(),
+            Expression::ScalarSubquery(_) => vec![],
         }
     }
 }
