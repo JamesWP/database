@@ -89,6 +89,7 @@ pub enum Type {
     Key,
     Unique,
     Default,
+    In,
 
     #[allow(dead_code)]
     Error(Error),
@@ -530,7 +531,7 @@ impl<'a> Lexer<'a> {
                     },
                     b'n' => self.match_keyword("inner", Type::Inner),
                     b'd' => self.match_keyword("index", Type::Index),
-                    _ => self.make_identifier(),
+                    _ => self.match_keyword("in", Type::In),
                 },
                 b's' => self.match_keyword("is", Type::Is),
                 _ => self.make_identifier(),
@@ -834,6 +835,16 @@ mod test {
             matches!(tokens[0].tipe(), super::Type::IntegerNumber(42)),
             "Expected integer 42, got {:?}",
             tokens[0].tipe()
+        );
+    }
+
+    #[test]
+    fn test_in_keyword() {
+        let tokens = lex("id IN (1, 2, 3)");
+        assert!(
+            matches!(tokens[1].tipe(), super::Type::In),
+            "Expected Type::In, got {:?}",
+            tokens[1].tipe()
         );
     }
 }

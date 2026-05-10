@@ -37,6 +37,16 @@ impl ParserInput {
     pub fn peek(&mut self) -> lexer::Type {
         self.tokens[self.curent].tipe()
     }
+
+    pub fn peek_next(&self) -> lexer::Type {
+        let next = self.curent + 1;
+        if next < self.tokens.len() {
+            self.tokens[next].tipe()
+        } else {
+            lexer::Type::Eof
+        }
+    }
+
     pub fn advance(&mut self) -> &lexer::Token {
         if !self.is_at_end() {
             self.curent += 1;
@@ -988,6 +998,37 @@ impl Parser {
             }
         }
 
+        // Check for [NOT] IN (...)
+        let negated = if matches!(self.input.peek(), lexer::Type::Not)
+            && matches!(self.input.peek_next(), lexer::Type::In)
+        {
+            self.input.advance(); // consume NOT
+            true
+        } else {
+            false
+        };
+        if negated || matches!(self.input.peek(), lexer::Type::In) {
+            self.input.advance(); // consume IN
+            self.input.expect(Expect::LeftParen)?;
+            let source = if matches!(self.input.peek(), lexer::Type::Select) {
+                let subquery = self.parse_select_statement()?;
+                ast::InSource::Subquery(Box::new(subquery))
+            } else {
+                let mut values = vec![self.parse_expression()?];
+                while matches!(self.input.peek(), lexer::Type::Comma) {
+                    self.input.advance(); // consume ','
+                    values.push(self.parse_expression()?);
+                }
+                ast::InSource::Values(values)
+            };
+            self.input.expect(Expect::RightParen)?;
+            expr = ast::Expression::In {
+                expr: Box::new(expr),
+                source,
+                negated,
+            };
+        }
+
         Ok(expr)
     }
 
@@ -1180,10 +1221,15 @@ impl Parser {
             }
             lexer::Type::LeftParen => {
                 self.input.advance();
-                let expr = self.parse_expression()?;
-                self.input.expect(Expect::RightParen)?;
-
-                Ok(expr)
+                if matches!(self.input.peek(), lexer::Type::Select) {
+                    let stmt = self.parse_select_statement()?;
+                    self.input.expect(Expect::RightParen)?;
+                    Ok(ast::Expression::ScalarSubquery(Box::new(stmt)))
+                } else {
+                    let expr = self.parse_expression()?;
+                    self.input.expect(Expect::RightParen)?;
+                    Ok(expr)
+                }
             }
             t => Err(ParseError::UnexpectedToken(Expect::PrimaryExpression, t)),
         }
@@ -1764,5 +1810,55 @@ mod test {
             }
             _ => panic!("Expected UnaryOp::Not"),
         }
+    }
+
+    #[test]
+    fn parse_in_literal_list() {
+        let stmt = parse("SELECT id FROM users WHERE id IN (1, 2, 3)").unwrap();
+        let ast::Statement::Select(sel) = stmt else { panic!() };
+        let filter = sel.filter.unwrap();
+        match filter {
+            ast::Expression::In { expr, source: ast::InSource::Values(vals), negated: false } => {
+                assert!(matches!(*expr, ast::Expression::Value(ast::ScalarValue::Identifier(_))));
+                assert_eq!(vals.len(), 3);
+            }
+            _ => panic!("Expected Expression::In with Values"),
+        }
+    }
+
+    #[test]
+    fn parse_not_in_literal_list() {
+        let stmt = parse("SELECT id FROM users WHERE id NOT IN (10, 20)").unwrap();
+        let ast::Statement::Select(sel) = stmt else { panic!() };
+        let filter = sel.filter.unwrap();
+        match filter {
+            ast::Expression::In { negated: true, source: ast::InSource::Values(vals), .. } => {
+                assert_eq!(vals.len(), 2);
+            }
+            _ => panic!("Expected negated Expression::In"),
+        }
+    }
+
+    #[test]
+    fn parse_in_subquery() {
+        let stmt = parse("SELECT id FROM users WHERE id IN (SELECT user_id FROM admins)").unwrap();
+        let ast::Statement::Select(sel) = stmt else { panic!() };
+        let filter = sel.filter.unwrap();
+        assert!(matches!(
+            filter,
+            ast::Expression::In { source: ast::InSource::Subquery(_), negated: false, .. }
+        ));
+    }
+
+    #[test]
+    fn parse_scalar_subquery_in_select() {
+        let stmt = parse("SELECT (SELECT COUNT(*) FROM orders), name FROM users").unwrap();
+        let ast::Statement::Select(sel) = stmt else { panic!() };
+        let first_col = &sel.columns[0];
+        let expr = match first_col {
+            ast::ColumnExpression::Anonyomous(e) => e.as_ref(),
+            _ => panic!("Expected anonymous column"),
+        };
+        assert!(matches!(expr, ast::Expression::ScalarSubquery(_)));
     }
 }
