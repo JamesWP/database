@@ -39,6 +39,7 @@ pub(super) fn output_width(plan: &LogicalPlan) -> usize {
 enum SelectResolver<'a> {
     Single(SingleTableResolver<'a>),
     Join(JoinResolver<'a>),
+    Materialize(MaterializeResolver<'a>),
 }
 
 impl ColumnResolver for SelectResolver<'_> {
@@ -46,6 +47,7 @@ impl ColumnResolver for SelectResolver<'_> {
         match self {
             Self::Single(r) => r.resolve_identifier(name),
             Self::Join(r) => r.resolve_identifier(name),
+            Self::Materialize(r) => r.resolve_identifier(name),
         }
     }
 
@@ -53,14 +55,41 @@ impl ColumnResolver for SelectResolver<'_> {
         match self {
             Self::Single(r) => r.resolve_qualified(table, column),
             Self::Join(r) => r.resolve_qualified(table, column),
+            Self::Materialize(r) => r.resolve_qualified(table, column),
         }
     }
 
     fn resolve_rowid(&self) -> Option<usize> {
         match self {
             Self::Single(r) => r.resolve_rowid(),
-            Self::Join(_) => None, // rowid() in joins is out of scope (TODO phase-bk)
+            Self::Join(_) => None,
+            Self::Materialize(_) => None,
         }
+    }
+}
+
+/// Resolver for queries where the FROM clause is a materialized subquery.
+struct MaterializeResolver<'a> {
+    alias: &'a str,
+    columns: &'a [String],
+}
+
+impl ColumnResolver for MaterializeResolver<'_> {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError> {
+        self.columns
+            .iter()
+            .position(|c| c.eq_ignore_ascii_case(name))
+            .ok_or_else(|| PlanError::ColumnNotFound {
+                table: self.alias.to_string(),
+                column: name.to_string(),
+            })
+    }
+
+    fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError> {
+        if !table.eq_ignore_ascii_case(self.alias) {
+            return Err(PlanError::TableNotFound(table.to_string()));
+        }
+        self.resolve_identifier(column)
     }
 }
 
@@ -68,11 +97,142 @@ pub(crate) fn plan_select(
     select: ast::SelectStatement,
     catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
-    if select.joins.is_empty() {
+    if is_from_subquery(&select.from) {
+        plan_select_from_subquery(select, catalog)
+    } else if select.joins.is_empty() {
         plan_select_single(select, catalog)
     } else {
         plan_select_joined(select, catalog)
     }
+}
+
+fn is_from_subquery(from: &ast::NamedTupleSource) -> bool {
+    match from {
+        ast::NamedTupleSource::Named { source, .. }
+        | ast::NamedTupleSource::Anonyomous(source) => {
+            matches!(source, ast::TupleSource::Subquery(_))
+        }
+    }
+}
+
+/// Extract the alias and subquery from a FROM subquery source.
+fn from_subquery_parts(
+    from: ast::NamedTupleSource,
+) -> (String, ast::SelectStatement) {
+    match from {
+        ast::NamedTupleSource::Named { alias, source } => {
+            let ast::TupleSource::Subquery(inner) = source else { unreachable!() };
+            (alias, *inner)
+        }
+        ast::NamedTupleSource::Anonyomous(source) => {
+            let ast::TupleSource::Subquery(inner) = source else { unreachable!() };
+            ("subquery".to_string(), *inner)
+        }
+    }
+}
+
+/// Derive the output column names from a SELECT statement's column list.
+fn select_output_names(select: &ast::SelectStatement) -> Vec<String> {
+    select
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, col)| match col {
+            ast::ColumnExpression::Named { name, .. } => name.clone(),
+            ast::ColumnExpression::Anonyomous(expr) => match expr.as_ref() {
+                ast::Expression::Value(ast::ScalarValue::Identifier(name)) => name.clone(),
+                ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(_, name)) => {
+                    name.clone()
+                }
+                _ => format!("col{i}"),
+            },
+            ast::ColumnExpression::Wildcard => format!("col{i}"),
+        })
+        .collect()
+}
+
+/// Plan a SELECT where the FROM clause is a subquery: `SELECT ... FROM (SELECT ...) AS alias`.
+fn plan_select_from_subquery(
+    select: ast::SelectStatement,
+    catalog: &BTree,
+) -> Result<LogicalPlan, PlanError> {
+    if !select.joins.is_empty() {
+        return Err(PlanError::UnsupportedStatement);
+    }
+
+    // Destructure select so we can move `from` while borrowing the rest.
+    let ast::SelectStatement {
+        from,
+        columns: col_exprs,
+        filter,
+        order_by,
+        limit,
+        group_by: _,
+        having: _,
+        distinct: _,
+        joins: _,
+    } = select;
+
+    let (alias, inner_stmt) = from_subquery_parts(from);
+
+    // Derive column names from the inner SELECT before planning it.
+    let col_names = select_output_names(&inner_stmt);
+    let col_count = col_names.len();
+
+    // Plan the inner query recursively.
+    let inner_plan = plan_select(inner_stmt, catalog)?;
+    let mat_plan = LogicalPlan::Materialize {
+        input: Box::new(inner_plan),
+    };
+
+    // Build resolver for the outer query's expressions.
+    let resolver = SelectResolver::Materialize(MaterializeResolver {
+        alias: &alias,
+        columns: &col_names,
+    });
+
+    // Outer query: wrap Materialize in Filter if needed.
+    let base_plan = apply_filter(mat_plan, filter.as_ref(), &resolver)?;
+
+    // Build a minimal SelectStatement view for apply_project.
+    let fake_select = ast::SelectStatement {
+        distinct: false,
+        columns: col_exprs,
+        from: ast::NamedTupleSource::Anonyomous(ast::TupleSource::Table("_".into())),
+        joins: vec![],
+        filter: None,
+        limit: None,
+        order_by: None,
+        group_by: None,
+        having: None,
+    };
+    let mut plan = apply_project(base_plan, &fake_select, col_count, &resolver)?;
+
+    if let Some(ref order_by_clauses) = order_by {
+        let sort_keys: Vec<super::SortKey> = order_by_clauses
+            .iter()
+            .map(|clause| {
+                convert_expr(&clause.expression, &resolver).map(|expr| super::SortKey {
+                    expr,
+                    descending: clause.direction == ast::OrderDirection::Desc,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        plan = LogicalPlan::Sort {
+            input: Box::new(plan),
+            sort_keys,
+        };
+    }
+
+    if let Some(ref limit_expr) = limit {
+        let count = extract_limit_value(limit_expr)?;
+        plan = LogicalPlan::Limit {
+            input: Box::new(plan),
+            count,
+        };
+    }
+
+    Ok(plan)
 }
 
 /// Plan a SELECT with no joins (single-table path).
@@ -1493,6 +1653,22 @@ mod tests {
             ],
         };
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn plan_from_subquery_produces_materialize_node() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("SELECT name FROM (SELECT id, name FROM users) AS u");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        // Expected: Project(Materialize(...))
+        let LogicalPlan::Project { input, .. } = result else {
+            panic!("Expected Project at top level");
+        };
+        assert!(
+            matches!(input.as_ref(), LogicalPlan::Materialize { .. }),
+            "Expected Materialize as Project input, got: {input:?}"
+        );
     }
 
     /// rowid() only (no other columns): scan just reads the key.
