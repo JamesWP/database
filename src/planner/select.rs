@@ -29,7 +29,8 @@ pub(super) fn output_width(plan: &LogicalPlan) -> usize {
         | LogicalPlan::Limit { input, .. }
         | LogicalPlan::Distinct { input, .. }
         | LogicalPlan::Filter { input, .. }
-        | LogicalPlan::RowidLookup { input, .. } => output_width(input),
+        | LogicalPlan::RowidLookup { input, .. }
+        | LogicalPlan::Materialize { input } => output_width(input),
         LogicalPlan::Scan { columns, .. } => columns.len(),
         _ => 0,
     }
@@ -108,24 +109,25 @@ pub(crate) fn plan_select(
 
 fn is_from_subquery(from: &ast::NamedTupleSource) -> bool {
     match from {
-        ast::NamedTupleSource::Named { source, .. }
-        | ast::NamedTupleSource::Anonyomous(source) => {
+        ast::NamedTupleSource::Named { source, .. } | ast::NamedTupleSource::Anonyomous(source) => {
             matches!(source, ast::TupleSource::Subquery(_))
         }
     }
 }
 
 /// Extract the alias and subquery from a FROM subquery source.
-fn from_subquery_parts(
-    from: ast::NamedTupleSource,
-) -> (String, ast::SelectStatement) {
+fn from_subquery_parts(from: ast::NamedTupleSource) -> (String, ast::SelectStatement) {
     match from {
         ast::NamedTupleSource::Named { alias, source } => {
-            let ast::TupleSource::Subquery(inner) = source else { unreachable!() };
+            let ast::TupleSource::Subquery(inner) = source else {
+                unreachable!()
+            };
             (alias, *inner)
         }
         ast::NamedTupleSource::Anonyomous(source) => {
-            let ast::TupleSource::Subquery(inner) = source else { unreachable!() };
+            let ast::TupleSource::Subquery(inner) = source else {
+                unreachable!()
+            };
             ("subquery".to_string(), *inner)
         }
     }
@@ -195,6 +197,8 @@ fn plan_select_from_subquery(
     let base_plan = apply_filter(mat_plan, filter.as_ref(), &resolver)?;
 
     // Build a minimal SelectStatement view for apply_project.
+    // Pass order_by through so apply_order_by correctly extends the projection
+    // before wrapping with Sort (sort keys index into the pre-projection columns).
     let fake_select = ast::SelectStatement {
         distinct: false,
         columns: col_exprs,
@@ -202,27 +206,11 @@ fn plan_select_from_subquery(
         joins: vec![],
         filter: None,
         limit: None,
-        order_by: None,
+        order_by,
         group_by: None,
         having: None,
     };
     let mut plan = apply_project(base_plan, &fake_select, col_count, &resolver)?;
-
-    if let Some(ref order_by_clauses) = order_by {
-        let sort_keys: Vec<super::SortKey> = order_by_clauses
-            .iter()
-            .map(|clause| {
-                convert_expr(&clause.expression, &resolver).map(|expr| super::SortKey {
-                    expr,
-                    descending: clause.direction == ast::OrderDirection::Desc,
-                })
-            })
-            .collect::<Result<_, _>>()?;
-        plan = LogicalPlan::Sort {
-            input: Box::new(plan),
-            sort_keys,
-        };
-    }
 
     if let Some(ref limit_expr) = limit {
         let count = extract_limit_value(limit_expr)?;

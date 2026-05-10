@@ -60,6 +60,9 @@ pub(super) fn fuse_projects(plan: LogicalPlan) -> LogicalPlan {
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
             input: Box::new(fuse_projects(*input)),
         },
+        LogicalPlan::Materialize { input } => LogicalPlan::Materialize {
+            input: Box::new(fuse_projects(*input)),
+        },
         LogicalPlan::RowidLookup {
             input,
             table_rootpage,
@@ -194,6 +197,9 @@ pub(super) fn optimize(plan: LogicalPlan, catalog: &BTree) -> LogicalPlan {
             having,
         },
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
+            input: Box::new(optimize(*input, catalog)),
+        },
+        LogicalPlan::Materialize { input } => LogicalPlan::Materialize {
             input: Box::new(optimize(*input, catalog)),
         },
         // Rule 3: RowidLookup(IndexScan) → covering IndexScan when all requested
