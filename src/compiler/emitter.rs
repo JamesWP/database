@@ -194,6 +194,52 @@ impl BytecodeEmitter {
     pub fn finalize(self) -> Vec<Operation> {
         self.finalize_with_offset(0)
     }
+
+    /// Absorb `other` into `self`: append all of `other`'s operations and labels, remapping
+    /// `other`'s label IDs by adding `self.label_positions.len()` (computed before merging).
+    ///
+    /// All `JumpTarget::Unresolved(Label(id))` in `other`'s operations become
+    /// `JumpTarget::Unresolved(Label(id + label_id_offset))` in `self`.
+    ///
+    /// Returns the label ID offset used (= `self.label_positions.len()` before the merge),
+    /// so the caller can remap `Label` values from `other`'s namespace to `self`'s namespace.
+    pub fn absorb(&mut self, other: BytecodeEmitter) -> usize {
+        let label_id_offset = self.label_positions.len();
+        let op_offset = self.operations.len();
+
+        // Extend label_positions, adjusting positions to account for appended ops.
+        for pos_opt in other.label_positions {
+            self.label_positions
+                .push(pos_opt.map(|pos| pos + op_offset));
+        }
+        self.next_label_id += other.next_label_id;
+
+        // Remap jump targets and append operations.
+        for mut op in other.operations {
+            remap_jump_labels(&mut op, label_id_offset);
+            self.operations.push(op);
+        }
+
+        label_id_offset
+    }
+}
+
+/// Remap all unresolved label IDs in an operation by adding `label_id_offset`.
+/// Used by `BytecodeEmitter::absorb` to merge one emitter's namespace into another's.
+fn remap_jump_labels(op: &mut Operation, label_id_offset: usize) {
+    fn remap(target: &mut JumpTarget, offset: usize) {
+        if let JumpTarget::Unresolved(Label(ref mut id)) = target {
+            *id += offset;
+        }
+    }
+    match op {
+        Operation::GoTo(ref mut t) => remap(t, label_id_offset),
+        Operation::GoToIfFalse(ref mut t, _) => remap(t, label_id_offset),
+        Operation::GoToIfEqualValue(ref mut t, _, _) => remap(t, label_id_offset),
+        Operation::NextFromRowBuffer(_, _, ref mut t) => remap(t, label_id_offset),
+        Operation::YieldFromGroupTable(_, _, ref mut t) => remap(t, label_id_offset),
+        _ => {}
+    }
 }
 
 /// Resolve a JumpTarget, converting Unresolved to Resolved with an offset added.

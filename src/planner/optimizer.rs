@@ -259,9 +259,18 @@ pub(super) fn optimize(plan: LogicalPlan, catalog: &BTree) -> LogicalPlan {
             }
 
             // No index available (or strategy is already Hash): promote to Hash.
+            // Wrap right side in Materialize so the join body can start at the left scan
+            // and use right_output.reset per left row (fill happens in init section).
+            let right_materialized = if matches!(opt_right, LogicalPlan::Materialize { .. }) {
+                opt_right // already wrapped
+            } else {
+                LogicalPlan::Materialize {
+                    input: Box::new(opt_right),
+                }
+            };
             LogicalPlan::Join {
                 left: Box::new(opt_left),
-                right: Box::new(opt_right),
+                right: Box::new(right_materialized),
                 on_condition,
                 strategy: JoinStrategy::Hash,
                 left_column_count,

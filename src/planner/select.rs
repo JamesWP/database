@@ -1213,8 +1213,8 @@ mod tests {
                 // Left should be Scan of employees
                 assert!(matches!(*left, LogicalPlan::Scan { .. }));
 
-                // Right should be Scan of departments
-                assert!(matches!(*right, LogicalPlan::Scan { .. }));
+                // Right should be Materialize(Scan) — optimizer wraps Hash join right in Materialize
+                assert!(matches!(*right, LogicalPlan::Materialize { .. }));
 
                 // ON condition should be a binary operation
                 assert!(matches!(on_condition, PlanExpr::BinaryOp { .. }));
