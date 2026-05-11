@@ -74,7 +74,7 @@ impl std::fmt::Display for ExecuteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExecuteError::Parse(e) => write!(f, "Parse error: {:?}", e),
-            ExecuteError::Plan(e) => write!(f, "Planning error: {:?}", e),
+            ExecuteError::Plan(e) => write!(f, "Planning error: {}", e),
             ExecuteError::TableAlreadyExists(name) => {
                 write!(f, "Table '{}' already exists", name)
             }

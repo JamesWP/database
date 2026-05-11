@@ -444,6 +444,7 @@ pub fn format_expr_with_names(expr: &PlanExpr, col_names: &[String]) -> String {
             let keyword = if *negated { "NOT IN" } else { "IN" };
             format!("{e} {keyword} ({})", vs.join(", "))
         }
+        PlanExpr::ScalarSubquery { .. } => "(ScalarSubquery)".to_string(),
     }
 }
 

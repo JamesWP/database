@@ -91,6 +91,122 @@ pub struct NodeOutput {
     pub output_regs: Vec<Reg>,
 }
 
+/// Compile a `PlanExpr` in a full codegen context, handling `ScalarSubquery` at any depth.
+///
+/// Recursively handles `BinaryOp`/`UnaryOp` sub-expressions so that a `ScalarSubquery`
+/// nested inside (e.g. `id = (SELECT MAX(...))`) is correctly emitted to init.
+/// All non-structural variants delegate to `compile_expr` via the body emitter.
+pub fn compile_plan_expr(expr: &PlanExpr, input_regs: &[Reg], ctx: &mut CodegenContext) -> Reg {
+    use crate::engine::program::Operation;
+    use crate::planner::{BinaryOp as PBinaryOp, UnaryOp as PUnaryOp};
+
+    match expr {
+        PlanExpr::ScalarSubquery { plan } => codegen_scalar_subquery_expr(plan, ctx),
+        PlanExpr::BinaryOp { op, left, right } => {
+            let left_reg = compile_plan_expr(left, input_regs, ctx);
+            let right_reg = compile_plan_expr(right, input_regs, ctx);
+            let dest = ctx.registers.alloc();
+            let operation = match op {
+                PBinaryOp::Add => Operation::AddValue(dest, left_reg, right_reg),
+                PBinaryOp::Subtract => Operation::SubtractValue(dest, left_reg, right_reg),
+                PBinaryOp::Multiply => Operation::MultiplyValue(dest, left_reg, right_reg),
+                PBinaryOp::Divide => Operation::DivideValue(dest, left_reg, right_reg),
+                PBinaryOp::Remainder => Operation::RemainderValue(dest, left_reg, right_reg),
+                PBinaryOp::Equals => Operation::EqualsValue(dest, left_reg, right_reg),
+                PBinaryOp::NotEquals => Operation::NotEqualsValue(dest, left_reg, right_reg),
+                PBinaryOp::GreaterThan => Operation::GreaterThanValue(dest, left_reg, right_reg),
+                PBinaryOp::GreaterThanOrEqual => {
+                    Operation::GreaterThanOrEqualValue(dest, left_reg, right_reg)
+                }
+                PBinaryOp::LessThan => Operation::LessThanValue(dest, left_reg, right_reg),
+                PBinaryOp::LessThanOrEqual => {
+                    Operation::LessThanOrEqualValue(dest, left_reg, right_reg)
+                }
+                PBinaryOp::Like => Operation::LikeValue(dest, left_reg, right_reg),
+                PBinaryOp::And => Operation::AndValue(dest, left_reg, right_reg),
+                PBinaryOp::Or => Operation::OrValue(dest, left_reg, right_reg),
+                _ => panic!("Unsupported binary op in compile_plan_expr"),
+            };
+            ctx.body_emitter.emit(operation);
+            dest
+        }
+        PlanExpr::UnaryOp { op, operand } => {
+            let operand_reg = compile_plan_expr(operand, input_regs, ctx);
+            let dest = ctx.registers.alloc();
+            let operation = match op {
+                PUnaryOp::Negate => Operation::NegateValue(dest, operand_reg),
+                PUnaryOp::Not => Operation::NotValue(dest, operand_reg),
+                PUnaryOp::Plus => Operation::CopyValue(dest, operand_reg),
+                PUnaryOp::IsNull => Operation::IsNullValue(dest, operand_reg),
+                PUnaryOp::IsNotNull => Operation::IsNotNullValue(dest, operand_reg),
+            };
+            ctx.body_emitter.emit(operation);
+            dest
+        }
+        // All leaf/non-structural variants go through the standard body-emitter path.
+        other => {
+            let mut expr_ctx = ExprContext {
+                emitter: &mut ctx.body_emitter,
+                registers: &mut ctx.registers,
+            };
+            compile_expr(other, input_regs, &mut expr_ctx)
+        }
+    }
+}
+
+/// Emit a scalar subquery fill loop into the INIT section and return the register
+/// holding the scalar result. The result register holds NULL if the subquery returns
+/// no rows; otherwise holds the first column of the first row.
+fn codegen_scalar_subquery_expr(plan: &LogicalPlan, ctx: &mut CodegenContext) -> Reg {
+    let buf_reg = ctx.registers.alloc();
+    let r_scalar = ctx.registers.alloc();
+
+    ctx.init_emitter.emit(Operation::InitRowBuffer(buf_reg));
+
+    // Redirect body_emitter to a temp fill emitter (fill-in-init pattern).
+    let mut fill_emitter = BytecodeEmitter::new();
+    let real_body = std::mem::replace(&mut ctx.body_emitter, fill_emitter);
+
+    let collect_row = ctx.body_emitter.create_label();
+    let fill_done = ctx.body_emitter.create_label();
+    let fill_cont = NodeContinuation {
+        on_tuple: collect_row,
+        on_done: fill_done,
+    };
+    let inner_output = codegen(plan, &fill_cont, ctx);
+
+    // COLLECT_ROW: append first column and stop (scalar = at most one row).
+    ctx.body_emitter.bind_here(collect_row);
+    let col_reg = inner_output.output_regs[0];
+    ctx.body_emitter
+        .emit(Operation::AppendToRowBuffer(buf_reg, vec![col_reg]));
+    ctx.body_emitter.emit_goto(fill_done);
+
+    // FILL_DONE: nothing more to do.
+    ctx.body_emitter.bind_here(fill_done);
+
+    // Absorb fill emitter into init.
+    fill_emitter = std::mem::replace(&mut ctx.body_emitter, real_body);
+    ctx.init_emitter.absorb(fill_emitter);
+
+    // In init: extract the single value (or NULL if empty).
+    let scalar_null = ctx.init_emitter.create_label();
+    let scalar_after = ctx.init_emitter.create_label();
+    ctx.init_emitter.emit(Operation::RewindRowBuffer(buf_reg));
+    ctx.init_emitter.emit(Operation::NextFromRowBuffer(
+        vec![r_scalar],
+        buf_reg,
+        program::JumpTarget::Unresolved(scalar_null),
+    ));
+    ctx.init_emitter.emit_goto(scalar_after);
+    ctx.init_emitter.bind_here(scalar_null);
+    ctx.init_emitter
+        .emit(Operation::StoreValue(r_scalar, ScalarValue::Null));
+    ctx.init_emitter.bind_here(scalar_after);
+
+    r_scalar
+}
+
 /// Generate bytecode for a Scan node.
 ///
 /// The scan pattern is:
@@ -441,13 +557,7 @@ pub fn codegen_filter(
     ctx.body_emitter.bind_here(filter_check);
 
     // Compile the predicate expression
-    let pred_reg = {
-        let mut expr_ctx = ExprContext {
-            emitter: &mut ctx.body_emitter,
-            registers: &mut ctx.registers,
-        };
-        compile_expr(predicate, &child_output.output_regs, &mut expr_ctx)
-    };
+    let pred_reg = compile_plan_expr(predicate, &child_output.output_regs, ctx);
 
     // If predicate is false, get next from child (reject)
     body!(ctx;
@@ -785,16 +895,11 @@ pub fn codegen_project(
     // PROJECT_COMPUTE: compute each projection expression
     ctx.body_emitter.bind_here(project_compute);
 
-    // Compile each expression into new output registers
+    // Compile each expression into new output registers.
+    // compile_plan_expr handles ScalarSubquery (emits to init), others to body.
     let output_regs: Vec<Reg> = columns
         .iter()
-        .map(|expr| {
-            let mut expr_ctx = ExprContext {
-                emitter: &mut ctx.body_emitter,
-                registers: &mut ctx.registers,
-            };
-            compile_expr(expr, &child_output.output_regs, &mut expr_ctx)
-        })
+        .map(|expr| compile_plan_expr(expr, &child_output.output_regs, ctx))
         .collect();
 
     // Emit the transformed tuple

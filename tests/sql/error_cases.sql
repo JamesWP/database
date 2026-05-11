@@ -10,7 +10,7 @@ CREATE TABLE users (id INTEGER, name TEXT);
 
 -- Try to select from a nonexistent table
 SELECT id FROM nonexistent;
--- > ERROR: Planning error: TableNotFound("nonexistent")
+-- > ERROR: Planning error: table 'nonexistent' not found
 
 -- Insert a valid row first
 INSERT INTO users VALUES (1, 'alice', 30);
@@ -18,11 +18,11 @@ INSERT INTO users VALUES (1, 'alice', 30);
 
 -- Try to insert with wrong column count (too few columns)
 INSERT INTO users VALUES (2, 'bob');
--- > ERROR: Planning error: ColumnCountMismatch { expected: 3, got: 2 }
+-- > ERROR: Planning error: column count mismatch: expected 3, got 2
 
 -- Try to insert with wrong column count (too many columns)
 INSERT INTO users VALUES (3, 'charlie', 25, 'extra');
--- > ERROR: Planning error: ColumnCountMismatch { expected: 3, got: 4 }
+-- > ERROR: Planning error: column count mismatch: expected 3, got 4
 
 -- Malformed SQL (incomplete statement)
 SELECT id FROM

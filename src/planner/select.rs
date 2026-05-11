@@ -9,9 +9,9 @@ use schema::resolve_table;
 
 use super::resolver::{
     build_column_mapping, col_expr_uses_rowid, collect_columns, collect_columns_from_column_expr,
-    convert_aggregate, convert_column_expr, convert_expr, convert_having_expr, expr_uses_rowid,
-    extract_limit_value, extract_table_info, has_aggregate, is_aggregate_function,
-    remap_column_indices, ColumnResolver, JoinResolver, SingleTableResolver,
+    convert_aggregate, convert_column_expr_with_catalog, convert_expr, convert_expr_with_catalog,
+    convert_having_expr, expr_uses_rowid, extract_limit_value, extract_table_info, has_aggregate,
+    is_aggregate_function, remap_column_indices, ColumnResolver, JoinResolver, SingleTableResolver,
 };
 use super::{
     schema, to_scan_index, AggregateExpr, BinaryOp, JoinStrategy, LogicalPlan, PlanError, PlanExpr,
@@ -213,7 +213,7 @@ fn plan_select_from_subquery(
         group_by: None,
         having: None,
     };
-    let mut plan = apply_project(base_plan, &fake_select, col_count, &resolver)?;
+    let mut plan = apply_project(base_plan, &fake_select, col_count, &resolver, catalog)?;
 
     if let Some(ref limit_expr) = limit {
         let count = extract_limit_value(limit_expr)?;
@@ -317,6 +317,7 @@ fn plan_select_single(
         resolver,
         wildcard_col_count,
         true, // supports_aggregation
+        catalog,
     )
 }
 
@@ -401,6 +402,7 @@ fn plan_select_joined(
         resolver,
         wildcard_col_count,
         false, // joins don't support aggregation yet
+        catalog,
     )
 }
 
@@ -414,6 +416,7 @@ fn plan_select_body(
     resolver: SelectResolver<'_>,
     wildcard_col_count: usize,
     supports_aggregation: bool,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     let is_distinct = select.distinct;
     let has_group_by = select.group_by.is_some();
@@ -450,7 +453,7 @@ fn plan_select_body(
     } else if use_aggregation {
         plan = apply_aggregate(plan, &select, &resolver)?;
     } else {
-        plan = apply_project(plan, &select, wildcard_col_count, &resolver)?;
+        plan = apply_project(plan, &select, wildcard_col_count, &resolver, catalog)?;
     }
 
     // DISTINCT
@@ -497,7 +500,7 @@ fn apply_filter(
     }
     Ok(LogicalPlan::Filter {
         input: Box::new(plan),
-        predicate: convert_expr(expr, resolver)?,
+        predicate: convert_expr_with_catalog(expr, resolver, catalog)?,
     })
 }
 
@@ -605,6 +608,7 @@ fn apply_project(
     select: &ast::SelectStatement,
     wildcard_col_count: usize,
     resolver: &impl ColumnResolver,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     let project_exprs: Vec<PlanExpr> = select
         .columns
@@ -613,7 +617,9 @@ fn apply_project(
             ast::ColumnExpression::Wildcard => (0..wildcard_col_count)
                 .map(|idx| Ok(PlanExpr::ColumnRef(idx)))
                 .collect::<Vec<_>>(),
-            _ => vec![convert_column_expr(col_expr, resolver)],
+            _ => vec![convert_column_expr_with_catalog(
+                col_expr, resolver, catalog,
+            )],
         })
         .collect::<Result<Vec<_>, _>>()?;
 

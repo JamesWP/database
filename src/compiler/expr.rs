@@ -31,6 +31,9 @@ pub fn compile_expr(expr: &PlanExpr, input_regs: &[Reg], ctx: &mut ExprContext) 
             values,
             negated,
         } => compile_in_list(expr, values, *negated, input_regs, ctx),
+        PlanExpr::ScalarSubquery { .. } => {
+            panic!("ScalarSubquery must be compiled via codegen_scalar_subquery, not compile_expr")
+        }
     }
 }
 
