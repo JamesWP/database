@@ -3,9 +3,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::frontend::ast;
+use crate::storage::BTree;
 
 use super::{
-    schema, AggregateExpr, AggregateFunction, BinaryOp, Literal, PlanError, PlanExpr, UnaryOp,
+    schema, select::output_width, select::plan_select, AggregateExpr, AggregateFunction, BinaryOp,
+    Literal, PlanError, PlanExpr, UnaryOp,
 };
 
 // ============================================================================
@@ -180,6 +182,53 @@ pub(super) fn convert_expr(
                 args: plan_args?,
             })
         }
+        ast::Expression::In {
+            expr,
+            source: ast::InSource::Values(vals),
+            negated,
+        } => {
+            let plan_expr = convert_expr(expr, resolver)?;
+            let plan_values: Result<Vec<_>, _> =
+                vals.iter().map(|v| convert_expr(v, resolver)).collect();
+            Ok(PlanExpr::In {
+                expr: Box::new(plan_expr),
+                values: plan_values?,
+                negated: *negated,
+            })
+        }
+        ast::Expression::In { .. } => Err(PlanError::UnsupportedStatement),
+        ast::Expression::ScalarSubquery(_) => Err(PlanError::UnsupportedStatement),
+    }
+}
+
+/// Convert an AST Expression with catalog access for scalar subquery resolution.
+/// Fully recursive: handles `Expression::ScalarSubquery` at any depth.
+pub(super) fn convert_expr_with_catalog(
+    expr: &ast::Expression,
+    resolver: &impl ColumnResolver,
+    catalog: &BTree,
+) -> Result<PlanExpr, PlanError> {
+    match expr {
+        ast::Expression::ScalarSubquery(stmt) => {
+            let inner_plan = plan_select(*stmt.clone(), catalog)?;
+            if output_width(&inner_plan) != 1 {
+                return Err(PlanError::ScalarSubqueryMustReturnOneColumn);
+            }
+            Ok(PlanExpr::ScalarSubquery {
+                plan: Box::new(inner_plan),
+            })
+        }
+        ast::Expression::BinaryOp { op, lhs, rhs } => Ok(PlanExpr::BinaryOp {
+            op: convert_binary_op(op),
+            left: Box::new(convert_expr_with_catalog(lhs, resolver, catalog)?),
+            right: Box::new(convert_expr_with_catalog(rhs, resolver, catalog)?),
+        }),
+        ast::Expression::UnaryOp { op, expression } => Ok(PlanExpr::UnaryOp {
+            op: convert_unary_op(op),
+            operand: Box::new(convert_expr_with_catalog(expression, resolver, catalog)?),
+        }),
+        // All other variants don't contain subexpressions that could be ScalarSubquery.
+        other => convert_expr(other, resolver),
     }
 }
 
@@ -212,16 +261,19 @@ pub(super) fn extract_identifier(expr: &ast::Expression) -> Result<String, PlanE
     }
 }
 
-/// Convert a ColumnExpression to a PlanExpr
-pub(super) fn convert_column_expr(
+pub(super) fn convert_column_expr_with_catalog(
     col_expr: &ast::ColumnExpression,
     resolver: &impl ColumnResolver,
+    catalog: &BTree,
 ) -> Result<PlanExpr, PlanError> {
     match col_expr {
-        ast::ColumnExpression::Named { expression, .. } => convert_expr(expression, resolver),
-        ast::ColumnExpression::Anonyomous(expression) => convert_expr(expression, resolver),
+        ast::ColumnExpression::Named { expression, .. } => {
+            convert_expr_with_catalog(expression, resolver, catalog)
+        }
+        ast::ColumnExpression::Anonyomous(expression) => {
+            convert_expr_with_catalog(expression, resolver, catalog)
+        }
         ast::ColumnExpression::Wildcard => {
-            // Wildcard should be expanded before calling this function
             panic!("Wildcard should be expanded earlier in planning")
         }
     }
@@ -396,6 +448,9 @@ pub(super) fn convert_having_expr(
             _ => convert_scalar(scalar, resolver),
         },
         ast::Expression::FunctionCall { name, .. } => Err(PlanError::UnknownFunction(name.clone())),
+        ast::Expression::In { .. } | ast::Expression::ScalarSubquery(_) => {
+            Err(PlanError::UnsupportedStatement)
+        }
     }
 }
 
@@ -419,6 +474,8 @@ pub(super) fn collect_columns(expr: &ast::Expression, columns: &mut HashSet<Stri
                 collect_columns(arg, columns);
             }
         }
+        ast::Expression::In { expr, .. } => collect_columns(expr, columns),
+        ast::Expression::ScalarSubquery(_) => {}
     }
 }
 
@@ -431,6 +488,8 @@ pub(super) fn expr_uses_rowid(expr: &ast::Expression) -> bool {
         ast::Expression::BinaryOp { lhs, rhs, .. } => expr_uses_rowid(lhs) || expr_uses_rowid(rhs),
         ast::Expression::UnaryOp { expression, .. } => expr_uses_rowid(expression),
         ast::Expression::Value(_) => false,
+        ast::Expression::In { expr, .. } => expr_uses_rowid(expr),
+        ast::Expression::ScalarSubquery(_) => false,
     }
 }
 
@@ -565,6 +624,22 @@ pub(super) fn remap_column_indices(
                 args: remapped_args,
             })
         }
+        PlanExpr::In {
+            expr,
+            values,
+            negated,
+        } => {
+            let remapped_values = values
+                .iter()
+                .map(|v| remap_column_indices(v, index_map))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PlanExpr::In {
+                expr: Box::new(remap_column_indices(expr, index_map)?),
+                values: remapped_values,
+                negated: *negated,
+            })
+        }
+        PlanExpr::ScalarSubquery { plan } => Ok(PlanExpr::ScalarSubquery { plan: plan.clone() }),
     }
 }
 
@@ -639,6 +714,8 @@ pub(super) fn eval_constant(expr: &PlanExpr) -> Result<Literal, PlanError> {
         }
         PlanExpr::ColumnRef(_) => Err(PlanError::UnsupportedStatement),
         PlanExpr::FunctionCall { .. } => Err(PlanError::UnsupportedStatement),
+        PlanExpr::In { .. } => Err(PlanError::UnsupportedStatement),
+        PlanExpr::ScalarSubquery { .. } => Err(PlanError::UnsupportedStatement),
     }
 }
 

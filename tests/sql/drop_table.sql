@@ -10,7 +10,7 @@ DROP TABLE users;
 -- > Table 'users' dropped
 -- After DROP, SELECT should fail
 SELECT * FROM users;
--- > ERROR: Planning error: TableNotFound("users")
+-- > ERROR: Planning error: table 'users' not found
 
 -- Test DROP nonexistent table
 DROP TABLE nonexistent;

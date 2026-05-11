@@ -41,7 +41,7 @@ SELECT dept, COUNT(*) FROM employees GROUP BY dept ORDER BY dept;
 
 -- ORDER BY with alias
 SELECT dept, COUNT(*) as cnt FROM employees GROUP BY dept ORDER BY cnt DESC;
--- > ERROR: Planning error: ColumnNotFound { table: "employees", column: "cnt" }
+-- > ERROR: Planning error: column 'cnt' not found in table 'employees'
 
 -- Multiple group keys
 CREATE TABLE sales (region TEXT, product TEXT, amount INTEGER);

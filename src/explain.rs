@@ -175,6 +175,7 @@ fn node_output_cols(plan: &LogicalPlan, schema: &ExplainSchema) -> Vec<String> {
         | LogicalPlan::Update { .. }
         | LogicalPlan::Delete { .. }
         | LogicalPlan::PopulateIndex { .. } => vec!["count".to_string()],
+        LogicalPlan::Materialize { input } => node_output_cols(input, schema),
     }
 }
 
@@ -213,7 +214,8 @@ fn collect_rows(
         | LogicalPlan::Distinct { input }
         | LogicalPlan::Insert { input, .. }
         | LogicalPlan::RowidLookup { input, .. }
-        | LogicalPlan::PopulateIndex { input, .. } => node_output_cols(input, schema),
+        | LogicalPlan::PopulateIndex { input, .. }
+        | LogicalPlan::Materialize { input } => node_output_cols(input, schema),
         LogicalPlan::Join { left, right, .. } => {
             let mut cols = node_output_cols(left, schema);
             cols.extend(node_output_cols(right, schema));
@@ -316,17 +318,25 @@ fn collect_rows(
             on_condition,
             strategy,
             ..
-        } => {
-            let strategy_label = match strategy {
-                crate::planner::JoinStrategy::Hash => "Hash",
-                crate::planner::JoinStrategy::NestedLoop => "NestedLoop",
-            };
-            format!(
-                "{indent}Join [{} | {}]",
-                strategy_label,
-                format_expr_with_names(on_condition, &input_cols)
-            )
-        }
+        } => match strategy {
+            crate::planner::JoinStrategy::Semi { negated } => {
+                let prefix = if *negated { "Anti-Semi" } else { "Semi" };
+                let key = format_expr_with_names(on_condition, &input_cols);
+                format!("{indent}Join [{prefix}] on {key}")
+            }
+            strategy => {
+                let strategy_label = match strategy {
+                    crate::planner::JoinStrategy::Hash => "Hash",
+                    crate::planner::JoinStrategy::NestedLoop => "NestedLoop",
+                    crate::planner::JoinStrategy::Semi { .. } => unreachable!(),
+                };
+                format!(
+                    "{indent}Join [{} | {}]",
+                    strategy_label,
+                    format_expr_with_names(on_condition, &input_cols)
+                )
+            }
+        },
         LogicalPlan::Distinct { .. } => format!("{indent}Distinct"),
         LogicalPlan::Insert { rootpage, .. } => {
             format!("{indent}Insert [{}]", schema.table_name(*rootpage))
@@ -347,6 +357,7 @@ fn collect_rows(
         LogicalPlan::Sequence { start, end } => {
             format!("{indent}Sequence [{start}..{end})")
         }
+        LogicalPlan::Materialize { .. } => format!("{indent}Materialize"),
     };
 
     rows.push((id, summary));
@@ -367,7 +378,8 @@ fn plan_children(plan: &LogicalPlan) -> Vec<&LogicalPlan> {
         | LogicalPlan::Distinct { input }
         | LogicalPlan::Insert { input, .. }
         | LogicalPlan::RowidLookup { input, .. }
-        | LogicalPlan::PopulateIndex { input, .. } => vec![input],
+        | LogicalPlan::PopulateIndex { input, .. }
+        | LogicalPlan::Materialize { input } => vec![input],
         LogicalPlan::Join { left, right, .. } => vec![left, right],
         _ => vec![],
     }
@@ -419,6 +431,20 @@ pub fn format_expr_with_names(expr: &PlanExpr, col_names: &[String]) -> String {
                 .collect();
             format!("{name}({})", a.join(", "))
         }
+        PlanExpr::In {
+            expr,
+            values,
+            negated,
+        } => {
+            let e = format_expr_with_names(expr, col_names);
+            let vs: Vec<_> = values
+                .iter()
+                .map(|v| format_expr_with_names(v, col_names))
+                .collect();
+            let keyword = if *negated { "NOT IN" } else { "IN" };
+            format!("{e} {keyword} ({})", vs.join(", "))
+        }
+        PlanExpr::ScalarSubquery { .. } => "(ScalarSubquery)".to_string(),
     }
 }
 

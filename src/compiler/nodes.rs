@@ -91,6 +91,122 @@ pub struct NodeOutput {
     pub output_regs: Vec<Reg>,
 }
 
+/// Compile a `PlanExpr` in a full codegen context, handling `ScalarSubquery` at any depth.
+///
+/// Recursively handles `BinaryOp`/`UnaryOp` sub-expressions so that a `ScalarSubquery`
+/// nested inside (e.g. `id = (SELECT MAX(...))`) is correctly emitted to init.
+/// All non-structural variants delegate to `compile_expr` via the body emitter.
+pub fn compile_plan_expr(expr: &PlanExpr, input_regs: &[Reg], ctx: &mut CodegenContext) -> Reg {
+    use crate::engine::program::Operation;
+    use crate::planner::{BinaryOp as PBinaryOp, UnaryOp as PUnaryOp};
+
+    match expr {
+        PlanExpr::ScalarSubquery { plan } => codegen_scalar_subquery_expr(plan, ctx),
+        PlanExpr::BinaryOp { op, left, right } => {
+            let left_reg = compile_plan_expr(left, input_regs, ctx);
+            let right_reg = compile_plan_expr(right, input_regs, ctx);
+            let dest = ctx.registers.alloc();
+            let operation = match op {
+                PBinaryOp::Add => Operation::AddValue(dest, left_reg, right_reg),
+                PBinaryOp::Subtract => Operation::SubtractValue(dest, left_reg, right_reg),
+                PBinaryOp::Multiply => Operation::MultiplyValue(dest, left_reg, right_reg),
+                PBinaryOp::Divide => Operation::DivideValue(dest, left_reg, right_reg),
+                PBinaryOp::Remainder => Operation::RemainderValue(dest, left_reg, right_reg),
+                PBinaryOp::Equals => Operation::EqualsValue(dest, left_reg, right_reg),
+                PBinaryOp::NotEquals => Operation::NotEqualsValue(dest, left_reg, right_reg),
+                PBinaryOp::GreaterThan => Operation::GreaterThanValue(dest, left_reg, right_reg),
+                PBinaryOp::GreaterThanOrEqual => {
+                    Operation::GreaterThanOrEqualValue(dest, left_reg, right_reg)
+                }
+                PBinaryOp::LessThan => Operation::LessThanValue(dest, left_reg, right_reg),
+                PBinaryOp::LessThanOrEqual => {
+                    Operation::LessThanOrEqualValue(dest, left_reg, right_reg)
+                }
+                PBinaryOp::Like => Operation::LikeValue(dest, left_reg, right_reg),
+                PBinaryOp::And => Operation::AndValue(dest, left_reg, right_reg),
+                PBinaryOp::Or => Operation::OrValue(dest, left_reg, right_reg),
+                _ => panic!("Unsupported binary op in compile_plan_expr"),
+            };
+            ctx.body_emitter.emit(operation);
+            dest
+        }
+        PlanExpr::UnaryOp { op, operand } => {
+            let operand_reg = compile_plan_expr(operand, input_regs, ctx);
+            let dest = ctx.registers.alloc();
+            let operation = match op {
+                PUnaryOp::Negate => Operation::NegateValue(dest, operand_reg),
+                PUnaryOp::Not => Operation::NotValue(dest, operand_reg),
+                PUnaryOp::Plus => Operation::CopyValue(dest, operand_reg),
+                PUnaryOp::IsNull => Operation::IsNullValue(dest, operand_reg),
+                PUnaryOp::IsNotNull => Operation::IsNotNullValue(dest, operand_reg),
+            };
+            ctx.body_emitter.emit(operation);
+            dest
+        }
+        // All leaf/non-structural variants go through the standard body-emitter path.
+        other => {
+            let mut expr_ctx = ExprContext {
+                emitter: &mut ctx.body_emitter,
+                registers: &mut ctx.registers,
+            };
+            compile_expr(other, input_regs, &mut expr_ctx)
+        }
+    }
+}
+
+/// Emit a scalar subquery fill loop into the INIT section and return the register
+/// holding the scalar result. The result register holds NULL if the subquery returns
+/// no rows; otherwise holds the first column of the first row.
+fn codegen_scalar_subquery_expr(plan: &LogicalPlan, ctx: &mut CodegenContext) -> Reg {
+    let buf_reg = ctx.registers.alloc();
+    let r_scalar = ctx.registers.alloc();
+
+    ctx.init_emitter.emit(Operation::InitRowBuffer(buf_reg));
+
+    // Redirect body_emitter to a temp fill emitter (fill-in-init pattern).
+    let mut fill_emitter = BytecodeEmitter::new();
+    let real_body = std::mem::replace(&mut ctx.body_emitter, fill_emitter);
+
+    let collect_row = ctx.body_emitter.create_label();
+    let fill_done = ctx.body_emitter.create_label();
+    let fill_cont = NodeContinuation {
+        on_tuple: collect_row,
+        on_done: fill_done,
+    };
+    let inner_output = codegen(plan, &fill_cont, ctx);
+
+    // COLLECT_ROW: append first column and stop (scalar = at most one row).
+    ctx.body_emitter.bind_here(collect_row);
+    let col_reg = inner_output.output_regs[0];
+    ctx.body_emitter
+        .emit(Operation::AppendToRowBuffer(buf_reg, vec![col_reg]));
+    ctx.body_emitter.emit_goto(fill_done);
+
+    // FILL_DONE: nothing more to do.
+    ctx.body_emitter.bind_here(fill_done);
+
+    // Absorb fill emitter into init.
+    fill_emitter = std::mem::replace(&mut ctx.body_emitter, real_body);
+    ctx.init_emitter.absorb(fill_emitter);
+
+    // In init: extract the single value (or NULL if empty).
+    let scalar_null = ctx.init_emitter.create_label();
+    let scalar_after = ctx.init_emitter.create_label();
+    ctx.init_emitter.emit(Operation::RewindRowBuffer(buf_reg));
+    ctx.init_emitter.emit(Operation::NextFromRowBuffer(
+        vec![r_scalar],
+        buf_reg,
+        program::JumpTarget::Unresolved(scalar_null),
+    ));
+    ctx.init_emitter.emit_goto(scalar_after);
+    ctx.init_emitter.bind_here(scalar_null);
+    ctx.init_emitter
+        .emit(Operation::StoreValue(r_scalar, ScalarValue::Null));
+    ctx.init_emitter.bind_here(scalar_after);
+
+    r_scalar
+}
+
 /// Generate bytecode for a Scan node.
 ///
 /// The scan pattern is:
@@ -441,13 +557,7 @@ pub fn codegen_filter(
     ctx.body_emitter.bind_here(filter_check);
 
     // Compile the predicate expression
-    let pred_reg = {
-        let mut expr_ctx = ExprContext {
-            emitter: &mut ctx.body_emitter,
-            registers: &mut ctx.registers,
-        };
-        compile_expr(predicate, &child_output.output_regs, &mut expr_ctx)
-    };
+    let pred_reg = compile_plan_expr(predicate, &child_output.output_regs, ctx);
 
     // If predicate is false, get next from child (reject)
     body!(ctx;
@@ -785,16 +895,11 @@ pub fn codegen_project(
     // PROJECT_COMPUTE: compute each projection expression
     ctx.body_emitter.bind_here(project_compute);
 
-    // Compile each expression into new output registers
+    // Compile each expression into new output registers.
+    // compile_plan_expr handles ScalarSubquery (emits to init), others to body.
     let output_regs: Vec<Reg> = columns
         .iter()
-        .map(|expr| {
-            let mut expr_ctx = ExprContext {
-                emitter: &mut ctx.body_emitter,
-                registers: &mut ctx.registers,
-            };
-            compile_expr(expr, &child_output.output_regs, &mut expr_ctx)
-        })
+        .map(|expr| compile_plan_expr(expr, &child_output.output_regs, ctx))
         .collect();
 
     // Emit the transformed tuple
@@ -1520,53 +1625,178 @@ pub fn codegen_update(
     }
 }
 
-/// Generate bytecode for a Hash Join node (strategy = Hash).
+/// Generate bytecode for a Materialize node.
 ///
-/// Hash join compiles in two phases within the generated bytecode:
-/// Phase 1: Materialize right side - run right child to completion, storing rows in buffer
-/// Phase 2: Buffer scan - for each left row, iterate the materialized buffer checking ON condition
+/// Fills a RowBuffer with all rows from `input` (fill phase runs first in the body),
+/// then yields them row-by-row. Sets `reset` so a parent join can rewind and re-iterate
+/// the buffer without re-running the fill.
 ///
-/// Both children are compiled via normal codegen(), so they can be any plan node.
+/// ```text
+/// INIT (init_emitter):
+///   InitRowBuffer(r_buf)
+///   <inner plan init>
+///
+/// BODY (body_emitter):
+///   <inner plan body — drives fill>
+///
+///   collect_row:
+///     AppendToRowBuffer(r_buf, inner_regs)
+///     GoTo(inner.next)
+///
+///   fill_done / reset_label:   ← both parent and fill_done land here
+///     RewindRowBuffer(r_buf)
+///
+///   yield_next:
+///     NextFromRowBuffer(output_regs, r_buf, on_done)
+///     GoTo(on_tuple)
+///
+///   mat_next:                  ← NodeOutput.next
+///     GoTo(yield_next)
+/// ```
+/// Generate bytecode for a Materialize node.
+///
+/// The fill loop runs entirely in the **init section** (once, before the body loop starts).
+/// The body section contains only the yield loop. This means:
+///
+/// - `NodeOutput.reset` is always valid: calling it rewinds the buffer and re-iterates
+///   from the first row without re-running the fill.
+/// - Hash and semi joins can compile the left child first (body starts at the left scan)
+///   and use `right_output.reset` per left row without any special "fill gate" logic.
 ///
 /// ```text
 /// INIT:
 ///   InitRowBuffer(buffer)
-///   <right child init>
-///   <left child init>
+///   <inner plan init: Open(cursor), MoveCursor(First), ...>
+///   <inner plan body loop: CanReadCursor → collect_row: AppendToRowBuffer → GoTo(next) ...>
+///   collect_row:
+///     AppendToRowBuffer(buffer, child_regs)
+///     GoTo(child_output.next)
+///   fill_done:
+///     RewindRowBuffer(buffer)
+///   ; GoTo(body_start) inserted by finalize()
 ///
 /// BODY:
-///   Phase 1 — Materialize right side:
-///     RIGHT_CHECK:                              ← body starts here (right child's entry)
-///       <right child body>
-///       → on_tuple: MAT_ON_TUPLE
-///       → on_done:  MAT_ON_DONE
+///   reset_label:           ← NodeOutput.reset
+///     RewindRowBuffer(buffer)
+///   yield_next:
+///     NextFromRowBuffer(output_regs, buffer) → cont.on_done
+///     GoTo(cont.on_tuple)
+///   mat_next:              ← NodeOutput.next
+///     GoTo(yield_next)
+/// ```
+pub fn codegen_materialize(
+    input: &LogicalPlan,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    use crate::engine::program::Operation;
+
+    let buffer_reg = ctx.registers.alloc();
+    init!(ctx; InitRowBuffer(buffer_reg));
+
+    // Create the fill-callback labels in a temporary emitter that will be
+    // absorbed into the init section. This keeps the fill loop entirely in init.
+    let mut fill_emitter = BytecodeEmitter::new();
+    let collect_row = fill_emitter.create_label(); // Label(0) in fill_emitter
+    let fill_done = fill_emitter.create_label(); // Label(1) in fill_emitter
+
+    // Redirect body emissions to fill_emitter so the inner plan's loop goes into init.
+    let real_body = std::mem::replace(&mut ctx.body_emitter, fill_emitter);
+    let child_cont = NodeContinuation {
+        on_tuple: collect_row,
+        on_done: fill_done,
+    };
+    let child_output = codegen(input, &child_cont, ctx);
+    let fill_emitter = std::mem::replace(&mut ctx.body_emitter, real_body);
+
+    // Absorb fill_emitter into init_emitter (remapping label IDs).
+    let label_id_offset = ctx.init_emitter.absorb(fill_emitter);
+
+    // After absorb, labels from fill_emitter are now in init_emitter with remapped IDs.
+    let collect_row_in_init = Label(collect_row.0 + label_id_offset);
+    let fill_done_in_init = Label(fill_done.0 + label_id_offset);
+    let child_next_in_init = Label(child_output.next.0 + label_id_offset);
+
+    // Bind collect_row: append row to buffer and request next child row.
+    ctx.init_emitter.bind_here(collect_row_in_init);
+    ctx.init_emitter.emit(Operation::AppendToRowBuffer(
+        buffer_reg,
+        child_output.output_regs.clone(),
+    ));
+    ctx.init_emitter
+        .emit(Operation::GoTo(JumpTarget::Unresolved(child_next_in_init)));
+
+    // Bind fill_done: rewind buffer so the yield loop starts from the first row.
+    ctx.init_emitter.bind_here(fill_done_in_init);
+    ctx.init_emitter
+        .emit(Operation::RewindRowBuffer(buffer_reg));
+    // finalize() will append GoTo(body_start) here automatically.
+
+    // Body: yield loop only (fill is complete by the time body starts).
+    // Fresh output registers — reads from buffer, not from child cursor.
+    let output_regs: Vec<Reg> = (0..child_output.output_regs.len())
+        .map(|_| ctx.registers.alloc())
+        .collect();
+
+    // reset_label: rewind buffer and restart iteration (used by join per left row).
+    let reset_label = ctx.body_emitter.label_here();
+    body!(ctx; RewindRowBuffer(buffer_reg));
+
+    let yield_next = ctx.body_emitter.label_here();
+    ctx.body_emitter.emit(Operation::NextFromRowBuffer(
+        output_regs.clone(),
+        buffer_reg,
+        JumpTarget::Unresolved(cont.on_done),
+    ));
+    body!(ctx; GoTo(cont.on_tuple));
+
+    let mat_next = ctx.body_emitter.label_here();
+    body!(ctx; GoTo(yield_next));
+
+    NodeOutput {
+        next: mat_next,
+        reset: Some(reset_label),
+        output_regs,
+    }
+}
+
+/// Generate bytecode for a Hash Join node (strategy = Hash).
 ///
-///     MAT_ON_TUPLE:
-///       AppendToRowBuffer(buffer, right_regs)
-///       GoTo(RIGHT_CHECK)                       → get next right row
+/// The right child MUST be a `Materialize` node (the optimizer wraps it). Because
+/// `codegen_materialize` runs the fill in the **init section**, the buffer is fully
+/// populated before the body loop starts. The body therefore starts at the left scan,
+/// and per left row calls `right_output.reset` to rewind and re-iterate the right buffer.
 ///
-///     MAT_ON_DONE:
-///       GoTo(JOIN_LOOP_START)                   → materialization complete
+/// ```text
+/// INIT:
+///   <left child init: Open(left_cursor), MoveCursor(First)>
+///   InitRowBuffer(right_buf)
+///   <right child (Materialize) init+fill: Open(right_cursor), fill loop, RewindRowBuffer>
 ///
-///   Phase 2 — Buffer scan:
-///     <left child body>
-///       → on_tuple: LEFT_ON_TUPLE
-///       → on_done:  cont.on_done               → join is done
+/// GoTo(body_start)
 ///
-///     JOIN_LOOP_START:
-///       GoTo(LEFT_CHECK)                        → start getting left rows
+/// BODY (body_start = left scan's check label):
+///   LEFT_CHECK:
+///     <left scan body>
+///     → on_tuple: LEFT_ON_TUPLE
+///     → on_done: cont.on_done
 ///
-///     LEFT_ON_TUPLE:
-///       RewindRowBuffer(buffer)                 → reset buffer to start
+///   RESET_LABEL (right_output.reset):  ← Materialize rewind entry
+///     RewindRowBuffer(right_buf)
+///   YIELD_NEXT:
+///     NextFromRowBuffer(right_regs, right_buf) → left_output.next
+///     GoTo(INNER_CHECK)
 ///
-///     INNER_CHECK:
-///       NextFromRowBuffer(right_regs, buffer, LEFT_CHECK)  → read or jump if done
-///       <evaluate ON condition>
-///       GoToIfFalse(INNER_CHECK, pred_reg)      → no match, next buffer row
-///       GoTo(cont.on_tuple)                     → match! emit combined row
+///   LEFT_ON_TUPLE:
+///     GoTo(RESET_LABEL)               ← rewind right buffer, get first right row
 ///
-///     JOIN_NEXT:                                → parent calls here for next row
-///       GoTo(INNER_CHECK)                       → continue buffer iteration
+///   INNER_CHECK:
+///     <evaluate ON condition>
+///     GoToIfFalse(right_output.next)  → no match: get next right row
+///     GoTo(cont.on_tuple)             → match! emit combined row
+///
+///   JOIN_NEXT:                        ← NodeOutput.next (parent requests next)
+///     GoTo(right_output.next)         → advance right cursor
 /// ```
 pub fn codegen_join(
     left: &LogicalPlan,
@@ -1576,71 +1806,38 @@ pub fn codegen_join(
     cont: &NodeContinuation,
     ctx: &mut CodegenContext,
 ) -> NodeOutput {
-    // --- Phase 1: Materialize right side into buffer ---
-
-    let buffer_reg = ctx.registers.alloc();
-    init!(ctx; InitRowBuffer(buffer_reg));
-
-    // Compile right child via normal codegen
-    // Its init code → init_emitter, body code → body_emitter
-    let mat_on_tuple = ctx.body_emitter.create_label();
-    let mat_on_done = ctx.body_emitter.create_label();
-    let right_cont = NodeContinuation {
-        on_tuple: mat_on_tuple,
-        on_done: mat_on_done,
-    };
-    let right_output = codegen(right, &right_cont, ctx);
-
-    // mat_on_tuple: append row to buffer, request next
-    let join_loop_start = ctx.body_emitter.create_label(); // forward ref
-    body!(ctx;
-        Bind(mat_on_tuple);
-        AppendToRowBuffer(buffer_reg, right_output.output_regs.clone());
-        GoTo(right_output.next);
-        Bind(mat_on_done);
-        GoTo(join_loop_start)
-    );
-
-    // --- Phase 2: Buffer scan (hash join) ---
-
-    // Compile left child via normal codegen
+    // Compile left child first — body starts at the left scan (buffer already filled).
     let left_on_tuple = ctx.body_emitter.create_label();
     let left_cont = NodeContinuation {
         on_tuple: left_on_tuple,
-        on_done: cont.on_done, // left exhausted = join done
+        on_done: cont.on_done,
     };
     let left_output = codegen(left, &left_cont, ctx);
 
-    // Bind join_loop_start: after materialization, start left iteration
-    body!(ctx;
-        Bind(join_loop_start);
-        GoTo(left_output.next)
-    );
-
-    // Allocate registers for right-side rows read from buffer
-    let right_read_regs = ctx.registers.alloc_block(right_output.output_regs.len());
-
-    // Combined output: left columns then right columns
-    let mut combined_output = left_output.output_regs.clone();
-    combined_output.extend(right_read_regs.clone());
-
-    // left_on_tuple: got a left row, iterate buffer
+    // Compile right child (must be Materialize — the optimizer ensures this).
+    // Materialize fills the buffer in init and provides reset + next for per-row iteration.
     let inner_check = ctx.body_emitter.create_label();
+    let right_cont = NodeContinuation {
+        on_tuple: inner_check,     // after reset: yield right row here
+        on_done: left_output.next, // right buffer exhausted → advance left
+    };
+    let right_output = codegen(right, &right_cont, ctx);
+    let right_reset = right_output
+        .reset
+        .expect("codegen_join(Hash): right child must be Materialize (provides reset)");
+
+    // Combined output: left columns then right columns.
+    let mut combined_output = left_output.output_regs.clone();
+    combined_output.extend(right_output.output_regs.clone());
+
+    // left_on_tuple: per left row, rewind right buffer and iterate it.
     body!(ctx;
         Bind(left_on_tuple);
-        RewindRowBuffer(buffer_reg);
-        Bind(inner_check)
+        GoTo(right_reset)
     );
-    // NextFromRowBuffer jumps to target when buffer is exhausted.
-    // Use JumpTarget::Unresolved(label) — same pattern as YieldFromRowBuffer
-    // in codegen_sort (see line ~640 of nodes.rs).
-    ctx.body_emitter.emit(Operation::NextFromRowBuffer(
-        right_read_regs.clone(),
-        buffer_reg,
-        JumpTarget::Unresolved(left_output.next), // buffer done → next left row
-    ));
 
-    // Evaluate ON condition against combined registers
+    // inner_check: evaluate ON condition; emit row on match, advance right on miss.
+    ctx.body_emitter.bind_here(inner_check);
     let pred_reg = compile_expr(
         on_condition,
         &combined_output,
@@ -1650,13 +1847,13 @@ pub fn codegen_join(
         },
     );
     body!(ctx;
-        GoToIfFalse(inner_check, pred_reg);
+        GoToIfFalse(right_output.next, pred_reg);
         GoTo(cont.on_tuple)
     );
 
-    // JOIN_NEXT: parent calls this to get next matching row
+    // JOIN_NEXT: parent calls this to advance to the next matching right row.
     let join_next = ctx.body_emitter.label_here();
-    body!(ctx; GoTo(inner_check));
+    body!(ctx; GoTo(right_output.next));
 
     NodeOutput {
         next: join_next,
@@ -1765,6 +1962,103 @@ pub fn codegen_join_nested_loop(
         next: join_next,
         reset: None,
         output_regs: combined_output,
+    }
+}
+
+/// Generate bytecode for a semi-join (IN / NOT IN subquery).
+///
+/// The right side must be a Materialize node. The buffer is filled during INIT.
+/// For each left row: rewind right buffer, iterate rows, exit on first match (semi)
+/// or on exhaustion without match (anti-semi). Only left columns are yielded.
+pub fn codegen_join_semi(
+    left: &LogicalPlan,
+    right: &LogicalPlan,
+    on_condition: &PlanExpr,
+    left_column_count: usize,
+    negated: bool,
+    cont: &NodeContinuation,
+    ctx: &mut CodegenContext,
+) -> NodeOutput {
+    // BODY entry point labels for the right Materialize block.
+    let left_on_tuple = ctx.body_emitter.create_label();
+    let right_on_tuple = ctx.body_emitter.create_label();
+    let right_done = ctx.body_emitter.create_label();
+
+    // --- Compile left first ---
+    let left_cont = NodeContinuation {
+        on_tuple: left_on_tuple,
+        on_done: cont.on_done,
+    };
+    let left_output = codegen(left, &left_cont, ctx);
+
+    // --- Compile right (Materialize) ---
+    // right_cont.on_tuple → RIGHT_ON_TUPLE, right_cont.on_done → RIGHT_DONE
+    let right_cont = NodeContinuation {
+        on_tuple: right_on_tuple,
+        on_done: right_done,
+    };
+    let right_output = codegen(right, &right_cont, ctx);
+    let right_reset = right_output
+        .reset
+        .expect("right of semi-join must be Materialize");
+
+    // --- Build combined registers for on_condition evaluation ---
+    let combined_regs: Vec<_> = left_output
+        .output_regs
+        .iter()
+        .copied()
+        .chain(right_output.output_regs.iter().copied())
+        .collect();
+
+    // LEFT_ON_TUPLE: rewind right buffer and start iterating
+    ctx.body_emitter.bind_here(left_on_tuple);
+    body!(ctx; GoTo(right_reset));
+
+    // RIGHT_ON_TUPLE: evaluate on_condition over combined registers
+    ctx.body_emitter.bind_here(right_on_tuple);
+    let match_reg = {
+        let mut expr_ctx = ExprContext {
+            emitter: &mut ctx.body_emitter,
+            registers: &mut ctx.registers,
+        };
+        compile_expr(on_condition, &combined_regs, &mut expr_ctx)
+    };
+
+    if !negated {
+        // Semi: match → yield left row; no match → next right row
+        body!(ctx;
+            GoToIfFalse(right_output.next, match_reg);  // no match → try next right
+            GoTo(cont.on_tuple)                         // match → yield
+        );
+    } else {
+        // Anti-semi: match found → skip this left row entirely
+        body!(ctx;
+            GoToIfFalse(right_output.next, match_reg);  // no match → try next right
+            GoTo(left_output.next)                      // match found → skip left row
+        );
+    }
+
+    // RIGHT_DONE: right buffer exhausted for this left row
+    ctx.body_emitter.bind_here(right_done);
+    if !negated {
+        // Semi: no match found → skip left row
+        body!(ctx; GoTo(left_output.next));
+    } else {
+        // Anti-semi: no match found → yield left row
+        body!(ctx; GoTo(cont.on_tuple));
+    }
+
+    // semi_next: parent requests next left row
+    let semi_next = ctx.body_emitter.create_label();
+    ctx.body_emitter.bind_here(semi_next);
+    body!(ctx; GoTo(left_output.next));
+
+    let _ = left_column_count; // used for documentation clarity
+
+    NodeOutput {
+        next: semi_next,
+        reset: None,
+        output_regs: left_output.output_regs,
     }
 }
 
@@ -2038,6 +2332,15 @@ pub fn codegen(
             crate::planner::JoinStrategy::NestedLoop => {
                 codegen_join_nested_loop(left, right, on_condition, *left_column_count, cont, ctx)
             }
+            crate::planner::JoinStrategy::Semi { negated } => codegen_join_semi(
+                left,
+                right,
+                on_condition,
+                *left_column_count,
+                *negated,
+                cont,
+                ctx,
+            ),
         },
         LogicalPlan::IndexProbe {
             index_rootpage,
@@ -2050,6 +2353,7 @@ pub fn codegen(
             index_rootpage,
             column_idxs,
         } => codegen_populate_index(input, *index_rootpage, column_idxs, cont, ctx),
+        LogicalPlan::Materialize { input } => codegen_materialize(input, cont, ctx),
     }
 }
 

@@ -159,6 +159,18 @@ pub enum PlanExpr {
         name: String,
         args: Vec<PlanExpr>,
     },
+    /// expr IN (val, val, ...) — kept as a plan node for clean EXPLAIN output.
+    /// The compiler desugars to an OR equality chain at codegen time.
+    In {
+        expr: Box<PlanExpr>,
+        values: Vec<PlanExpr>,
+        negated: bool,
+    },
+    /// (SELECT expr FROM ...) — evaluated once in the init section.
+    /// The inner plan must produce exactly one output column.
+    ScalarSubquery {
+        plan: Box<LogicalPlan>,
+    },
 }
 
 /// Join execution strategy, chosen by the optimizer.
@@ -170,6 +182,9 @@ pub enum JoinStrategy {
     /// Re-drive the right child once per left row via its reset entry point.
     /// Used when an index-probe is available on the right side.
     NestedLoop,
+    /// Semi-join: retain left rows whose key appears in the (materialised) right set.
+    /// `negated: true` → anti-semi-join (NOT IN): retain rows with no match.
+    Semi { negated: bool },
 }
 
 /// Logical plan nodes - relational algebra operators
@@ -331,6 +346,10 @@ pub enum LogicalPlan {
         index_rootpage: u32,
         column_idxs: Vec<usize>,
     },
+
+    /// Buffer all rows from `input` into a RowBuffer, then yield them.
+    /// Used for: FROM subqueries, right side of semi-joins, scalar subquery preludes.
+    Materialize { input: Box<LogicalPlan> },
 }
 // ============================================================================
 // Schema (for column resolution)
@@ -424,4 +443,38 @@ pub enum PlanError {
         expected: String,
         got: String,
     },
+    ScalarSubqueryMustReturnOneColumn,
+}
+
+impl std::fmt::Display for PlanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlanError::TableNotFound(name) => write!(f, "table '{}' not found", name),
+            PlanError::ColumnNotFound { table, column } => {
+                write!(f, "column '{}' not found in table '{}'", column, table)
+            }
+            PlanError::AmbiguousColumn(name) => write!(f, "ambiguous column '{}'", name),
+            PlanError::ColumnCountMismatch { expected, got } => {
+                write!(f, "column count mismatch: expected {expected}, got {got}")
+            }
+            PlanError::UnsupportedStatement => write!(f, "unsupported statement"),
+            PlanError::UnknownFunction(name) => write!(f, "unknown function '{}'", name),
+            PlanError::InvalidFunctionArguments {
+                function,
+                expected,
+                got,
+            } => write!(
+                f,
+                "function '{}' expects {} argument(s), got {}",
+                function, expected, got
+            ),
+            PlanError::InvalidHaving(msg) => write!(f, "invalid HAVING: {}", msg),
+            PlanError::TypeMismatch { expected, got } => {
+                write!(f, "type mismatch: expected {}, got {}", expected, got)
+            }
+            PlanError::ScalarSubqueryMustReturnOneColumn => {
+                write!(f, "scalar subquery must return exactly one column")
+            }
+        }
+    }
 }

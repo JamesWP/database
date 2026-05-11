@@ -8,7 +8,7 @@ DROP TABLE users
 -- > Table 'users' dropped
 -- Should fail because table is gone
 SELECT * FROM users
--- > ERROR: Planning error: TableNotFound("users")
+-- > ERROR: Planning error: table 'users' not found
 -- Catalog should be empty
 CREATE TABLE users (id INTEGER, name TEXT)
 -- > Table 'users' created

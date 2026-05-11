@@ -60,6 +60,9 @@ pub(super) fn fuse_projects(plan: LogicalPlan) -> LogicalPlan {
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
             input: Box::new(fuse_projects(*input)),
         },
+        LogicalPlan::Materialize { input } => LogicalPlan::Materialize {
+            input: Box::new(fuse_projects(*input)),
+        },
         LogicalPlan::RowidLookup {
             input,
             table_rootpage,
@@ -196,6 +199,9 @@ pub(super) fn optimize(plan: LogicalPlan, catalog: &BTree) -> LogicalPlan {
         LogicalPlan::Distinct { input } => LogicalPlan::Distinct {
             input: Box::new(optimize(*input, catalog)),
         },
+        LogicalPlan::Materialize { input } => LogicalPlan::Materialize {
+            input: Box::new(optimize(*input, catalog)),
+        },
         // Rule 3: RowidLookup(IndexScan) → covering IndexScan when all requested
         // columns are present in the index key. The primary B-tree lookup is elided.
         LogicalPlan::RowidLookup {
@@ -252,10 +258,37 @@ pub(super) fn optimize(plan: LogicalPlan, catalog: &BTree) -> LogicalPlan {
                 }
             }
 
+            // Semi-joins are emitted by the planner as-is (already have Materialize on right).
+            if matches!(strategy, JoinStrategy::Semi { .. }) {
+                let right_materialized = if matches!(opt_right, LogicalPlan::Materialize { .. }) {
+                    opt_right
+                } else {
+                    LogicalPlan::Materialize {
+                        input: Box::new(opt_right),
+                    }
+                };
+                return LogicalPlan::Join {
+                    left: Box::new(opt_left),
+                    right: Box::new(right_materialized),
+                    on_condition,
+                    strategy,
+                    left_column_count,
+                };
+            }
+
             // No index available (or strategy is already Hash): promote to Hash.
+            // Wrap right side in Materialize so the join body can start at the left scan
+            // and use right_output.reset per left row (fill happens in init section).
+            let right_materialized = if matches!(opt_right, LogicalPlan::Materialize { .. }) {
+                opt_right // already wrapped
+            } else {
+                LogicalPlan::Materialize {
+                    input: Box::new(opt_right),
+                }
+            };
             LogicalPlan::Join {
                 left: Box::new(opt_left),
-                right: Box::new(opt_right),
+                right: Box::new(right_materialized),
                 on_condition,
                 strategy: JoinStrategy::Hash,
                 left_column_count,

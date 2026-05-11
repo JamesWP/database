@@ -9,11 +9,14 @@ use schema::resolve_table;
 
 use super::resolver::{
     build_column_mapping, col_expr_uses_rowid, collect_columns, collect_columns_from_column_expr,
-    convert_aggregate, convert_column_expr, convert_expr, convert_having_expr, expr_uses_rowid,
-    extract_limit_value, extract_table_info, has_aggregate, is_aggregate_function,
-    remap_column_indices, ColumnResolver, JoinResolver, SingleTableResolver,
+    convert_aggregate, convert_column_expr_with_catalog, convert_expr, convert_expr_with_catalog,
+    convert_having_expr, expr_uses_rowid, extract_limit_value, extract_table_info, has_aggregate,
+    is_aggregate_function, remap_column_indices, ColumnResolver, JoinResolver, SingleTableResolver,
 };
-use super::{schema, to_scan_index, AggregateExpr, LogicalPlan, PlanError, PlanExpr, SortKey};
+use super::{
+    schema, to_scan_index, AggregateExpr, BinaryOp, JoinStrategy, LogicalPlan, PlanError, PlanExpr,
+    SortKey,
+};
 
 pub(super) fn output_width(plan: &LogicalPlan) -> usize {
     match plan {
@@ -29,7 +32,8 @@ pub(super) fn output_width(plan: &LogicalPlan) -> usize {
         | LogicalPlan::Limit { input, .. }
         | LogicalPlan::Distinct { input, .. }
         | LogicalPlan::Filter { input, .. }
-        | LogicalPlan::RowidLookup { input, .. } => output_width(input),
+        | LogicalPlan::RowidLookup { input, .. }
+        | LogicalPlan::Materialize { input } => output_width(input),
         LogicalPlan::Scan { columns, .. } => columns.len(),
         _ => 0,
     }
@@ -39,6 +43,7 @@ pub(super) fn output_width(plan: &LogicalPlan) -> usize {
 enum SelectResolver<'a> {
     Single(SingleTableResolver<'a>),
     Join(JoinResolver<'a>),
+    Materialize(MaterializeResolver<'a>),
 }
 
 impl ColumnResolver for SelectResolver<'_> {
@@ -46,6 +51,7 @@ impl ColumnResolver for SelectResolver<'_> {
         match self {
             Self::Single(r) => r.resolve_identifier(name),
             Self::Join(r) => r.resolve_identifier(name),
+            Self::Materialize(r) => r.resolve_identifier(name),
         }
     }
 
@@ -53,14 +59,41 @@ impl ColumnResolver for SelectResolver<'_> {
         match self {
             Self::Single(r) => r.resolve_qualified(table, column),
             Self::Join(r) => r.resolve_qualified(table, column),
+            Self::Materialize(r) => r.resolve_qualified(table, column),
         }
     }
 
     fn resolve_rowid(&self) -> Option<usize> {
         match self {
             Self::Single(r) => r.resolve_rowid(),
-            Self::Join(_) => None, // rowid() in joins is out of scope (TODO phase-bk)
+            Self::Join(_) => None,
+            Self::Materialize(_) => None,
         }
+    }
+}
+
+/// Resolver for queries where the FROM clause is a materialized subquery.
+struct MaterializeResolver<'a> {
+    alias: &'a str,
+    columns: &'a [String],
+}
+
+impl ColumnResolver for MaterializeResolver<'_> {
+    fn resolve_identifier(&self, name: &str) -> Result<usize, PlanError> {
+        self.columns
+            .iter()
+            .position(|c| c.eq_ignore_ascii_case(name))
+            .ok_or_else(|| PlanError::ColumnNotFound {
+                table: self.alias.to_string(),
+                column: name.to_string(),
+            })
+    }
+
+    fn resolve_qualified(&self, table: &str, column: &str) -> Result<usize, PlanError> {
+        if !table.eq_ignore_ascii_case(self.alias) {
+            return Err(PlanError::TableNotFound(table.to_string()));
+        }
+        self.resolve_identifier(column)
     }
 }
 
@@ -68,11 +101,129 @@ pub(crate) fn plan_select(
     select: ast::SelectStatement,
     catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
-    if select.joins.is_empty() {
+    if is_from_subquery(&select.from) {
+        plan_select_from_subquery(select, catalog)
+    } else if select.joins.is_empty() {
         plan_select_single(select, catalog)
     } else {
         plan_select_joined(select, catalog)
     }
+}
+
+fn is_from_subquery(from: &ast::NamedTupleSource) -> bool {
+    match from {
+        ast::NamedTupleSource::Named { source, .. } | ast::NamedTupleSource::Anonyomous(source) => {
+            matches!(source, ast::TupleSource::Subquery(_))
+        }
+    }
+}
+
+/// Extract the alias and subquery from a FROM subquery source.
+fn from_subquery_parts(from: ast::NamedTupleSource) -> (String, ast::SelectStatement) {
+    match from {
+        ast::NamedTupleSource::Named { alias, source } => {
+            let ast::TupleSource::Subquery(inner) = source else {
+                unreachable!()
+            };
+            (alias, *inner)
+        }
+        ast::NamedTupleSource::Anonyomous(source) => {
+            let ast::TupleSource::Subquery(inner) = source else {
+                unreachable!()
+            };
+            ("subquery".to_string(), *inner)
+        }
+    }
+}
+
+/// Derive the output column names from a SELECT statement's column list.
+fn select_output_names(select: &ast::SelectStatement) -> Vec<String> {
+    select
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, col)| match col {
+            ast::ColumnExpression::Named { name, .. } => name.clone(),
+            ast::ColumnExpression::Anonyomous(expr) => match expr.as_ref() {
+                ast::Expression::Value(ast::ScalarValue::Identifier(name)) => name.clone(),
+                ast::Expression::Value(ast::ScalarValue::MultiPartIdentifier(_, name)) => {
+                    name.clone()
+                }
+                _ => format!("col{i}"),
+            },
+            ast::ColumnExpression::Wildcard => format!("col{i}"),
+        })
+        .collect()
+}
+
+/// Plan a SELECT where the FROM clause is a subquery: `SELECT ... FROM (SELECT ...) AS alias`.
+fn plan_select_from_subquery(
+    select: ast::SelectStatement,
+    catalog: &BTree,
+) -> Result<LogicalPlan, PlanError> {
+    if !select.joins.is_empty() {
+        return Err(PlanError::UnsupportedStatement);
+    }
+
+    // Destructure select so we can move `from` while borrowing the rest.
+    let ast::SelectStatement {
+        from,
+        columns: col_exprs,
+        filter,
+        order_by,
+        limit,
+        group_by: _,
+        having: _,
+        distinct: _,
+        joins: _,
+    } = select;
+
+    let (alias, inner_stmt) = from_subquery_parts(from);
+
+    // Derive column names from the inner SELECT before planning it.
+    let col_names = select_output_names(&inner_stmt);
+    let col_count = col_names.len();
+
+    // Plan the inner query recursively.
+    let inner_plan = plan_select(inner_stmt, catalog)?;
+    let mat_plan = LogicalPlan::Materialize {
+        input: Box::new(inner_plan),
+    };
+
+    // Build resolver for the outer query's expressions.
+    let resolver = SelectResolver::Materialize(MaterializeResolver {
+        alias: &alias,
+        columns: &col_names,
+    });
+
+    // Outer query: wrap Materialize in Filter if needed.
+    let base_plan = apply_filter(mat_plan, filter.as_ref(), &resolver, catalog)?;
+
+    // Build a minimal SelectStatement view for apply_project.
+    // Pass order_by through so apply_order_by correctly extends the projection
+    // before wrapping with Sort (sort keys index into the pre-projection columns).
+    let fake_select = ast::SelectStatement {
+        distinct: false,
+        columns: col_exprs,
+        from: ast::NamedTupleSource::Anonyomous(ast::TupleSource::Table("_".into())),
+        joins: vec![],
+        filter: None,
+        limit: None,
+        order_by,
+        group_by: None,
+        having: None,
+    };
+    let mut plan = apply_project(base_plan, &fake_select, col_count, &resolver, catalog)?;
+
+    if let Some(ref limit_expr) = limit {
+        let count = extract_limit_value(limit_expr)?;
+        plan = LogicalPlan::Limit {
+            input: Box::new(plan),
+            count,
+        };
+    }
+
+    Ok(plan)
 }
 
 /// Plan a SELECT with no joins (single-table path).
@@ -155,7 +306,7 @@ fn plan_select_single(
         rootpage: table.rootpage,
         columns: scan_cols,
     };
-    let base_plan = apply_filter(scan, select.filter.as_ref(), &resolver)?;
+    let base_plan = apply_filter(scan, select.filter.as_ref(), &resolver, catalog)?;
 
     // 6. Build the rest of the plan using the shared body.
     // COUNT(*) and aggregation are only available on single-table queries.
@@ -166,6 +317,7 @@ fn plan_select_single(
         resolver,
         wildcard_col_count,
         true, // supports_aggregation
+        catalog,
     )
 }
 
@@ -240,7 +392,7 @@ fn plan_select_joined(
         strategy: crate::planner::JoinStrategy::NestedLoop,
         left_column_count: left_col_count,
     };
-    let base_plan = apply_filter(join_plan, select.filter.as_ref(), &resolver)?;
+    let base_plan = apply_filter(join_plan, select.filter.as_ref(), &resolver, catalog)?;
 
     // 6. Build the rest of the plan using the shared body.
     let wildcard_col_count = left_col_count + right_col_count;
@@ -250,6 +402,7 @@ fn plan_select_joined(
         resolver,
         wildcard_col_count,
         false, // joins don't support aggregation yet
+        catalog,
     )
 }
 
@@ -263,6 +416,7 @@ fn plan_select_body(
     resolver: SelectResolver<'_>,
     wildcard_col_count: usize,
     supports_aggregation: bool,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     let is_distinct = select.distinct;
     let has_group_by = select.group_by.is_some();
@@ -299,7 +453,7 @@ fn plan_select_body(
     } else if use_aggregation {
         plan = apply_aggregate(plan, &select, &resolver)?;
     } else {
-        plan = apply_project(plan, &select, wildcard_col_count, &resolver)?;
+        plan = apply_project(plan, &select, wildcard_col_count, &resolver, catalog)?;
     }
 
     // DISTINCT
@@ -330,15 +484,53 @@ fn apply_filter(
     plan: LogicalPlan,
     filter: Option<&ast::Expression>,
     resolver: &impl ColumnResolver,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
-    if let Some(expr) = filter {
-        Ok(LogicalPlan::Filter {
-            input: Box::new(plan),
-            predicate: convert_expr(expr, resolver)?,
-        })
-    } else {
-        Ok(plan)
+    let Some(expr) = filter else {
+        return Ok(plan);
+    };
+    // Top-level IN (subquery): convert to a semi-join.
+    if let ast::Expression::In {
+        expr: key_expr,
+        source: ast::InSource::Subquery(inner_stmt),
+        negated,
+    } = expr
+    {
+        return plan_in_subquery_semi_join(plan, key_expr, inner_stmt, *negated, resolver, catalog);
     }
+    Ok(LogicalPlan::Filter {
+        input: Box::new(plan),
+        predicate: convert_expr_with_catalog(expr, resolver, catalog)?,
+    })
+}
+
+/// Convert `WHERE key IN (SELECT ...)` / `WHERE key NOT IN (SELECT ...)` to a semi-join.
+fn plan_in_subquery_semi_join(
+    left: LogicalPlan,
+    key_expr: &ast::Expression,
+    inner_stmt: &ast::SelectStatement,
+    negated: bool,
+    resolver: &impl ColumnResolver,
+    catalog: &BTree,
+) -> Result<LogicalPlan, PlanError> {
+    let left_column_count = output_width(&left);
+    let key = convert_expr(key_expr, resolver)?;
+    let inner_plan = plan_select(inner_stmt.clone(), catalog)?;
+    let right_col_idx = left_column_count; // first right-side column in combined registers
+    let on_condition = PlanExpr::BinaryOp {
+        op: BinaryOp::Equals,
+        left: Box::new(key),
+        right: Box::new(PlanExpr::ColumnRef(right_col_idx)),
+    };
+    Ok(LogicalPlan::Join {
+        left: Box::new(left),
+        right: Box::new(LogicalPlan::Materialize {
+            input: Box::new(inner_plan),
+        }),
+        on_condition,
+        strategy: JoinStrategy::Semi { negated },
+        left_column_count,
+    })
 }
 
 /// Build the Aggregate + Project plan for GROUP BY / aggregate-function queries.
@@ -416,6 +608,7 @@ fn apply_project(
     select: &ast::SelectStatement,
     wildcard_col_count: usize,
     resolver: &impl ColumnResolver,
+    catalog: &BTree,
 ) -> Result<LogicalPlan, PlanError> {
     let project_exprs: Vec<PlanExpr> = select
         .columns
@@ -424,7 +617,9 @@ fn apply_project(
             ast::ColumnExpression::Wildcard => (0..wildcard_col_count)
                 .map(|idx| Ok(PlanExpr::ColumnRef(idx)))
                 .collect::<Vec<_>>(),
-            _ => vec![convert_column_expr(col_expr, resolver)],
+            _ => vec![convert_column_expr_with_catalog(
+                col_expr, resolver, catalog,
+            )],
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -521,7 +716,7 @@ fn apply_order_by(
 #[cfg(test)]
 mod tests {
     use crate::frontend::{ast, parse};
-    use crate::planner::{plan, BinaryOp, Literal, LogicalPlan, PlanError, PlanExpr};
+    use crate::planner::{plan, BinaryOp, JoinStrategy, Literal, LogicalPlan, PlanError, PlanExpr};
     use crate::test::TestDb;
 
     /// Create a test database with a "users" table (id, name, age) registered in the catalog.
@@ -1065,11 +1260,77 @@ mod tests {
                 // Left should be Scan of employees
                 assert!(matches!(*left, LogicalPlan::Scan { .. }));
 
-                // Right should be Scan of departments
-                assert!(matches!(*right, LogicalPlan::Scan { .. }));
+                // Right should be Materialize(Scan) — optimizer wraps Hash join right in Materialize
+                assert!(matches!(*right, LogicalPlan::Materialize { .. }));
 
                 // ON condition should be a binary operation
                 assert!(matches!(on_condition, PlanExpr::BinaryOp { .. }));
+            } else {
+                panic!("Expected Join node");
+            }
+        } else {
+            panic!("Expected Project node");
+        }
+    }
+
+    // ========================================================================
+    // Semi-join Plan Tests (IN subquery)
+    // ========================================================================
+
+    fn make_two_table_db() -> (TestDb, u32, u32) {
+        let mut test = TestDb::default();
+        let users_root = test.btree.create_tree();
+        test.btree.insert_entry(
+            "table",
+            "users",
+            "users",
+            users_root,
+            "CREATE TABLE users (id INTEGER, name TEXT)",
+        );
+        let admins_root = test.btree.create_tree();
+        test.btree.insert_entry(
+            "table",
+            "admins",
+            "admins",
+            admins_root,
+            "CREATE TABLE admins (user_id INTEGER)",
+        );
+        (test, users_root, admins_root)
+    }
+
+    #[test]
+    fn plan_in_subquery_produces_semi_join() {
+        let (test, _, _) = make_two_table_db();
+        let stmt = parse_sql("SELECT name FROM users WHERE id IN (SELECT user_id FROM admins)");
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
+        // Expected: Project { Join[Semi] { Scan(users), Materialize(Scan(admins)) } }
+        if let LogicalPlan::Project { input, .. } = plan {
+            if let LogicalPlan::Join {
+                strategy,
+                right,
+                left_column_count,
+                ..
+            } = *input
+            {
+                assert_eq!(strategy, JoinStrategy::Semi { negated: false });
+                assert_eq!(left_column_count, 2, "users has 2 columns");
+                assert!(matches!(*right, LogicalPlan::Materialize { .. }));
+            } else {
+                panic!("Expected Join node, got something else");
+            }
+        } else {
+            panic!("Expected Project node");
+        }
+    }
+
+    #[test]
+    fn plan_not_in_subquery_produces_anti_semi_join() {
+        let (test, _, _) = make_two_table_db();
+        let stmt = parse_sql("SELECT name FROM users WHERE id NOT IN (SELECT user_id FROM admins)");
+        let plan = plan(stmt, &test.btree).expect("Planning should succeed");
+        if let LogicalPlan::Project { input, .. } = plan {
+            if let LogicalPlan::Join { strategy, .. } = *input {
+                assert_eq!(strategy, JoinStrategy::Semi { negated: true });
             } else {
                 panic!("Expected Join node");
             }
@@ -1493,6 +1754,22 @@ mod tests {
             ],
         };
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn plan_from_subquery_produces_materialize_node() {
+        let (test, users_root) = make_users_db();
+        let stmt = parse_sql("SELECT name FROM (SELECT id, name FROM users) AS u");
+        let result = plan(stmt, &test.btree).expect("Planning failed");
+
+        // Expected: Project(Materialize(...))
+        let LogicalPlan::Project { input, .. } = result else {
+            panic!("Expected Project at top level");
+        };
+        assert!(
+            matches!(input.as_ref(), LogicalPlan::Materialize { .. }),
+            "Expected Materialize as Project input, got: {input:?}"
+        );
     }
 
     /// rowid() only (no other columns): scan just reads the key.

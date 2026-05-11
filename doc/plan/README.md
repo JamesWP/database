@@ -62,7 +62,7 @@ Fill unit test gaps (Cell/CellReader have 0 tests, Pager has 2), build automated
 | **Y** | Project Node Fusion | 2 | [phase-y-project-fusion.md](completed/phase-y-project-fusion.md) | Completed |
 | **Z** | Unified SELECT Planner | 2 | [phase-z-unified-select.md](completed/phase-z-unified-select.md) | Completed |
 | **AA** | REPL Polish & Parallel-Slice Refactor | 4 | [phase-aa-repl-and-refactor.md](completed/phase-aa-repl-and-refactor.md) | Completed |
-| **AB** | Non-Correlated Subqueries | 4 | [phase-ab-subqueries.md](phase-ab-subqueries.md) | Planned |
+| **AB** | Non-Correlated Subqueries | 4 | [phase-ab-subqueries.md](completed/phase-ab-subqueries.md) | Completed |
 | **AC** | Join Improvements | 6 | [phase-ac-join-improvements.md](completed/phase-ac-join-improvements.md) | Completed |
 | **AD** | Page-Geometry-Aware Overflow Thresholds | 4 | [phase-ad-overflow-thresholds.md](completed/phase-ad-overflow-thresholds.md) | Completed |
 | **AE** | TUI Bytecode Debugger | 3 | [phase-ae-tui-debugger.md](completed/phase-ae-tui-debugger.md) | Completed |

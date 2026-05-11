@@ -66,6 +66,7 @@ cargo test --workspace                       # All tests must pass
 ```
 
 - Use the project's `update-sql-tests` binary for updating SQL test expected outputs — never manually edit test output.
+- For temporary debug/investigation code, use the `examples/` directory (`examples/debug_foo.rs`) rather than `/tmp`. Delete examples after the investigation is done.
 
 **Task Tracking:** Use TaskCreate/TaskUpdate to track multi-step work. Update status: pending → in_progress → completed.
 

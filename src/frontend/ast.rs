@@ -88,13 +88,13 @@ pub enum DefaultValue {
     Text(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JoinClause {
     pub table: NamedTupleSource,
     pub on_condition: Expression,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SelectStatement {
     pub distinct: bool,
     pub columns: Vec<ColumnExpression>,
@@ -107,7 +107,7 @@ pub struct SelectStatement {
     pub having: Option<Expression>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OrderByClause {
     pub expression: Expression,
     pub direction: OrderDirection,
@@ -119,7 +119,7 @@ pub enum OrderDirection {
     Desc,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ColumnExpression {
     Named {
         #[allow(dead_code)]
@@ -136,7 +136,7 @@ pub struct ColumnReference {
     pub name: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ScalarValue {
     IntegerNumber(i64),
     FloatingNumber(f64),
@@ -146,7 +146,7 @@ pub enum ScalarValue {
     Null,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnaryOp {
     Plus,
     Negate,
@@ -155,7 +155,7 @@ pub enum UnaryOp {
     Not,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BinaryOp {
     Sum,
     Difference,
@@ -178,7 +178,13 @@ pub enum BinaryOp {
     Like,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub enum InSource {
+    Values(Vec<Expression>),
+    Subquery(Box<SelectStatement>),
+}
+
+#[derive(Debug, Clone)]
 pub enum Expression {
     UnaryOp {
         op: UnaryOp,
@@ -194,15 +200,21 @@ pub enum Expression {
         args: Vec<Expression>,
     },
     Value(ScalarValue),
+    In {
+        expr: Box<Expression>,
+        source: InSource,
+        negated: bool,
+    },
+    ScalarSubquery(Box<SelectStatement>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NamedTupleSource {
     Named { alias: String, source: TupleSource },
     Anonyomous(TupleSource),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TupleSource {
     Table(String),
     #[allow(dead_code)]
@@ -258,6 +270,8 @@ impl Expression {
                 }
                 refs
             }
+            Expression::In { expr, .. } => expr.get_column_references(),
+            Expression::ScalarSubquery(_) => vec![],
         }
     }
 }

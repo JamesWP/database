@@ -54,4 +54,4 @@ SELECT dept, n FROM counts ORDER BY dept
 
 -- Column count mismatch — must error
 INSERT INTO dst SELECT id FROM src
--- > ERROR: Planning error: ColumnCountMismatch { expected: 2, got: 1 }
+-- > ERROR: Planning error: column count mismatch: expected 2, got 1
